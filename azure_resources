@@ -1,0 +1,9 @@
+resources
+| join kind=inner (
+    resourcecontainers
+    | where type == 'microsoft.resources/subscriptions'
+    | project subscriptionId, subscriptionName = name
+) on subscriptionId
+| project ResourceName = name, ResourceType = type, subscriptionName, subscriptionId, ResourceGroup = resourceGroup, Location = location, Tags = tags
+| where subscriptionName in ('', '', '', '', '', '', '')
+| order by subscriptionName asc, ResourceName asc
