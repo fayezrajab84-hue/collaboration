@@ -1,0 +1,10 @@
+securityresources
+| where type == "microsoft.security/pricings"
+| extend PricingTier = tostring(properties.pricingTier)
+| join kind=leftouter (
+    resourcecontainers
+    | where type == "microsoft.resources/subscriptions"
+    | project subscriptionName = name, subscriptionId
+) on subscriptionId
+| project subscriptionName, subscriptionId, PlanName = name, PricingTier
+| order by subscriptionName asc
