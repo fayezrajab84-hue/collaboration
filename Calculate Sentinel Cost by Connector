@@ -1,7 +1,7 @@
-AzureDiagnostics
-| where TimeGenerated >= ago(30d)
-| summarize
-    EventCount = count(),
-    DataGB = sum(_BilledSize) / (1024 * 1024 * 1024)
-by Category
-| order by DataGB desc
+Usage
+| where TimeGenerated > ago(2d)
+| where StartTime >= startofday(ago(1d)) and EndTime < startofday(now())
+| where IsBillable == true
+| summarize BillableDataGB = sum(Quantity) / 1000. by Solution, DataType
+| extend Solution = iff(Solution == "SecurityInsights", "AzureSentinel", Solution)
+| sort by BillableDataGB desc 
