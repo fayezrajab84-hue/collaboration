@@ -1,6 +1,6 @@
 Usage
-| where TimeGenerated > ago(2d)
-| where StartTime >= startofday(ago(1d)) and EndTime < startofday(now())
+| where TimeGenerated > ago(30d)
+| where StartTime >= startofday(ago(31d)) and EndTime < startofday(now())
 | where IsBillable == true
 | summarize BillableDataGB = sum(Quantity) / 1000. by Solution, DataType
 | extend Solution = iff(Solution == "SecurityInsights", "AzureSentinel", Solution)
