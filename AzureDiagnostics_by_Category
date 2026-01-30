@@ -1,0 +1,7 @@
+AzureDiagnostics
+| where TimeGenerated >= ago(30d)
+| summarize
+    EventCount = count(),
+    DataGB = sum(_BilledSize) / (1024 * 1024 * 1024)
+by Category
+| order by DataGB desc
