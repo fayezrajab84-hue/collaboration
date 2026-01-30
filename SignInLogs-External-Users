@@ -1,0 +1,2 @@
+SigninLogs
+| where UserPrincipalName has "EXT"
