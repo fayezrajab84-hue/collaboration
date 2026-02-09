@@ -1,0 +1,3 @@
+SecurityAlert
+| where ProviderName has "ASI"
+| summarize count() by AlertName, AlertSeverity, ProviderName, ProductName, AlertType 
