@@ -1,3 +1,3 @@
 SentinelHealth
 | where OperationName == "Data fetch failure summary"
-| summarize by ConnectorDataType = tostring(ExtendedProperties.ConnectorDataType) , FailureReason = tostring(ExtendedProperties.FailureSummary[0].StatusMessage)
+| summarize by SentinelResourceName, ConnectorDataType = tostring(ExtendedProperties.ConnectorDataType) , FailureReason = tostring(ExtendedProperties.FailureSummary[0].StatusMessage)
