@@ -1,0 +1,3 @@
+SentinelHealth
+| where OperationName == "Data fetch failure summary"
+| summarize by SentinelResourceKind, tostring(ExtendedProperties.FailureSummary[0].StatusMessage)
