@@ -1,0 +1,5 @@
+SentinelHealth
+| where OperationName == "Data fetch status change"
+| where Status == "Failure"
+| summarize LatestFailureTime = arg_max(TimeGenerated, *) by SentinelResourceName, SentinelResourceId
+| project LatestFailureTime, SentinelResourceName, SentinelResourceId, Description
