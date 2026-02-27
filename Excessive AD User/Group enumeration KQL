@@ -1,0 +1,7 @@
+SecurityEvent
+| where TimeGenerated > ago(1h)
+| where EventID in (4799, 4798)
+// Filter out noise from legitimate processes if necessary
+| where ProcessName !contains "winlogon.exe"
+| summarize GroupCount = dcount(TargetUserName), GroupList = make_set(TargetUserName) by SubjectUserName, Computer, bin(TimeGenerated, 15m)
+| where GroupCount > 20 // User enumerated more than 20 groups in 15 mins
