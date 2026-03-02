@@ -1,0 +1,2 @@
+DeviceRegistryEvents
+| where RegistryKey contains @'HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
