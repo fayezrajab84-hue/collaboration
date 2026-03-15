@@ -1,5 +1,5 @@
 Usage
-| where TimeGenerated > ago(30d)
+| where TimeGenerated between (datetime(2026-02-01) .. datetime(2026-02-28))
 | where StartTime >= startofday(ago(31d)) and EndTime < startofday(now())
 | where IsBillable == true
 | summarize BillableDataGB = sum(Quantity) / 1000. by Solution, DataType
