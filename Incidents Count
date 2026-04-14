@@ -1,5 +1,0 @@
-SecurityIncident
-| summarize count() by Title
-| order by count_
-| top 10 by count_
-| render columnchart 

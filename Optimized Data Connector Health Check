@@ -1,5 +1,0 @@
-SentinelHealth
-| where OperationName == "Data fetch failure summary"
-| extend ConnectorDataType = tostring(ExtendedProperties.ConnectorDataType) 
-| extend FailureReason = tostring(ExtendedProperties.FailureSummary[0].StatusMessage)
-| summarize LatestFailureTime = arg_max(TimeGenerated, *) by SentinelResourceName, SentinelResourceId, ConnectorDataType, FailureReason

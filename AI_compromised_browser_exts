@@ -1,6 +1,0 @@
-let MaliciousChromeExtensionID = dynamic(["fnmihdojmnkclgjpcoonokmkhjpjechg","inhcgfpbfdjbjogdfjbclgolkmhnooop"]);
-DeviceFileEvents
-| where ActionType == "FileCreated"
-| where FileName has_any(MaliciousChromeExtensionID) and FileName endswith ".crx"
-| where isnotempty(SHA1)
-| sort by Timestamp

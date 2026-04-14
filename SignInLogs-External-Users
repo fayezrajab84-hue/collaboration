@@ -1,3 +1,0 @@
-SigninLogs
-| where UserPrincipalName has "EXT"
-| where AppDisplayName contains "C Route"

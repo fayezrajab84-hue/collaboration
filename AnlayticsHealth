@@ -1,6 +1,0 @@
-_SentinelHealth()
-| where OperationName has 'analytics rule'
-| where Status == 'Failure'
-| project TimeGenerated, OperationName, SentinelResourceName, Status, Description, Reason
-| summarize LatestFailureTime = arg_max(TimeGenerated, *) by OperationName, SentinelResourceName, Reason
-| order by LatestFailureTime desc
