@@ -13,7 +13,7 @@ COPY pnpm-lock.yaml* ./
 COPY packages/types/package.json ./packages/types/
 COPY apps/web/package.json ./apps/web/
 
-RUN if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile; else pnpm install; fi
+RUN pnpm install --no-frozen-lockfile
 
 COPY packages/types/ ./packages/types/
 COPY apps/web/ ./apps/web/
