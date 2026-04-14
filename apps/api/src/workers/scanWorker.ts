@@ -10,6 +10,7 @@ import { decrypt } from "../services/encryptionService.js";
 import type { ScanJobPayload } from "../queues/definitions.js";
 import type { NormalizedFinding, ScanType, TargetType } from "@devsecops/types";
 import type { ScanResult } from "@devsecops/types";
+import { notifyNewFindings } from "../services/notificationService.js";
 
 const SCAN_TYPES: ScanType[] = ["SAST", "SCA", "SECRET", "IAC", "CONTAINER", "DAST", "PENTEST"];
 
@@ -142,6 +143,21 @@ async function processScanJob(payload: ScanJobPayload) {
       criticalCount: severityCounts["CRITICAL"] ?? 0,
       highCount: severityCounts["HIGH"] ?? 0,
     });
+
+    // Send Slack/Teams alerts for new CRITICAL/HIGH findings
+    const alertableFindings = await prisma.finding.findMany({
+      where: {
+        scanJobId,
+        severity: { in: ["CRITICAL", "HIGH"] },
+        // Only findings first seen in this scan job (within last 5 minutes)
+        firstSeen: { gte: new Date(Date.now() - 5 * 60 * 1000) },
+      },
+    });
+    if (alertableFindings.length > 0) {
+      notifyNewFindings(orgId, alertableFindings).catch((err) =>
+        logger.error("Notification dispatch failed", { error: (err as Error).message })
+      );
+    }
 
     logger.info("Scan job completed", { scanJobId, totalFindings: result.findings.length });
   }
