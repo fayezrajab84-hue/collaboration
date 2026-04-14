@@ -9,10 +9,11 @@ ARG VITE_API_URL=""
 ENV VITE_API_URL=$VITE_API_URL
 
 COPY package.json pnpm-workspace.yaml tsconfig.base.json ./
+COPY pnpm-lock.yaml* ./
 COPY packages/types/package.json ./packages/types/
 COPY apps/web/package.json ./apps/web/
 
-RUN pnpm install --frozen-lockfile
+RUN if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile; else pnpm install; fi
 
 COPY packages/types/ ./packages/types/
 COPY apps/web/ ./apps/web/
