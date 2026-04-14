@@ -1,0 +1,24 @@
+{
+  "name": "devsecops-platform",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Centralized DevSecOps security platform — SAST, SCA, IaC, Secrets, DAST, Pentest",
+  "scripts": {
+    "dev": "concurrently \"pnpm --filter @devsecops/api dev\" \"pnpm --filter @devsecops/web dev\"",
+    "build": "pnpm --filter @devsecops/types build && pnpm --filter @devsecops/api build && pnpm --filter @devsecops/web build",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "db:migrate": "pnpm --filter @devsecops/api db:migrate",
+    "db:generate": "pnpm --filter @devsecops/api db:generate",
+    "docker:up": "docker compose up --build",
+    "docker:down": "docker compose down"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "typescript": "^5.4.5"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  }
+}

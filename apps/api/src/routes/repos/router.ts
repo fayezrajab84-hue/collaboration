@@ -1,0 +1,145 @@
+import { Router } from "express";
+import { requireAuth } from "../../middleware/requireAuth.js";
+import prisma from "../../db.js";
+import * as gh from "../../github/client.js";
+import { createRepoSchema, triggerScanSchema } from "./validators.js";
+import { encrypt } from "../../services/encryptionService.js";
+import { randomBytes } from "crypto";
+import { triggerScan } from "../../services/scanService.js";
+import type { ScanType } from "@devsecops/types";
+
+const router = Router();
+router.use(requireAuth);
+
+// List repos
+router.get("/", async (req, res, next) => {
+  try {
+    const user = req.user as { id: string };
+    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    if (!member) { res.json([]); return; }
+
+    const repos = await prisma.repository.findMany({
+      where: { orgId: member.orgId },
+      orderBy: { addedAt: "desc" },
+    });
+    res.json(repos);
+  } catch (err) { next(err); }
+});
+
+// Add repo
+router.post("/", async (req, res, next) => {
+  try {
+    const body = createRepoSchema.parse(req.body);
+    const parsed = gh.parseGitHubUrl(body.githubUrl);
+    if (!parsed) { res.status(400).json({ error: "Invalid GitHub URL" }); return; }
+
+    const user = req.user as { id: string };
+    const dbUser = await prisma.user.findUnique({ where: { id: user.id } });
+    if (!dbUser) { res.status(404).json({ error: "User not found" }); return; }
+
+    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    if (!member) { res.status(400).json({ error: "No organization found" }); return; }
+
+    // Verify repo exists & user has access
+    const ghRepo = await gh.getRepo(dbUser.accessToken, parsed.owner, parsed.name);
+
+    // Check not already added
+    const existing = await prisma.repository.findUnique({ where: { githubId: ghRepo.id } });
+    if (existing) { res.status(409).json({ error: "Repository already added" }); return; }
+
+    // Generate webhook secret
+    const webhookSecret = randomBytes(32).toString("hex");
+    const encryptedWebhookSecret = encrypt(webhookSecret);
+
+    // Create repo in DB
+    const repo = await prisma.repository.create({
+      data: {
+        orgId: member.orgId,
+        githubId: ghRepo.id,
+        fullName: ghRepo.full_name,
+        url: ghRepo.html_url,
+        defaultBranch: body.defaultBranch ?? ghRepo.default_branch,
+        isPrivate: ghRepo.private,
+        language: ghRepo.language,
+        webhookSecret: encryptedWebhookSecret,
+      },
+    });
+
+    // Register webhook on GitHub (best-effort)
+    const webhook = await gh.createWebhook(
+      dbUser.accessToken,
+      parsed.owner,
+      parsed.name,
+      gh.getWebhookUrl(),
+      webhookSecret
+    );
+    if (webhook) {
+      await prisma.repository.update({
+        where: { id: repo.id },
+        data: { webhookId: webhook.id },
+      });
+    }
+
+    res.status(201).json(repo);
+  } catch (err) { next(err); }
+});
+
+// Get repo
+router.get("/:id", async (req, res, next) => {
+  try {
+    const user = req.user as { id: string };
+    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const repo = await prisma.repository.findFirst({
+      where: { id: req.params["id"], orgId: member?.orgId },
+    });
+    if (!repo) { res.status(404).json({ error: "Repository not found" }); return; }
+    res.json(repo);
+  } catch (err) { next(err); }
+});
+
+// Delete repo
+router.delete("/:id", async (req, res, next) => {
+  try {
+    const user = req.user as { id: string };
+    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const repo = await prisma.repository.findFirst({
+      where: { id: req.params["id"], orgId: member?.orgId },
+    });
+    if (!repo) { res.status(404).json({ error: "Repository not found" }); return; }
+    await prisma.repository.delete({ where: { id: repo.id } });
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// Trigger scan
+router.post("/:id/scan", async (req, res, next) => {
+  try {
+    const body = triggerScanSchema.parse(req.body);
+    const user = req.user as { id: string };
+    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const repo = await prisma.repository.findFirst({
+      where: { id: req.params["id"], orgId: member?.orgId },
+    });
+    if (!repo) { res.status(404).json({ error: "Repository not found" }); return; }
+
+    const defaultScanTypes: ScanType[] = ["SAST", "SCA", "SECRET", "IAC"];
+    const scanTypes = (body.scanTypes as ScanType[] | undefined) ?? defaultScanTypes;
+
+    const dbUser = await prisma.user.findUnique({ where: { id: user.id } });
+    if (!dbUser) { res.status(404).json({ error: "User not found" }); return; }
+
+    const result = await triggerScan({
+      orgId: member!.orgId,
+      targetType: "REPOSITORY",
+      targetId: repo.id,
+      scanTypes,
+      repoUrl: repo.url,
+      branch: body.branch ?? repo.defaultBranch,
+      encryptedGitToken: dbUser.accessToken,
+    });
+
+    res.status(202).json(result);
+  } catch (err) { next(err); }
+});
+
+export default router;

@@ -1,0 +1,291 @@
+// This is your Prisma schema file.
+// Learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── Enums ─────────────────────────────────────────────────────────────────
+
+enum OrgType {
+  PERSONAL
+  TEAM
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum ScanType {
+  SAST
+  SCA
+  SECRET
+  IAC
+  CONTAINER
+  DAST
+  PENTEST
+}
+
+enum Severity {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+  INFO
+}
+
+enum FindingStatus {
+  OPEN
+  ACKNOWLEDGED
+  FALSE_POSITIVE
+  FIXED
+}
+
+enum ScanStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum TargetType {
+  REPOSITORY
+  CONTAINER
+  DOMAIN
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+enum Priority {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum IntegrationType {
+  JIRA
+  SLACK
+  MICROSOFT_TEAMS
+}
+
+// ── Models ────────────────────────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(cuid())
+  githubId     String   @unique
+  username     String
+  email        String?
+  avatarUrl    String?
+  accessToken  String   // AES-256-GCM encrypted
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  organizations OrganizationMember[]
+  tickets       Ticket[]
+}
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  type      OrgType  @default(PERSONAL)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members      OrganizationMember[]
+  repositories Repository[]
+  containers   Container[]
+  domains      Domain[]
+  integrations Integration[]
+  findings     Finding[]
+  tickets      Ticket[]
+  scanJobs     ScanJob[]
+}
+
+model OrganizationMember {
+  userId String
+  orgId  String
+  role   Role     @default(MEMBER)
+
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@id([userId, orgId])
+}
+
+model Repository {
+  id            String    @id @default(cuid())
+  orgId         String
+  githubId      Int       @unique
+  fullName      String
+  url           String
+  defaultBranch String    @default("main")
+  isPrivate     Boolean   @default(false)
+  language      String?
+  webhookId     Int?
+  webhookSecret String?   // AES-256-GCM encrypted
+  lastScannedAt DateTime?
+  addedAt       DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  scans    ScanJob[]
+  findings Finding[]
+}
+
+model Container {
+  id            String    @id @default(cuid())
+  orgId         String
+  imageRef      String
+  registry      String?
+  lastScannedAt DateTime?
+  addedAt       DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  scans    ScanJob[]
+  findings Finding[]
+}
+
+model Domain {
+  id            String    @id @default(cuid())
+  orgId         String
+  domain        String
+  lastScannedAt DateTime?
+  addedAt       DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  scans    ScanJob[]
+  findings Finding[]
+}
+
+model ScanJob {
+  id             String     @id @default(cuid())
+  orgId          String
+  targetType     TargetType
+  repositoryId   String?
+  containerId    String?
+  domainId       String?
+  scanTypes      ScanType[]
+  bullJobIds     Json       @default("{}")
+  totalScans     Int        @default(0)
+  completedScans Int        @default(0)
+  status         ScanStatus @default(PENDING)
+  startedAt      DateTime?
+  completedAt    DateTime?
+  error          String?
+  // Severity counts
+  criticalCount  Int        @default(0)
+  highCount      Int        @default(0)
+  mediumCount    Int        @default(0)
+  lowCount       Int        @default(0)
+  infoCount      Int        @default(0)
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  repository Repository?  @relation(fields: [repositoryId], references: [id])
+  container  Container?   @relation(fields: [containerId], references: [id])
+  domain     Domain?      @relation(fields: [domainId], references: [id])
+  findings   Finding[]
+
+  @@index([orgId, status])
+  @@index([orgId, createdAt])
+}
+
+model Finding {
+  id             String        @id @default(cuid())
+  orgId          String
+  scanJobId      String
+  targetType     TargetType
+  repositoryId   String?
+  containerId    String?
+  domainId       String?
+  scanType       ScanType
+  title          String
+  description    String        @db.Text
+  severity       Severity
+  status         FindingStatus @default(OPEN)
+  filePath       String?
+  lineStart      Int?
+  lineEnd        Int?
+  codeSnippet    String?       @db.Text
+  cveId          String?
+  cweId          String?
+  packageName    String?
+  packageVersion String?
+  fixVersion     String?
+  cvssScore      Float?
+  scanner        String
+  ruleId         String?
+  fingerprint    String        @unique
+  remediation    String?       @db.Text
+  references     String[]
+  rawOutput      Json
+  firstSeen      DateTime      @default(now())
+  lastSeen       DateTime      @default(now())
+  resolvedAt     DateTime?
+
+  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  scanJob    ScanJob      @relation(fields: [scanJobId], references: [id])
+  repository Repository?  @relation(fields: [repositoryId], references: [id])
+  container  Container?   @relation(fields: [containerId], references: [id])
+  domain     Domain?      @relation(fields: [domainId], references: [id])
+  ticket     Ticket?
+
+  @@index([orgId, severity, status])
+  @@index([orgId, scanType])
+  @@index([fingerprint])
+}
+
+model Ticket {
+  id          String       @id @default(cuid())
+  orgId       String
+  findingId   String       @unique
+  title       String
+  description String?      @db.Text
+  status      TicketStatus @default(OPEN)
+  priority    Priority
+  jiraKey     String?
+  jiraUrl     String?
+  slackTs     String?
+  teamsId     String?
+  createdById String
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  finding   Finding      @relation(fields: [findingId], references: [id])
+  createdBy User         @relation(fields: [createdById], references: [id])
+
+  @@index([orgId, status])
+}
+
+model Integration {
+  id            String          @id @default(cuid())
+  orgId         String
+  type          IntegrationType
+  encryptedData Json
+  isActive      Boolean         @default(true)
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, type])
+}
