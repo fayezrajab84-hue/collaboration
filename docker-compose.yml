@@ -1,94 +1,152 @@
 version: "3.9"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Networks
+# internal  — service-to-service traffic only (never reaches the host)
+# ─────────────────────────────────────────────────────────────────────────────
+networks:
+  internal:
+    driver: bridge
+    internal: true   # no outbound internet from this network
+  public:
+    driver: bridge   # api, web, zap need outbound internet
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Volumes
+# ─────────────────────────────────────────────────────────────────────────────
+volumes:
+  postgres_data:
+  redis_data:
+  nuclei_templates:      # cache downloaded Nuclei templates between restarts
+
 services:
-  # ── Infrastructure ────────────────────────────────────────────────────
+
+  # ── PostgreSQL ─────────────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:-devsecops}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-devsecops}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
+    networks:
+      - internal
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-devsecops} -d ${POSTGRES_DB:-devsecops}"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 30s
+      start_period: 20s
 
+  # ── Redis ──────────────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
     restart: unless-stopped
     command: redis-server --save 60 1 --loglevel warning
     volumes:
       - redis_data:/data
-    ports:
-      - "6379:6379"
+    networks:
+      - internal
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # ── OWASP ZAP (DAST sidecar) ─────────────────────────────────────────
+  # ── Database migrations (one-shot, runs before api starts) ─────────────────
+  migrate:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+      target: migrate          # builder stage — has prisma CLI
+    command: pnpm --filter @devsecops/api db:migrate:deploy
+    env_file: .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+    networks:
+      - internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: on-failure        # retry until migrations succeed
+
+  # ── OWASP ZAP (DAST sidecar) ───────────────────────────────────────────────
+  # Remove this service (and scanner's depends_on) if you don't need DAST scans.
   zap:
     image: ghcr.io/zaproxy/zaproxy:stable
     restart: unless-stopped
     command: >
-      zap-webswitch.sh
+      zap.sh
       -daemon
       -host 0.0.0.0
       -port 8080
-      -config api.key=${ZAP_API_KEY}
+      -config api.key=${ZAP_API_KEY:?ZAP_API_KEY is required}
       -config api.addrs.addr.name=.*
       -config api.addrs.addr.regex=true
       -config api.disablekey=false
-    ports:
-      - "8090:8080"
+    networks:
+      - internal
+      - public       # ZAP needs outbound access to scan external domains
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8080/JSON/core/view/version/?apikey=${ZAP_API_KEY} || exit 1"]
+      test:
+        - "CMD-SHELL"
+        - >
+          curl -sf
+          "http://localhost:8080/JSON/core/view/version/?apikey=${ZAP_API_KEY}"
+          || exit 1
       interval: 30s
       timeout: 15s
       retries: 10
-      start_period: 60s
+      start_period: 90s   # ZAP JVM startup is slow
 
-  # ── Scanner microservice ──────────────────────────────────────────────
+  # ── Scanner microservice ────────────────────────────────────────────────────
   scanner:
     build:
       context: .
       dockerfile: docker/scanner.Dockerfile
     restart: unless-stopped
     environment:
-      SCAN_WORKSPACE_DIR: ${SCAN_WORKSPACE_DIR}
-      ZAP_BASE_URL: ${ZAP_BASE_URL}
-      ZAP_API_KEY: ${ZAP_API_KEY}
+      SCAN_WORKSPACE_DIR: /tmp/scan_workspace
+      ZAP_BASE_URL: ${ZAP_BASE_URL:-http://zap:8080}
+      ZAP_API_KEY: ${ZAP_API_KEY:-}
+    volumes:
+      - nuclei_templates:/home/scanner/.config/nuclei    # persist template cache
+    networks:
+      - internal
+      - public    # needs outbound: git clone, trivy db, nuclei templates
     depends_on:
       zap:
         condition: service_healthy
-    ports:
-      - "8000:8000"
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
       interval: 15s
       timeout: 10s
       retries: 5
       start_period: 30s
+    # Limit memory — scans can be large
+    mem_limit: 4g
 
-  # ── API server ────────────────────────────────────────────────────────
+  # ── API server ──────────────────────────────────────────────────────────────
   api:
     build:
       context: .
       dockerfile: docker/api.Dockerfile
+      target: runtime
     restart: unless-stopped
     env_file: .env
     environment:
-      DATABASE_URL: ${DATABASE_URL}
-      REDIS_URL: ${REDIS_URL}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       SCANNER_URL: http://scanner:8000
+      NODE_ENV: ${NODE_ENV:-production}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost}
+    networks:
+      - internal
+      - public     # needs outbound: GitHub API calls
+    ports:
+      - "3000:3000"    # exposed for direct API access / GitHub OAuth callback
     depends_on:
       postgres:
         condition: service_healthy
@@ -96,8 +154,8 @@ services:
         condition: service_healthy
       scanner:
         condition: service_healthy
-    ports:
-      - "3000:3000"
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:3000/health || exit 1"]
       interval: 15s
@@ -105,20 +163,22 @@ services:
       retries: 5
       start_period: 30s
 
-  # ── Web frontend ──────────────────────────────────────────────────────
+  # ── Web frontend (nginx) ────────────────────────────────────────────────────
   web:
     build:
       context: .
       dockerfile: docker/web.Dockerfile
-      args:
-        VITE_API_URL: ""
     restart: unless-stopped
+    networks:
+      - internal    # proxies to api over internal network
+    ports:
+      - "80:80"     # the only port users hit
     depends_on:
       api:
         condition: service_healthy
-    ports:
-      - "80:80"
-
-volumes:
-  postgres_data:
-  redis_data:
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost/health || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

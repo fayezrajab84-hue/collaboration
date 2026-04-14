@@ -25,6 +25,11 @@ RUN pnpm --filter @devsecops/api db:generate
 # Build TypeScript
 RUN pnpm --filter @devsecops/api build
 
+# ── Migrate stage (runs prisma migrate deploy — uses builder so prisma CLI is available) ──
+FROM builder AS migrate
+WORKDIR /app
+CMD ["pnpm", "--filter", "@devsecops/api", "db:migrate:deploy"]
+
 # ── Runtime stage ───────────────────────────────────────────────────────
 FROM node:20-alpine AS runtime
 RUN npm install -g pnpm@9

@@ -1,0 +1,46 @@
+# docker-compose.override.yml — automatically merged by `docker compose up`
+# Adds hot-reload mounts and relaxed settings for local development.
+# Do NOT commit secrets or personal paths here.
+
+version: "3.9"
+
+services:
+
+  # Run API in dev mode (tsx watch) with source mounted in
+  api:
+    build:
+      target: builder          # use builder stage which has tsx + devDeps
+    command: pnpm --filter @devsecops/api dev
+    environment:
+      NODE_ENV: development
+      FRONTEND_URL: http://localhost:5173
+    volumes:
+      - ./apps/api/src:/app/apps/api/src:ro
+      - ./packages/types/src:/app/packages/types/src:ro
+    ports:
+      - "3000:3000"
+      - "9229:9229"            # Node.js inspector port
+
+  # Run Vite dev server instead of nginx
+  web:
+    build: !reset null         # cancel the production build
+    image: node:20-alpine
+    working_dir: /app
+    command: sh -c "npm install -g pnpm@9 && pnpm --filter @devsecops/web dev --host"
+    environment:
+      VITE_API_URL: ""
+    volumes:
+      - ./apps/web/src:/app/apps/web/src:ro
+      - ./apps/web/public:/app/apps/web/public:ro
+      - ./apps/web/index.html:/app/apps/web/index.html:ro
+      - ./apps/web/package.json:/app/apps/web/package.json:ro
+      - ./apps/web/vite.config.ts:/app/apps/web/vite.config.ts:ro
+      - ./apps/web/tailwind.config.ts:/app/apps/web/tailwind.config.ts:ro
+      - ./packages/types:/app/packages/types:ro
+      - ./package.json:/app/package.json:ro
+      - ./pnpm-workspace.yaml:/app/pnpm-workspace.yaml:ro
+      - ./tsconfig.base.json:/app/tsconfig.base.json:ro
+    ports:
+      - "5173:5173"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:5173 || exit 1"]
