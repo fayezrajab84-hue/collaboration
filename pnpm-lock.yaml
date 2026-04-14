@@ -56,6 +56,9 @@ importers:
       passport-github2:
         specifier: ^0.1.12
         version: 0.1.12
+      prisma:
+        specifier: ^5.14.0
+        version: 5.22.0
       winston:
         specifier: ^3.13.0
         version: 3.19.0
@@ -81,9 +84,6 @@ importers:
       '@types/passport-github2':
         specifier: ^1.2.9
         version: 1.2.9
-      prisma:
-        specifier: ^5.14.0
-        version: 5.22.0
       tsx:
         specifier: ^4.15.1
         version: 4.21.0
