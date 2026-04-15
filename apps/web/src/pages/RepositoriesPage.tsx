@@ -1,8 +1,10 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Play, Trash2, GitBranch, X } from "lucide-react";
+import { Plus, Play, Trash2, Pencil, GitBranch, X } from "lucide-react";
 import { reposApi } from "../lib/api";
+import type { Repository } from "@devsecops/types";
 import ScanStatusBadge from "../components/ScanStatusBadge";
+import FindingCountBadges from "../components/FindingCountBadges";
 import { useSSE } from "../hooks/useSSE";
 import { formatRelative } from "../lib/utils";
 
@@ -82,8 +84,52 @@ function AddRepoModal({ onClose }: { onClose: () => void }) {
   );
 }
 
+function EditRepoModal({ repo, onClose }: { repo: Repository; onClose: () => void }) {
+  const [branch, setBranch] = useState(repo.defaultBranch);
+  const qc = useQueryClient();
+
+  const update = useMutation({
+    mutationFn: () => reposApi.update(repo.id, { defaultBranch: branch }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["repos"] }); onClose(); },
+  });
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+      <div className="w-full max-w-md rounded-xl border border-gray-700 bg-gray-900 p-6 shadow-2xl">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-base font-semibold text-white">Edit Repository</h2>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-200"><X className="h-4 w-4" /></button>
+        </div>
+        <p className="mb-3 text-xs text-gray-500 font-mono">{repo.fullName}</p>
+        <label className="mb-1 block text-xs font-medium text-gray-400">Default branch</label>
+        <input
+          className="w-full rounded bg-gray-800 px-3 py-2 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+          value={branch}
+          onChange={(e) => setBranch(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && update.mutate()}
+          placeholder="main"
+        />
+        {update.error && (
+          <p className="mt-2 text-xs text-red-400">{(update.error as Error).message}</p>
+        )}
+        <div className="mt-4 flex justify-end gap-2">
+          <button onClick={onClose} className="rounded px-3 py-1.5 text-sm text-gray-400 hover:text-gray-200">Cancel</button>
+          <button
+            onClick={() => update.mutate()}
+            disabled={!branch || update.isPending}
+            className="rounded bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+          >
+            {update.isPending ? "Saving…" : "Save Changes"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function RepositoriesPage() {
   const [showAdd, setShowAdd] = useState(false);
+  const [editRepo, setEditRepo] = useState<Repository | null>(null);
   const qc = useQueryClient();
   const { data: repos, isLoading } = useQuery({ queryKey: ["repos"], queryFn: reposApi.list });
 
@@ -119,6 +165,7 @@ export default function RepositoriesPage() {
               <tr className="text-left text-xs text-gray-500">
                 <th className="px-4 py-3 font-medium">Repository</th>
                 <th className="px-4 py-3 font-medium">Language</th>
+                <th className="px-4 py-3 font-medium">Issues</th>
                 <th className="px-4 py-3 font-medium">Last Scanned</th>
                 <th className="px-4 py-3 font-medium">Actions</th>
               </tr>
@@ -133,12 +180,20 @@ export default function RepositoriesPage() {
                     </div>
                   </td>
                   <td className="px-4 py-3 text-gray-400">{repo.language ?? "—"}</td>
+                  <td className="px-4 py-3"><FindingCountBadges counts={repo.findingCounts} /></td>
                   <td className="px-4 py-3 text-gray-400">
                     {repo.lastScannedAt ? formatRelative(repo.lastScannedAt) : "Never"}
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
                       <ScanButton repoId={repo.id} />
+                      <button
+                        onClick={() => setEditRepo(repo)}
+                        className="text-gray-600 hover:text-indigo-400"
+                        title="Edit repository"
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </button>
                       <button
                         onClick={() => deleteRepo.mutate(repo.id)}
                         className="text-gray-600 hover:text-red-400"
@@ -156,6 +211,7 @@ export default function RepositoriesPage() {
       )}
 
       {showAdd && <AddRepoModal onClose={() => setShowAdd(false)} />}
+      {editRepo && <EditRepoModal repo={editRepo} onClose={() => setEditRepo(null)} />}
     </div>
   );
 }

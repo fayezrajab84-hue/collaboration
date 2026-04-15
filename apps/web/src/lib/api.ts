@@ -1,7 +1,9 @@
 import axios from "axios";
 import type {
   Repository, Container, Domain, ScanJob, Finding, Ticket, Integration,
-  CreateRepoRequest, CreateContainerRequest, CreateDomainRequest,
+  CreateRepoRequest, UpdateRepoRequest,
+  CreateContainerRequest, UpdateContainerRequest,
+  CreateDomainRequest, UpdateDomainRequest,
   TriggerScanRequest, TriggerScanResponse,
   FindingFilterParams, UpdateFindingRequest,
   CreateTicketRequest, UpdateTicketRequest,
@@ -29,8 +31,8 @@ apiClient.interceptors.response.use(
 // ── Auth ──────────────────────────────────────────────────────────────────
 
 export const authApi = {
-  me: () => apiClient.get<AuthMeResponse>("/../../auth/me").then((r) => r.data),
-  logout: () => apiClient.post("/../../auth/logout"),
+  me: () => axios.get<AuthMeResponse>("/auth/me", { withCredentials: true }).then((r) => r.data),
+  logout: () => axios.post("/auth/logout", {}, { withCredentials: true }),
 };
 
 // ── Repositories ──────────────────────────────────────────────────────────
@@ -39,6 +41,7 @@ export const reposApi = {
   list: () => apiClient.get<Repository[]>("/repos").then((r) => r.data),
   get: (id: string) => apiClient.get<Repository>(`/repos/${id}`).then((r) => r.data),
   create: (data: CreateRepoRequest) => apiClient.post<Repository>("/repos", data).then((r) => r.data),
+  update: (id: string, data: UpdateRepoRequest) => apiClient.patch<Repository>(`/repos/${id}`, data).then((r) => r.data),
   delete: (id: string) => apiClient.delete(`/repos/${id}`),
   triggerScan: (id: string, data?: TriggerScanRequest) =>
     apiClient.post<TriggerScanResponse>(`/repos/${id}/scan`, data ?? {}).then((r) => r.data),
@@ -50,6 +53,7 @@ export const containersApi = {
   list: () => apiClient.get<Container[]>("/containers").then((r) => r.data),
   get: (id: string) => apiClient.get<Container>(`/containers/${id}`).then((r) => r.data),
   create: (data: CreateContainerRequest) => apiClient.post<Container>("/containers", data).then((r) => r.data),
+  update: (id: string, data: UpdateContainerRequest) => apiClient.patch<Container>(`/containers/${id}`, data).then((r) => r.data),
   delete: (id: string) => apiClient.delete(`/containers/${id}`),
   triggerScan: (id: string) =>
     apiClient.post<TriggerScanResponse>(`/containers/${id}/scan`).then((r) => r.data),
@@ -61,6 +65,7 @@ export const domainsApi = {
   list: () => apiClient.get<Domain[]>("/domains").then((r) => r.data),
   get: (id: string) => apiClient.get<Domain>(`/domains/${id}`).then((r) => r.data),
   create: (data: CreateDomainRequest) => apiClient.post<Domain>("/domains", data).then((r) => r.data),
+  update: (id: string, data: UpdateDomainRequest) => apiClient.patch<Domain>(`/domains/${id}`, data).then((r) => r.data),
   delete: (id: string) => apiClient.delete(`/domains/${id}`),
   triggerScan: (id: string) =>
     apiClient.post<TriggerScanResponse>(`/domains/${id}/scan`).then((r) => r.data),

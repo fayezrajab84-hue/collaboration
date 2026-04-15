@@ -1,11 +1,34 @@
 import { useQuery } from "@tanstack/react-query";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from "recharts";
-import { ShieldAlert, GitBranch, Box, Globe, Clock } from "lucide-react";
+import { ShieldAlert, GitBranch, Box, Globe } from "lucide-react";
 import { findingsApi, reposApi, containersApi, domainsApi, scansApi } from "../lib/api";
 import StatsCard from "../components/StatsCard";
 import SeverityBadge from "../components/SeverityBadge";
 import ScanStatusBadge from "../components/ScanStatusBadge";
 import { formatRelative } from "../lib/utils";
+import type { Finding } from "@devsecops/types";
+
+function TargetTag({ finding }: { finding: Finding }) {
+  if (finding.repository)
+    return (
+      <span className="inline-flex items-center gap-1 rounded bg-indigo-900/50 px-2 py-0.5 text-xs text-indigo-300 max-w-[140px] truncate">
+        <GitBranch className="h-3 w-3 shrink-0" /><span className="truncate">{finding.repository.fullName}</span>
+      </span>
+    );
+  if (finding.container)
+    return (
+      <span className="inline-flex items-center gap-1 rounded bg-cyan-900/50 px-2 py-0.5 text-xs text-cyan-300 max-w-[140px] truncate">
+        <Box className="h-3 w-3 shrink-0" /><span className="truncate">{finding.container.imageRef}</span>
+      </span>
+    );
+  if (finding.domain)
+    return (
+      <span className="inline-flex items-center gap-1 rounded bg-emerald-900/50 px-2 py-0.5 text-xs text-emerald-300 max-w-[140px] truncate">
+        <Globe className="h-3 w-3 shrink-0" /><span className="truncate">{finding.domain.domain}</span>
+      </span>
+    );
+  return <span className="text-gray-600">—</span>;
+}
 
 const SEVERITY_COLORS: Record<string, string> = {
   CRITICAL: "#dc2626", HIGH: "#ea580c", MEDIUM: "#d97706", LOW: "#65a30d", INFO: "#6b7280",
@@ -132,6 +155,7 @@ export default function DashboardPage() {
                 <tr className="border-b border-gray-800 text-left text-xs text-gray-500">
                   <th className="pb-2 pr-4 font-medium">Severity</th>
                   <th className="pb-2 pr-4 font-medium">Title</th>
+                  <th className="pb-2 pr-4 font-medium">Target</th>
                   <th className="pb-2 pr-4 font-medium">Type</th>
                   <th className="pb-2 font-medium">First seen</th>
                 </tr>
@@ -141,6 +165,7 @@ export default function DashboardPage() {
                   <tr key={f.id} className="border-b border-gray-800/50">
                     <td className="py-2 pr-4"><SeverityBadge severity={f.severity} /></td>
                     <td className="py-2 pr-4 max-w-xs truncate text-gray-200">{f.title}</td>
+                    <td className="py-2 pr-4"><TargetTag finding={f} /></td>
                     <td className="py-2 pr-4 text-xs text-gray-400">{f.scanType}</td>
                     <td className="py-2 text-xs text-gray-500">{formatRelative(f.firstSeen)}</td>
                   </tr>

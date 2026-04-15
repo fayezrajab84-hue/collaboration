@@ -43,7 +43,12 @@ router.get("/", async (req, res, next) => {
         orderBy: [{ severity: "asc" }, { firstSeen: "desc" }],
         skip,
         take: limit,
-        include: { ticket: { select: { id: true, status: true, jiraKey: true } } },
+        include: {
+          ticket: { select: { id: true, status: true, jiraKey: true } },
+          repository: { select: { fullName: true } },
+          container: { select: { imageRef: true } },
+          domain: { select: { domain: true } },
+        },
       }),
       prisma.finding.count({ where }),
     ]);

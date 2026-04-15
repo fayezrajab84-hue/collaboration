@@ -36,6 +36,13 @@ export interface OrganizationMember {
   org?: Organization;
 }
 
+export interface FindingCounts {
+  CRITICAL: number;
+  HIGH: number;
+  MEDIUM: number;
+  LOW: number;
+}
+
 export interface Repository {
   id: string;
   orgId: string;
@@ -47,6 +54,7 @@ export interface Repository {
   language: string | null;
   lastScannedAt: Date | null;
   addedAt: Date;
+  findingCounts?: FindingCounts;
 }
 
 export interface Container {
@@ -56,6 +64,7 @@ export interface Container {
   registry: string | null;
   lastScannedAt: Date | null;
   addedAt: Date;
+  findingCounts?: FindingCounts;
 }
 
 export interface Domain {
@@ -64,6 +73,7 @@ export interface Domain {
   domain: string;
   lastScannedAt: Date | null;
   addedAt: Date;
+  findingCounts?: FindingCounts;
 }
 
 export interface ScanJob {
@@ -113,6 +123,11 @@ export interface Finding {
   firstSeen: Date;
   lastSeen: Date;
   resolvedAt: Date | null;
+  // Joined from related target (present in list/detail responses)
+  targetName?: string;
+  repository?: { fullName: string } | null;
+  container?: { imageRef: string } | null;
+  domain?: { domain: string } | null;
 }
 
 export interface Ticket {

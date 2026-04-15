@@ -3,13 +3,16 @@ import hashlib
 import os
 import shutil
 import subprocess
-import tempfile
+import time
 import uuid
 from abc import ABC, abstractmethod
 from typing import Optional
 
 from config import settings
 from models import NormalizedFinding, ScanRequest, ScanType, Severity
+
+_CLONE_CACHE_DIR = "/tmp/scan_clone_cache"
+_CLONE_CACHE_TTL = 1800  # 30 minutes
 
 
 class BaseScanner(ABC):
@@ -46,9 +49,20 @@ class BaseScanner(ABC):
         git_token: Optional[str],
         target_dir: str,
     ) -> str:
-        """Clone repo to target_dir. Returns the cloned path."""
+        """Clone repo to target_dir, using a local cache to avoid redundant clones."""
+        cache_key = hashlib.sha256(f"{repo_url}:{branch}".encode()).hexdigest()[:24]
+        cache_path = os.path.join(_CLONE_CACHE_DIR, cache_key)
+
+        # Use cached clone if fresh
+        if os.path.isdir(cache_path):
+            age = time.time() - os.path.getmtime(cache_path)
+            if age < _CLONE_CACHE_TTL:
+                shutil.copytree(cache_path, target_dir, dirs_exist_ok=True)
+                return target_dir
+            shutil.rmtree(cache_path, ignore_errors=True)
+
+        # Fresh clone
         if git_token:
-            # Inject token into URL — never log this
             parsed = repo_url.replace("https://", f"https://x-access-token:{git_token}@")
         else:
             parsed = repo_url
@@ -61,11 +75,18 @@ class BaseScanner(ABC):
             parsed,
             target_dir,
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:
-            # Sanitize error message before raising (remove token if present)
             err = result.stderr.replace(git_token or "", "***") if git_token else result.stderr
             raise RuntimeError(f"Git clone failed: {err[:500]}")
+
+        # Cache for subsequent scan types on the same repo
+        os.makedirs(_CLONE_CACHE_DIR, exist_ok=True)
+        try:
+            shutil.copytree(target_dir, cache_path, dirs_exist_ok=True)
+        except Exception:
+            pass  # cache write failure is non-fatal
+
         return target_dir
 
     @staticmethod

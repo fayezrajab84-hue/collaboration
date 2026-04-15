@@ -40,11 +40,11 @@ export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: n
       fixVersion: f.fixVersion ?? null,
       cvssScore: f.cvssScore ?? null,
       scanner: f.scanner,
-      ruleId: f.ruleId,
+      ruleId: f.ruleId ?? null,
       fingerprint: f.fingerprint,
       remediation: f.remediation ?? null,
       references: f.references ?? [],
-      rawOutput: f.rawOutput as object,
+      rawOutput: (f.rawOutput ?? {}) as object,
       lastSeen: new Date(),
     };
 

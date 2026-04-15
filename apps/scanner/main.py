@@ -42,7 +42,7 @@ async def health():
     return {"status": "ok", "service": "scanner"}
 
 
-@app.post("/scan", response_model=ScanResult)
+@app.post("/scan", response_model=ScanResult, response_model_by_alias=True)
 async def run_scan(request: ScanRequest) -> ScanResult:
     scanner_cls = SCANNER_MAP.get(request.scan_type)
     if not scanner_cls:

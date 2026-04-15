@@ -38,6 +38,10 @@ export interface CreateRepoRequest {
   defaultBranch?: string;
 }
 
+export interface UpdateRepoRequest {
+  defaultBranch?: string;
+}
+
 // ── Containers ────────────────────────────────────────────────────────────
 
 export interface CreateContainerRequest {
@@ -45,10 +49,19 @@ export interface CreateContainerRequest {
   registry?: string;
 }
 
+export interface UpdateContainerRequest {
+  imageRef?: string;
+  registry?: string;
+}
+
 // ── Domains ───────────────────────────────────────────────────────────────
 
 export interface CreateDomainRequest {
   domain: string;
+}
+
+export interface UpdateDomainRequest {
+  domain?: string;
 }
 
 // ── Scan trigger ──────────────────────────────────────────────────────────

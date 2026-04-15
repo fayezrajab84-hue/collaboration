@@ -1,7 +1,12 @@
 from __future__ import annotations
 from typing import Any, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
+from pydantic.alias_generators import to_camel
 from enum import Enum
+
+
+def _camel(s: str) -> str:
+    return to_camel(s)
 
 
 class ScanType(str, Enum):
@@ -47,6 +52,8 @@ class ScanRequest(BaseModel):
 
 
 class NormalizedFinding(BaseModel):
+    model_config = ConfigDict(alias_generator=_camel, populate_by_name=True)
+
     fingerprint: str
     rule_id: str
     title: str
@@ -73,6 +80,8 @@ class NormalizedFinding(BaseModel):
 
 
 class ScanResult(BaseModel):
+    model_config = ConfigDict(alias_generator=_camel, populate_by_name=True)
+
     scan_job_id: str
     scan_type: ScanType
     scanner: str

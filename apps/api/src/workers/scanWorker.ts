@@ -58,7 +58,7 @@ async function processScanJob(payload: ScanJobPayload) {
     const response = await axios.post<ScanResult>(
       `${config.SCANNER_URL}/scan`,
       scanRequest,
-      { timeout: 660_000 }
+      { timeout: 1_500_000 } // 25 min
     );
     result = response.data;
   } catch (err) {
@@ -166,7 +166,7 @@ async function processScanJob(payload: ScanJobPayload) {
 export function initWorkers() {
   for (const scanType of SCAN_TYPES) {
     const worker = new Worker<ScanJobPayload>(
-      `scan:${scanType}`,
+      `scan-${scanType}`,
       async (job) => {
         await processScanJob(job.data);
       },

@@ -2,7 +2,7 @@ import { Router } from "express";
 import { requireAuth } from "../../middleware/requireAuth.js";
 import prisma from "../../db.js";
 import * as gh from "../../github/client.js";
-import { createRepoSchema, triggerScanSchema } from "./validators.js";
+import { createRepoSchema, updateRepoSchema, triggerScanSchema } from "./validators.js";
 import { encrypt } from "../../services/encryptionService.js";
 import { randomBytes } from "crypto";
 import { triggerScan } from "../../services/scanService.js";
@@ -18,11 +18,33 @@ router.get("/", async (req, res, next) => {
     const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
     if (!member) { res.json([]); return; }
 
-    const repos = await prisma.repository.findMany({
-      where: { orgId: member.orgId },
-      orderBy: { addedAt: "desc" },
-    });
-    res.json(repos);
+    const [repos, countRows] = await Promise.all([
+      prisma.repository.findMany({ where: { orgId: member.orgId }, orderBy: { addedAt: "desc" } }),
+      prisma.finding.groupBy({
+        by: ["repositoryId", "severity"],
+        where: { orgId: member.orgId, repositoryId: { not: null }, status: { not: "FALSE_POSITIVE" } },
+        _count: { id: true },
+      }),
+    ]);
+
+    const countMap: Record<string, Record<string, number>> = {};
+    for (const row of countRows) {
+      const rid = row.repositoryId!;
+      if (!countMap[rid]) countMap[rid] = {};
+      countMap[rid][row.severity] = row._count.id;
+    }
+
+    const result = repos.map((r) => ({
+      ...r,
+      findingCounts: {
+        CRITICAL: countMap[r.id]?.CRITICAL ?? 0,
+        HIGH: countMap[r.id]?.HIGH ?? 0,
+        MEDIUM: countMap[r.id]?.MEDIUM ?? 0,
+        LOW: countMap[r.id]?.LOW ?? 0,
+      },
+    }));
+
+    res.json(result);
   } catch (err) { next(err); }
 });
 
@@ -94,6 +116,24 @@ router.get("/:id", async (req, res, next) => {
     });
     if (!repo) { res.status(404).json({ error: "Repository not found" }); return; }
     res.json(repo);
+  } catch (err) { next(err); }
+});
+
+// Update repo
+router.patch("/:id", async (req, res, next) => {
+  try {
+    const body = updateRepoSchema.parse(req.body);
+    const user = req.user as { id: string };
+    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const repo = await prisma.repository.findFirst({
+      where: { id: req.params["id"], orgId: member?.orgId },
+    });
+    if (!repo) { res.status(404).json({ error: "Repository not found" }); return; }
+    const updated = await prisma.repository.update({
+      where: { id: repo.id },
+      data: { ...(body.defaultBranch && { defaultBranch: body.defaultBranch }) },
+    });
+    res.json(updated);
   } catch (err) { next(err); }
 });
 

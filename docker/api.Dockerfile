@@ -1,6 +1,7 @@
 FROM node:20-alpine AS base
 # OpenSSL is required by Prisma's query engine on Alpine (musl libc)
-RUN apk add --no-cache openssl
+# curl is required by Docker healthcheck
+RUN apk add --no-cache openssl curl
 RUN npm install -g pnpm@9
 
 # ── Builder stage ───────────────────────────────────────────────────────
@@ -33,9 +34,13 @@ RUN node_modules/.bin/tsc --project apps/api/tsconfig.json
 FROM builder AS migrate
 WORKDIR /app
 CMD ["node_modules/.bin/prisma", "migrate", "deploy", "--schema=apps/api/prisma/schema.prisma"]
+# ^ For production once migration files are committed.
+# During initial development with no migration files, override with:
+#   command: node_modules/.bin/prisma db push --schema=apps/api/prisma/schema.prisma --skip-generate
 
 # ── Runtime stage ────────────────────────────────────────────────────────
 FROM node:20-alpine AS runtime
+RUN apk add --no-cache curl
 RUN npm install -g pnpm@9
 
 WORKDIR /app

@@ -6,14 +6,20 @@ version: "3.9"
 
 services:
 
+  # Use db push (no committed migration files needed) during development
+  migrate:
+    command: node_modules/.bin/prisma db push --schema=apps/api/prisma/schema.prisma --skip-generate
+
   # Run API in dev mode (tsx watch) with source mounted in
   api:
     build:
       target: builder          # use builder stage which has tsx + devDeps
-    command: pnpm --filter @devsecops/api dev
+    command: node_modules/.bin/tsx watch apps/api/src/server.ts
     environment:
       NODE_ENV: development
       FRONTEND_URL: http://localhost:5173
+      CHOKIDAR_USEPOLLING: "true"   # required on Windows/Docker — inotify events don't propagate
+      CHOKIDAR_INTERVAL: "1000"
     volumes:
       - ./apps/api/src:/app/apps/api/src:ro
       - ./packages/types/src:/app/packages/types/src:ro
@@ -26,21 +32,31 @@ services:
     build: !reset null         # cancel the production build
     image: node:20-alpine
     working_dir: /app
-    command: sh -c "npm install -g pnpm@9 && pnpm --filter @devsecops/web dev --host"
+    command: >
+      sh -c "apk add --no-cache curl
+      && npm install -g pnpm@9
+      && pnpm install --no-frozen-lockfile
+      && cd /app/apps/web
+      && /app/node_modules/.bin/vite --host"
     environment:
       VITE_API_URL: ""
+      API_URL: "http://api:3000"
     volumes:
-      - ./apps/web/src:/app/apps/web/src:ro
-      - ./apps/web/public:/app/apps/web/public:ro
-      - ./apps/web/index.html:/app/apps/web/index.html:ro
-      - ./apps/web/package.json:/app/apps/web/package.json:ro
-      - ./apps/web/vite.config.ts:/app/apps/web/vite.config.ts:ro
-      - ./apps/web/tailwind.config.ts:/app/apps/web/tailwind.config.ts:ro
+      - ./apps/web:/app/apps/web
+      - ./apps/api/package.json:/app/apps/api/package.json:ro
       - ./packages/types:/app/packages/types:ro
       - ./package.json:/app/package.json:ro
       - ./pnpm-workspace.yaml:/app/pnpm-workspace.yaml:ro
+      - ./pnpm-lock.yaml:/app/pnpm-lock.yaml:ro
+      - ./.npmrc:/app/.npmrc:ro
       - ./tsconfig.base.json:/app/tsconfig.base.json:ro
+    networks:
+      - internal   # reach api
+      - public     # reach npm registry for pnpm install
     ports:
       - "5173:5173"
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:5173 || exit 1"]
+      start_period: 120s
+      interval: 15s
+      retries: 5
