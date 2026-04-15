@@ -2,12 +2,12 @@ import express from "express";
 import helmet from "helmet";
 import cors from "cors";
 import session from "express-session";
-import { createClient } from "redis";
 import RedisStore from "connect-redis";
 import passport from "passport";
 import rateLimit from "express-rate-limit";
 
 import { config } from "./config.js";
+import { redis } from "./redis.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestId } from "./middleware/requestId.js";
 import healthRouter from "./routes/health.js";
@@ -54,11 +54,9 @@ const apiLimiter = rateLimit({
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true }));
 
-// ── Session (Redis-backed) ────────────────────────────────────────────────
-const redisClient = createClient({ url: config.REDIS_URL });
-await redisClient.connect();
-
-const store = new RedisStore({ client: redisClient });
+// ── Session (Redis-backed via ioredis) ────────────────────────────────────
+// connect-redis v7 accepts ioredis clients; cast to satisfy its type signature
+const store = new RedisStore({ client: redis as never });
 
 app.use(
   session({

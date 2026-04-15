@@ -2,9 +2,13 @@
   "name": "@devsecops/types",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "description": "Shared TypeScript types for the DevSecOps platform",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

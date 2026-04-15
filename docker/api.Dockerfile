@@ -21,7 +21,10 @@ COPY apps/api/ ./apps/api/
 # Generate Prisma client — use hoisted binary from workspace root
 RUN node_modules/.bin/prisma generate --schema=apps/api/prisma/schema.prisma
 
-# Compile TypeScript — use hoisted tsc from workspace root
+# Build shared types package first (creates dist/*.d.ts for project references)
+RUN node_modules/.bin/tsc --project packages/types/tsconfig.json
+
+# Compile API (references types via TypeScript project references)
 RUN node_modules/.bin/tsc --project apps/api/tsconfig.json
 
 # ── Migrate stage ────────────────────────────────────────────────────────

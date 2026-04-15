@@ -1,14 +1,14 @@
-import IORedis from "ioredis";
+import Redis from "ioredis";
 import { config } from "./config.js";
 
 // General-purpose Redis client (sessions, caching)
-export const redis = new IORedis(config.REDIS_URL, {
+export const redis = new Redis(config.REDIS_URL, {
   maxRetriesPerRequest: null,
   enableReadyCheck: false,
 });
 
 // Dedicated BullMQ connection (BullMQ requires its own IORedis instance)
-export const bullRedis = new IORedis(config.REDIS_URL, {
+export const bullRedis = new Redis(config.REDIS_URL, {
   maxRetriesPerRequest: null,
   enableReadyCheck: false,
 });

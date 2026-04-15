@@ -23,9 +23,9 @@ export async function triggerScan(opts: TriggerScanOptions) {
     data: {
       orgId,
       targetType,
-      repositoryId: targetType === "REPOSITORY" ? targetId : undefined,
-      containerId: targetType === "CONTAINER" ? targetId : undefined,
-      domainId: targetType === "DOMAIN" ? targetId : undefined,
+      repositoryId: targetType === "REPOSITORY" ? targetId : null,
+      containerId: targetType === "CONTAINER" ? targetId : null,
+      domainId: targetType === "DOMAIN" ? targetId : null,
       scanTypes,
       totalScans: scanTypes.length,
       completedScans: 0,
