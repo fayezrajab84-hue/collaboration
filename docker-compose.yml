@@ -60,8 +60,7 @@ services:
     build:
       context: .
       dockerfile: docker/api.Dockerfile
-      target: migrate          # builder stage — has prisma CLI
-    command: pnpm --filter @devsecops/api db:migrate:deploy
+      target: migrate          # uses CMD from migrate stage in Dockerfile
     env_file: .env
     environment:
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
