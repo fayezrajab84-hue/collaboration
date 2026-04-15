@@ -51,6 +51,7 @@ export async function triggerScan(opts: TriggerScanOptions) {
     };
 
     const queue = scanQueues[scanType];
+    if (!queue) throw new Error(`No queue for scan type: ${scanType}`);
     const job = await queue.add(`${scanType}-${scanJob.id}`, payload, {
       jobId: `${scanJob.id}-${scanType}`,
     });
