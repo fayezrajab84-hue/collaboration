@@ -1,69 +1,19 @@
-export enum ScanType {
-  SAST = "SAST",
-  SCA = "SCA",
-  SECRET = "SECRET",
-  IAC = "IAC",
-  CONTAINER = "CONTAINER",
-  DAST = "DAST",
-  PENTEST = "PENTEST",
-}
+export type ScanType = "SAST" | "SCA" | "SECRET" | "IAC" | "CONTAINER" | "DAST" | "PENTEST";
 
-export enum Severity {
-  CRITICAL = "CRITICAL",
-  HIGH = "HIGH",
-  MEDIUM = "MEDIUM",
-  LOW = "LOW",
-  INFO = "INFO",
-}
+export type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
 
-export enum FindingStatus {
-  OPEN = "OPEN",
-  ACKNOWLEDGED = "ACKNOWLEDGED",
-  FALSE_POSITIVE = "FALSE_POSITIVE",
-  FIXED = "FIXED",
-}
+export type FindingStatus = "OPEN" | "ACKNOWLEDGED" | "FALSE_POSITIVE" | "FIXED";
 
-export enum ScanStatus {
-  PENDING = "PENDING",
-  RUNNING = "RUNNING",
-  COMPLETED = "COMPLETED",
-  FAILED = "FAILED",
-  CANCELLED = "CANCELLED",
-}
+export type ScanStatus = "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED";
 
-export enum TargetType {
-  REPOSITORY = "REPOSITORY",
-  CONTAINER = "CONTAINER",
-  DOMAIN = "DOMAIN",
-}
+export type TargetType = "REPOSITORY" | "CONTAINER" | "DOMAIN";
 
-export enum TicketStatus {
-  OPEN = "OPEN",
-  IN_PROGRESS = "IN_PROGRESS",
-  RESOLVED = "RESOLVED",
-  CLOSED = "CLOSED",
-}
+export type TicketStatus = "OPEN" | "IN_PROGRESS" | "RESOLVED" | "CLOSED";
 
-export enum Priority {
-  CRITICAL = "CRITICAL",
-  HIGH = "HIGH",
-  MEDIUM = "MEDIUM",
-  LOW = "LOW",
-}
+export type Priority = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
 
-export enum IntegrationType {
-  JIRA = "JIRA",
-  SLACK = "SLACK",
-  MICROSOFT_TEAMS = "MICROSOFT_TEAMS",
-}
+export type IntegrationType = "JIRA" | "SLACK" | "MICROSOFT_TEAMS";
 
-export enum OrgType {
-  PERSONAL = "PERSONAL",
-  TEAM = "TEAM",
-}
+export type OrgType = "PERSONAL" | "TEAM";
 
-export enum Role {
-  OWNER = "OWNER",
-  ADMIN = "ADMIN",
-  MEMBER = "MEMBER",
-}
+export type Role = "OWNER" | "ADMIN" | "MEMBER";
