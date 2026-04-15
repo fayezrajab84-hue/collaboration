@@ -1,4 +1,6 @@
 FROM node:20-alpine AS base
+# OpenSSL is required by Prisma's query engine on Alpine (musl libc)
+RUN apk add --no-cache openssl
 RUN npm install -g pnpm@9
 
 # ── Builder stage ───────────────────────────────────────────────────────
