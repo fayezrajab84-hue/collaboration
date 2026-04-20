@@ -38,16 +38,19 @@ function extractFromRawOutput(
       ? raw["primary"] as Record<string, unknown> | undefined
       : raw) ?? raw;
 
-    // Semgrep stores the matching line(s) in extra.lines
+    // Semgrep stores the matching line(s) in extra.lines.
+    // Discard the Semgrep Pro paywall placeholder — it is useless as code context.
     const extra = semgrepItem["extra"] as Record<string, unknown> | undefined;
-    if (typeof extra?.["lines"] === "string" && extra["lines"].trim()) {
-      return extra["lines"].trim();
+    const rawLines = typeof extra?.["lines"] === "string" ? (extra["lines"] as string).trim() : "";
+    if (rawLines && !/^requires?\s+login$/i.test(rawLines)) {
+      return rawLines;
     }
 
-    // Second fallback: first location snippet stored in merged rawOutput.locations
+    // Second fallback: first non-empty location snippet (backfilled from GitHub).
+    // This is the primary source after the backfillSastLocationSnippets migration.
     const locations = raw["locations"] as Array<{ snippet?: string | null }> | undefined;
     const locSnippet = Array.isArray(locations)
-      ? locations.find((l) => l.snippet)?.snippet ?? null
+      ? (locations.find((l) => l.snippet && !/^requires?\s+login$/i.test((l.snippet as string).trim()))?.snippet ?? null)
       : null;
     if (locSnippet) return locSnippet;
   }

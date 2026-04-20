@@ -38,6 +38,47 @@ Required schema (all fields mandatory):
   "risk_context": "How common is this issue, what conditions make it exploitable, any known CVEs or real-world exploits"
 }`;
 
+const REQUIRES_LOGIN = /^requires?\s+login$/i;
+
+/** Extract the best available code snippet for a finding (SAST/IAC/SECRET). */
+function extractSnippet(finding: Record<string, unknown>): string | null {
+  // Direct codeSnippet column (cleaned, no N: prefixes)
+  if (typeof finding["codeSnippet"] === "string" && (finding["codeSnippet"] as string).trim()) {
+    const s = (finding["codeSnippet"] as string).trim();
+    if (!REQUIRES_LOGIN.test(s)) return s.slice(0, 600);
+  }
+
+  const raw = finding["rawOutput"] as Record<string, unknown> | null;
+  if (!raw) return null;
+
+  if (finding["scanType"] === "SAST") {
+    // Prefer per-location snippets from the backfill (most accurate per-hit code)
+    const locs = raw["locations"] as Array<{ snippet?: string | null }> | undefined;
+    if (Array.isArray(locs)) {
+      const locSnippet = locs.find((l) => l.snippet && !REQUIRES_LOGIN.test((l.snippet as string).trim()))?.snippet;
+      if (locSnippet) return (locSnippet as string).slice(0, 600);
+    }
+    // Fallback: Semgrep extra.lines (non-Pro rules)
+    const semgrepItem = (raw["merged"] === true ? raw["primary"] : raw) as Record<string, unknown> | undefined ?? raw;
+    const extraLines = (semgrepItem["extra"] as Record<string, unknown> | undefined)?.["lines"];
+    if (typeof extraLines === "string" && extraLines.trim() && !REQUIRES_LOGIN.test(extraLines.trim())) {
+      return extraLines.trim().slice(0, 600);
+    }
+  }
+
+  if (finding["scanType"] === "IAC") {
+    const codeBlock = raw["code_block"];
+    if (Array.isArray(codeBlock)) {
+      return (codeBlock as Array<[number, string]>)
+        .map(([no, content]) => `${no}: ${content.replace(/\n$/, "")}`)
+        .join("\n")
+        .slice(0, 600);
+    }
+  }
+
+  return null;
+}
+
 function buildPrompt(finding: Record<string, unknown>): string {
   const lines: string[] = [
     `Title: ${finding["title"]}`,
@@ -60,6 +101,12 @@ function buildPrompt(finding: Record<string, unknown>): string {
   const refs = finding["references"];
   if (Array.isArray(refs) && refs.length > 0) {
     lines.push(`References: ${(refs as string[]).slice(0, 3).join(", ")}`);
+  }
+
+  // Include code snippet when available — helps the LLM give concrete advice
+  const snippet = extractSnippet(finding);
+  if (snippet) {
+    lines.push(`\nVulnerable code:\n\`\`\`\n${snippet}\n\`\`\``);
   }
 
   return lines.join("\n");
@@ -97,8 +144,8 @@ export async function analyseFinding(
         format:  "json",   // Ollama enforces JSON-mode output
         options: {
           temperature: 0.1,  // low temp = deterministic, factual
-          num_predict:  800,
-          num_ctx:     2048,
+          num_predict:  900,
+          num_ctx:     4096,  // bumped: prompt now includes code snippet
         },
       },
       { timeout: 360_000 },  // 6 min — CPU inference can be slow
