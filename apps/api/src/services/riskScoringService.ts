@@ -52,24 +52,30 @@ export async function scoreTarget(
       return;
     }
 
-    // Top 5 findings for context
-    const topFindings = findings
-      .slice(0, 5)
-      .map((f) => `- [${f.severity}] ${f.title}${f.cveId ? ` (${f.cveId})` : ""}`)
+    // Sort by severity (CRITICAL first) so the model sees the worst findings
+    const SEV_ORDER: Record<string, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, INFO: 4 };
+    const sorted = [...findings].sort(
+      (a, b) => (SEV_ORDER[a.severity] ?? 99) - (SEV_ORDER[b.severity] ?? 99),
+    );
+
+    // Top 8 worst findings for context
+    const topFindings = sorted
+      .slice(0, 8)
+      .map((f) => `- [${f.severity}] ${f.scanType}: ${f.title}${f.cveId ? ` (${f.cveId})` : ""}`)
       .join("\n");
 
     const targetName = await getTargetName(targetType, targetId);
 
-    const prompt = `You are a security analyst scoring risk for a software target.
-Score the security risk from 0 to 100 (0 = no risk, 100 = maximum risk).
-Respond with ONLY valid JSON: {"score": <integer 0-100>, "reason": "<one short sentence explaining the score>"}
+    const prompt = `You are a security analyst. Score this target's risk from 0 to 100.
+Scoring guide: 0=no findings, 1-20=only info/low, 21-40=some medium, 41-60=high severity present, 61-80=multiple high or one critical, 81-100=multiple critical.
+Respond ONLY with valid JSON: {"score": <integer 0-100>, "reason": "<one sentence>"}
 
 Target: ${targetName}
-Open findings: ${total} total (${counts.CRITICAL} critical, ${counts.HIGH} high, ${counts.MEDIUM} medium, ${counts.LOW} low)
-Top findings:
+Severity summary: ${counts.CRITICAL} CRITICAL, ${counts.HIGH} HIGH, ${counts.MEDIUM} MEDIUM, ${counts.LOW} LOW, ${counts.INFO} INFO (${total} total)
+Worst findings:
 ${topFindings}
 
-JSON response:`;
+JSON:`;
 
     const resp = await axios.post(
       `${config.OLLAMA_URL}/api/generate`,
@@ -78,7 +84,7 @@ JSON response:`;
         prompt,
         stream: false,
         format: "json",
-        options: { temperature: 0.1, num_predict: 100, num_ctx: 1024 },
+        options: { temperature: 0.1, num_predict: 120, num_ctx: 2048 },
       },
       { timeout: 300_000 },
     );
