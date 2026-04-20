@@ -3,7 +3,7 @@ import {
   X, ChevronDown, ChevronUp, ShieldCheck, Loader2,
   Sparkles, RefreshCw, AlertTriangle, Wrench, BookOpen, Info,
   CheckCircle2, XCircle, HelpCircle, Link, Check, GitCommit, Layers,
-  Code2, ExternalLink, Copy, Globe,
+  Code2, ExternalLink, Copy, Globe, KeyRound,
 } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Finding, FpAnalysis } from "@devsecops/types";
@@ -120,7 +120,12 @@ const CONF_LABEL: Record<string, { label: string; cls: string }> = {
   POSSIBLE:  { label: "Possible",   cls: "bg-gray-800 text-gray-400 border border-gray-700" },
 };
 
-function DastSubissuesPanel({ rawOut }: { rawOut: DastMergedRawOutput }) {
+interface DastSubissuesPanelProps {
+  rawOut:      DastMergedRawOutput;
+  onViewCode?: (occ: DastOccurrence) => void;
+}
+
+function DastSubissuesPanel({ rawOut, onViewCode }: DastSubissuesPanelProps) {
   const [expanded, setExpanded] = useState(false);
   const LIMIT = 10;
   const all   = rawOut.occurrences ?? [];
@@ -206,6 +211,19 @@ function DastSubissuesPanel({ rawOut }: { rawOut: DastMergedRawOutput }) {
                   {(occ.attack || occ.evidence)!.slice(0, 300)}
                 </pre>
               )}
+
+              {/* View Code + AI Analysis button */}
+              {onViewCode && (
+                <div className="mt-2 flex justify-end">
+                  <button
+                    onClick={() => onViewCode(occ)}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-indigo-700/40 bg-indigo-900/20 px-2.5 py-1 text-[10px] font-medium text-indigo-300 hover:bg-indigo-900/40 hover:text-indigo-200 transition-colors"
+                  >
+                    <Sparkles className="h-3 w-3" />
+                    View Evidence + AI Analysis
+                  </button>
+                </div>
+              )}
             </div>
           );
         })}
@@ -220,6 +238,369 @@ function DastSubissuesPanel({ rawOut }: { rawOut: DastMergedRawOutput }) {
           {expanded
             ? <><ChevronUp   className="h-3.5 w-3.5" /> Show less</>
             : <><ChevronDown className="h-3.5 w-3.5" /> Show all {all.length} affected URLs</>}
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ── Secret Subissues Panel ────────────────────────────────────────────────────
+
+interface SecretOccurrence {
+  filePath:  string | null;
+  lineStart: number | null;
+  snippet:   string | null;
+  verified:  boolean;
+  severity:  string;
+  scanner:   string;
+}
+
+interface SecretMergedRawOutput {
+  merged:      boolean;
+  count:       number;
+  ruleId:      string;
+  scanner:     string;
+  occurrences: SecretOccurrence[];
+}
+
+/** Strip /tmp/scan_workspace/<uuid>/repo/ prefix left by the scanner workspace. */
+function cleanSecretPath(p: string | null): string | null {
+  if (!p) return null;
+  return p.replace(/^\/tmp\/scan_workspace\/[^/]+\/repo\//, "").replace(/^\/+/, "") || p;
+}
+
+/**
+ * Strip legacy "42: code" line-number prefixes written by an older version of
+ * the scanner. New scans emit clean code; this handles historical data.
+ */
+function stripSecretLinePrefixes(snippet: string): string {
+  const lines = snippet.split("\n");
+  const allHavePrefix = lines.every((l) => l.trim() === "" || /^\s*\d+:\s?/.test(l));
+  if (!allHavePrefix) return snippet;
+  return lines.map((l) => l.replace(/^\s*\d+:\s?/, "")).join("\n");
+}
+
+/**
+ * Redact credential values on the secret line (lineStart).
+ *
+ * Strategy:
+ *  - The snippet contains ±2 lines of context around lineStart.
+ *  - We find which line in the snippet corresponds to lineStart and apply a
+ *    regex that replaces token-looking values with  ••••••••
+ *  - Patterns covered: JWT (eyJ…), AWS keys (AKIA…), quoted/unquoted values
+ *    after = or : that look like credentials (20+ non-space chars).
+ */
+function redactSecretLine(snippet: string, lineStart: number | null): string {
+  if (!lineStart) return snippet;
+
+  const lines = snippet.split("\n");
+
+  // Determine 0-based index of the secret line inside the snippet.
+  // _read_snippet captures max(0, lineStart-3) … lineStart+2 (1-based lines →
+  // context of 2 before). So the secret line is at index min(2, lineStart-1).
+  const secretIdx = Math.min(2, lineStart - 1);
+
+  return lines
+    .map((line, idx) => {
+      if (idx !== secretIdx) return line;
+      return line
+        // JWT: eyJxxx.yyy.zzz
+        .replace(/eyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]{10,}){1,2}/g, "eyJ[••••••••]")
+        // AWS key ID
+        .replace(/AKIA[A-Z0-9]{16}/g, "AKIA[••••••••]")
+        // Quoted values after = or : that look like tokens (≥20 chars)
+        .replace(/([:=]\s*["'`]?)([A-Za-z0-9+/=_\-]{20,})(["'`]?)/g, "$1••••••••$3")
+        // Unquoted long tokens (fallback — 30+ chars to avoid false positives)
+        .replace(/\b([A-Za-z0-9+/=_\-]{30,})\b/g, "••••••••");
+    })
+    .join("\n");
+}
+
+interface SecretSubissuesPanelProps {
+  rawOut:   SecretMergedRawOutput;
+  repoInfo: { fullName: string; defaultBranch: string } | null;
+}
+
+function SecretSubissuesPanel({ rawOut, repoInfo }: SecretSubissuesPanelProps) {
+  const [expanded, setExpanded] = useState(false);
+  const LIMIT = 10;
+  const all   = rawOut.occurrences ?? [];
+  const shown = expanded ? all : all.slice(0, LIMIT);
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-gray-700">
+
+      {/* ── Header ──────────────────────────────────────────────────── */}
+      <div className="flex items-center gap-2 border-b border-gray-700 bg-gray-800/70 px-4 py-2.5">
+        <KeyRound className="h-3.5 w-3.5 text-amber-400" />
+        <span className="text-xs font-semibold uppercase tracking-wider text-amber-300">
+          Affected Files
+        </span>
+        <span className="ml-1 rounded-full bg-gray-700 px-2 py-0.5 text-xs font-bold text-gray-200">
+          {all.length}
+        </span>
+        <span className="ml-auto text-[11px] font-semibold uppercase tracking-wider text-gray-600">
+          Subissue
+        </span>
+      </div>
+
+      {/* ── Scanner / detector badge row ─────────────────────────────── */}
+      {rawOut.scanner && (
+        <div className="flex items-center gap-2 border-b border-gray-700/50 bg-gray-800/30 px-4 py-1.5">
+          <span className="rounded bg-gray-700/60 px-2 py-0.5 text-[10px] font-mono text-gray-400">
+            {rawOut.scanner}
+          </span>
+          <span className="text-[10px] text-gray-600">
+            detector: <span className="font-mono text-gray-500">{rawOut.ruleId}</span>
+          </span>
+        </div>
+      )}
+
+      {/* ── Occurrence rows ──────────────────────────────────────────── */}
+      <div className="divide-y divide-gray-800/60">
+        {shown.map((occ, i) => {
+          const sev         = occ.severity?.toUpperCase() ?? "HIGH";
+          const cleanedPath = cleanSecretPath(occ.filePath);
+
+          // Build GitHub URL for this occurrence
+          const githubUrl = repoInfo && cleanedPath
+            ? `https://github.com/${repoInfo.fullName}/blob/${repoInfo.defaultBranch}/${cleanedPath}${occ.lineStart ? `#L${occ.lineStart}` : ""}`
+            : null;
+
+          // Clean + redact snippet: strip legacy N: prefixes, then hide secret value
+          const rawSnippet   = occ.snippet ? stripSecretLinePrefixes(occ.snippet) : null;
+          const safeSnippet  = rawSnippet   ? redactSecretLine(rawSnippet, occ.lineStart) : null;
+
+          return (
+            <div key={i} className="px-4 py-3 hover:bg-gray-800/20 transition-colors">
+
+              {/* File path + GitHub link + severity + verified badge */}
+              <div className="mb-1.5 flex items-start justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <p className="min-w-0 break-all font-mono text-[11px] leading-relaxed text-indigo-300">
+                    {cleanedPath ?? "—"}
+                    {occ.lineStart != null && (
+                      <span className="text-gray-500">:{occ.lineStart}</span>
+                    )}
+                  </p>
+                  {githubUrl && (
+                    <a
+                      href={githubUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="View on GitHub"
+                      className="shrink-0 text-gray-600 hover:text-blue-400 transition-colors"
+                    >
+                      <ExternalLink className="h-3 w-3" />
+                    </a>
+                  )}
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  {occ.verified && (
+                    <span className="rounded-full bg-red-900/60 px-2 py-0.5 text-[10px] font-semibold text-red-300 border border-red-700/50">
+                      ⚠ Verified
+                    </span>
+                  )}
+                  <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${SEV_BADGE[sev] ?? SEV_BADGE.INFO}`}>
+                    {sev.charAt(0) + sev.slice(1).toLowerCase()}
+                  </span>
+                </div>
+              </div>
+
+              {/* Scanner chip */}
+              <div className="mb-2 flex items-center gap-1.5 text-[10px]">
+                <span className="rounded bg-gray-800 px-1.5 py-0.5 font-mono text-gray-400">
+                  {occ.scanner}
+                </span>
+                <span className="text-gray-600 italic">secret value redacted</span>
+              </div>
+
+              {/* Code snippet — secret line is redacted */}
+              {safeSnippet ? (
+                <pre className="overflow-x-auto rounded-lg border border-amber-900/30 bg-gray-950 px-3 py-2 font-mono text-[10px] leading-relaxed text-gray-300 whitespace-pre-wrap">
+                  {safeSnippet.slice(0, 800)}
+                </pre>
+              ) : (
+                <div className="flex items-center gap-1.5 rounded-lg border border-gray-700/40 bg-gray-900/50 px-3 py-2 text-[10px] text-gray-600">
+                  <Code2 className="h-3 w-3" />
+                  <span>Code snippet unavailable — view on GitHub</span>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* ── Expand / collapse ────────────────────────────────────────── */}
+      {all.length > LIMIT && (
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          className="flex w-full items-center justify-center gap-1.5 border-t border-gray-700 bg-gray-800/50 py-2 text-xs text-gray-400 hover:bg-gray-800 hover:text-gray-200 transition-colors"
+        >
+          {expanded
+            ? <><ChevronUp   className="h-3.5 w-3.5" /> Show less</>
+            : <><ChevronDown className="h-3.5 w-3.5" /> Show all {all.length} affected files</>}
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ── IAC Resources Panel ───────────────────────────────────────────────────────
+
+interface IacResource {
+  filePath:  string | null;
+  lineStart: number | null;
+  lineEnd:   number | null;
+  resource:  string | null;
+  snippet:   string | null;
+  severity:  string;
+  checkType: string | null;
+}
+
+interface IacMergedRawOutput {
+  merged:    boolean;
+  count:     number;
+  ruleId:    string;
+  scanner:   string;
+  resources: IacResource[];
+}
+
+interface IacResourcesPanelProps {
+  rawOut:      IacMergedRawOutput;
+  repoInfo:    { fullName: string; defaultBranch: string } | null;
+  onViewCode?: (res: IacResource, ghUrl: string | null) => void;
+}
+
+function IacResourcesPanel({ rawOut, repoInfo, onViewCode }: IacResourcesPanelProps) {
+  const [expanded, setExpanded] = useState(false);
+  const LIMIT = 10;
+  const all   = rawOut.resources ?? [];
+  const shown = expanded ? all : all.slice(0, LIMIT);
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-gray-700">
+
+      {/* ── Header ──────────────────────────────────────────────────── */}
+      <div className="flex items-center gap-2 border-b border-gray-700 bg-gray-800/70 px-4 py-2.5">
+        <Layers className="h-3.5 w-3.5 text-violet-400" />
+        <span className="text-xs font-semibold uppercase tracking-wider text-violet-300">
+          Failing Resources
+        </span>
+        <span className="ml-1 rounded-full bg-gray-700 px-2 py-0.5 text-xs font-bold text-gray-200">
+          {all.length}
+        </span>
+        <span className="ml-auto text-[11px] font-semibold uppercase tracking-wider text-gray-600">
+          Subissue
+        </span>
+      </div>
+
+      {/* ── Scanner / rule badge row ─────────────────────────────────── */}
+      {rawOut.scanner && (
+        <div className="flex items-center gap-2 border-b border-gray-700/50 bg-gray-800/30 px-4 py-1.5">
+          <span className="rounded bg-gray-700/60 px-2 py-0.5 text-[10px] font-mono text-gray-400">
+            {rawOut.scanner}
+          </span>
+          <span className="text-[10px] text-gray-600">
+            rule: <span className="font-mono text-gray-500">{rawOut.ruleId}</span>
+          </span>
+        </div>
+      )}
+
+      {/* ── Resource rows ────────────────────────────────────────────── */}
+      <div className="divide-y divide-gray-800/60">
+        {shown.map((res, i) => {
+          const sev         = res.severity?.toUpperCase() ?? "MEDIUM";
+          const cleanedPath = res.filePath?.replace(/^\/+/, "") ?? null;
+
+          const githubUrl = repoInfo && cleanedPath
+            ? `https://github.com/${repoInfo.fullName}/blob/${repoInfo.defaultBranch}/${cleanedPath}${res.lineStart ? `#L${res.lineStart}` : ""}`
+            : null;
+
+          // IAC snippets use "N: code" format (Checkov line numbers) — strip for display
+          const rawSnippet = res.snippet ?? null;
+          const lines = rawSnippet ? rawSnippet.split("\n") : [];
+          const allHavePrefix = lines.length > 0 && lines.every((l) => l.trim() === "" || /^\s*\d+:\s?/.test(l));
+          const displaySnippet = allHavePrefix
+            ? lines.map((l) => l.replace(/^\s*\d+:\s?/, "")).join("\n")
+            : rawSnippet;
+
+          return (
+            <div key={i} className="px-4 py-3 hover:bg-gray-800/20 transition-colors">
+
+              {/* Resource name + severity */}
+              <div className="mb-1 flex items-start justify-between gap-3">
+                <div className="flex min-w-0 flex-col gap-0.5">
+                  {res.resource && (
+                    <p className="font-mono text-[11px] font-semibold text-violet-300">
+                      {res.resource}
+                    </p>
+                  )}
+                  <div className="flex items-center gap-1.5">
+                    <p className="min-w-0 break-all font-mono text-[10px] leading-relaxed text-gray-500">
+                      {cleanedPath ?? "—"}
+                      {res.lineStart != null && (
+                        <span>:{res.lineStart}{res.lineEnd && res.lineEnd !== res.lineStart ? `–${res.lineEnd}` : ""}</span>
+                      )}
+                    </p>
+                    {githubUrl && (
+                      <a
+                        href={githubUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title="View on GitHub"
+                        className="shrink-0 text-gray-600 hover:text-blue-400 transition-colors"
+                      >
+                        <ExternalLink className="h-3 w-3" />
+                      </a>
+                    )}
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  {res.checkType && (
+                    <span className="rounded bg-gray-800 px-1.5 py-0.5 text-[10px] font-mono text-gray-500">
+                      {res.checkType}
+                    </span>
+                  )}
+                  <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${SEV_BADGE[sev] ?? SEV_BADGE.INFO}`}>
+                    {sev.charAt(0) + sev.slice(1).toLowerCase()}
+                  </span>
+                </div>
+              </div>
+
+              {/* Code snippet */}
+              {displaySnippet && (
+                <pre className="mt-2 overflow-x-auto rounded-lg border border-gray-700/60 bg-gray-950 px-3 py-2 font-mono text-[10px] leading-relaxed text-gray-300 whitespace-pre-wrap">
+                  {displaySnippet.slice(0, 600)}
+                </pre>
+              )}
+
+              {/* View Code + AI Analysis button */}
+              {onViewCode && (
+                <div className="mt-2 flex justify-end">
+                  <button
+                    onClick={() => onViewCode(res, githubUrl)}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-violet-700/40 bg-violet-900/20 px-2.5 py-1 text-[10px] font-medium text-violet-300 hover:bg-violet-900/40 hover:text-violet-200 transition-colors"
+                  >
+                    <Sparkles className="h-3 w-3" />
+                    View Code + AI Analysis
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* ── Expand / collapse ────────────────────────────────────────── */}
+      {all.length > LIMIT && (
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          className="flex w-full items-center justify-center gap-1.5 border-t border-gray-700 bg-gray-800/50 py-2 text-xs text-gray-400 hover:bg-gray-800 hover:text-gray-200 transition-colors"
+        >
+          {expanded
+            ? <><ChevronUp   className="h-3.5 w-3.5" /> Show less</>
+            : <><ChevronDown className="h-3.5 w-3.5" /> Show all {all.length} failing resources</>}
         </button>
       )}
     </div>
@@ -767,6 +1148,12 @@ function CodeAnalysisModal({ finding, snippet, githubUrl, repoInfo, locationOver
               <span className="flex-1 text-xs font-semibold uppercase tracking-wider text-indigo-300">
                 AI Autotriage Summary
               </span>
+              {/* Auto-triage badge — shown when pre-populated by the background worker */}
+              {!analyse.isPending && shownAnalysis && (finding as Record<string, unknown>)["aiAnalysedAt"] && !localAnalysis && (
+                <span title="Pre-analysed automatically after scan" className="inline-flex items-center gap-1 rounded-full bg-emerald-900/50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-400 border border-emerald-800/50">
+                  <Sparkles className="h-2.5 w-2.5" /> Auto
+                </span>
+              )}
               {analyse.isPending && <Loader2 className="h-3 w-3 text-indigo-400 animate-spin" />}
             </div>
             <div className="p-4">
@@ -875,6 +1262,12 @@ function CodeAnalysisModal({ finding, snippet, githubUrl, repoInfo, locationOver
                         <span className="text-[11px] text-green-400/80 truncate">
                           AI-generated patch for {(finding.title as string).toLowerCase()}
                         </span>
+                        {/* Auto badge when pre-generated by background triage worker */}
+                        {!localFix && (finding as Record<string, unknown>)["aiFixSuggestedAt"] && (
+                          <span title="Pre-generated automatically after scan" className="shrink-0 inline-flex items-center gap-1 rounded-full bg-emerald-900/50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-400 border border-emerald-800/50">
+                            <Sparkles className="h-2.5 w-2.5" /> Auto
+                          </span>
+                        )}
                         <button
                           onClick={() => suggestFix.mutate(true)}
                           disabled={suggestFix.isPending}
@@ -1234,14 +1627,22 @@ export default function FindingDetailDrawer({ finding, onClose }: Props) {
   const canVerify = ["DAST", "PENTEST_FULL"].includes(finding.scanType);
 
   // ── Detect merged findings ────────────────────────────────────────────────
-  const rawOut       = finding.rawOutput as unknown as (MergedRawOutput & ScaMergedRawOutput & DastMergedRawOutput) | undefined;
-  const isMerged     = rawOut?.merged === true && finding.scanType === "SAST" && Array.isArray(rawOut?.locations);
-  const isScaMerged  = rawOut?.merged === true && (finding.scanType === "SCA" || finding.scanType === "CONTAINER") && Array.isArray(rawOut?.cves);
-  const isDastMerged = rawOut?.merged === true
+  const rawOut          = finding.rawOutput as unknown as (MergedRawOutput & ScaMergedRawOutput & DastMergedRawOutput & SecretMergedRawOutput & IacMergedRawOutput) | undefined;
+  const isMerged        = rawOut?.merged === true && finding.scanType === "SAST" && Array.isArray(rawOut?.locations);
+  const isScaMerged     = rawOut?.merged === true && (finding.scanType === "SCA" || finding.scanType === "CONTAINER") && Array.isArray(rawOut?.cves);
+  const isDastMerged    = rawOut?.merged === true
     && ["DAST", "PENTEST", "PENTEST_FULL"].includes(finding.scanType)
     && Array.isArray(rawOut?.occurrences);
+  const isSecretMerged  = rawOut?.merged === true
+    && finding.scanType === "SECRET"
+    && Array.isArray(rawOut?.occurrences);
+  const isIacMerged     = rawOut?.merged === true
+    && finding.scanType === "IAC"
+    && Array.isArray((rawOut as unknown as IacMergedRawOutput)?.resources);
   const locations: SastLocation[] = isMerged ? rawOut!.locations : [];
   const dastOccurrences: DastOccurrence[] = isDastMerged ? rawOut!.occurrences : [];
+  const secretOccurrences: SecretOccurrence[] = isSecretMerged ? (rawOut!.occurrences as unknown as SecretOccurrence[]) : [];
+  const iacResources: IacResource[] = isIacMerged ? (rawOut as unknown as IacMergedRawOutput).resources : [];
 
   // ── Build GitHub URL ──────────────────────────────────────────────────────
   const repoInfo = finding.repository ?? null;
@@ -1495,7 +1896,60 @@ export default function FindingDetailDrawer({ finding, onClose }: Props) {
 
           {/* Subissues panel — merged DAST / Pentest (same rule on multiple URLs) */}
           {isDastMerged && dastOccurrences.length > 0 && (
-            <DastSubissuesPanel rawOut={rawOut as DastMergedRawOutput} />
+            <DastSubissuesPanel
+              rawOut={rawOut as DastMergedRawOutput}
+              onViewCode={(occ) => {
+                // Build a structured evidence block as the "snippet" for the AI modal.
+                // DAST findings have no source file — the evidence IS the context.
+                const lines: string[] = [];
+                if (occ.url)                           lines.push(`URL: ${occ.url}`);
+                if (occ.param)                         lines.push(`Vulnerable Parameter: ${occ.param}`);
+                if (occ.responseStatus != null)        lines.push(`HTTP Status: ${occ.responseStatus}`);
+                if (occ.confidence)                    lines.push(`Confidence: ${occ.confidence}`);
+                if (occ.attack)                        lines.push(`\nAttack Payload:\n${occ.attack}`);
+                if (occ.evidence)                      lines.push(`\nEvidence:\n${occ.evidence}`);
+                if (occ.other)                         lines.push(`\nAdditional Info:\n${occ.other}`);
+                const evidenceSnippet = lines.join("\n").trim() || null;
+                setCodeModalOverride({
+                  filePath:  occ.url,   // modal label — shows the attacked URL
+                  lineStart: null,
+                  lineEnd:   null,
+                  snippet:   evidenceSnippet,
+                  githubUrl: occ.url,   // external link opens the URL directly
+                });
+                setShowCodeModal(true);
+              }}
+            />
+          )}
+
+          {/* Subissues panel — merged SECRET (same detector on multiple files) */}
+          {isSecretMerged && secretOccurrences.length > 0 && (
+            <SecretSubissuesPanel rawOut={rawOut as SecretMergedRawOutput} repoInfo={repoInfo} />
+          )}
+
+          {/* Resources panel — merged IAC (same rule failing on multiple resources) */}
+          {isIacMerged && iacResources.length > 0 && (
+            <IacResourcesPanel
+              rawOut={rawOut as unknown as IacMergedRawOutput}
+              repoInfo={repoInfo}
+              onViewCode={(res, ghUrl) => {
+                // Strip "N: code" line-number prefixes before sending to AI modal
+                const rawSnip = res.snippet?.trim() ?? null;
+                const lines = rawSnip ? rawSnip.split("\n") : [];
+                const allHavePrefix = lines.length > 0 && lines.every((l) => l.trim() === "" || /^\s*\d+:\s?/.test(l));
+                const cleanSnip = allHavePrefix
+                  ? lines.map((l) => l.replace(/^\s*\d+:\s?/, "")).join("\n").trim() || null
+                  : rawSnip;
+                setCodeModalOverride({
+                  filePath:  res.filePath ?? finding.filePath ?? "",
+                  lineStart: res.lineStart ?? null,
+                  lineEnd:   res.lineEnd   ?? null,
+                  snippet:   cleanSnip,
+                  githubUrl: ghUrl,
+                });
+                setShowCodeModal(true);
+              }}
+            />
           )}
 
           {/* Single URL — non-merged DAST/Pentest finding with a URL */}

@@ -222,6 +222,50 @@ export const ticketsApi = {
   delete: (id: string) => apiClient.delete(`/tickets/${id}`),
 };
 
+// ── Reports ───────────────────────────────────────────────────────────────
+
+export interface ReportMeta {
+  id:          string;
+  scanJobId:   string | null;
+  targetType:  string;
+  targetId:    string;
+  trigger:     "ON_SCAN_COMPLETE" | "MANUAL";
+  title:       string;
+  generatedAt: string;
+  metadata: {
+    targetName:        string;
+    targetType:        string;
+    riskScore:         number | null;
+    riskGrade:         string;
+    CRITICAL:          number;
+    HIGH:              number;
+    MEDIUM:            number;
+    LOW:               number;
+    INFO:              number;
+    totalFindings:     number;
+    openCount:         number;
+    acknowledgedCount: number;
+    fixedCount:        number;
+    scanTypes:         string[];
+  };
+}
+
+export const reportsApi = {
+  list: (page = 1, limit = 20) =>
+    apiClient.get<{ data: ReportMeta[]; total: number; page: number; pages: number }>(
+      "/reports", { params: { page, limit } }
+    ).then((r) => r.data),
+
+  downloadUrl: (id: string) => `/api/reports/${id}/html`,
+
+  generate: (scanJobId: string) =>
+    apiClient.post<{ queued: boolean; message: string }>("/reports/generate", { scanJobId })
+      .then((r) => r.data),
+
+  delete: (id: string) =>
+    apiClient.delete<{ success: boolean }>(`/reports/${id}`).then((r) => r.data),
+};
+
 // ── Integrations ──────────────────────────────────────────────────────────
 
 export const integrationsApi = {

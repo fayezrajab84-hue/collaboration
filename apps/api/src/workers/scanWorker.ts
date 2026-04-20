@@ -5,6 +5,7 @@ import { config } from "../config.js";
 import { logger } from "../logger.js";
 import prisma from "../db.js";
 import { upsertFindings, countBySeverity } from "../services/findingService.js";
+import { aiTriageQueue } from "../queues/definitions.js";
 import { emitStatusChange, emitFindingsBatch } from "../services/sseService.js";
 import { decrypt } from "../services/encryptionService.js";
 import type { ScanJobPayload } from "../queues/definitions.js";
@@ -13,6 +14,7 @@ import type { ScanResult } from "@devsecops/types";
 import { notifyNewFindings } from "../services/notificationService.js";
 import { generateScanSummary } from "../services/scanSummaryService.js";
 import { scoreTarget } from "../services/riskScoringService.js";
+import { generateTargetReport } from "../services/reportHtmlService.js";
 
 const SCAN_TYPES: ScanType[] = ["SAST", "SCA", "SECRET", "IAC", "CONTAINER", "DAST", "PENTEST", "PENTEST_FULL"];
 
@@ -179,6 +181,26 @@ async function processScanJob(payload: ScanJobPayload) {
       logger.info("Auto-fixed resolved findings", { scanJobId, scanType, fixedCount: upsertResult.fixedCount });
     }
 
+    // Enqueue AI triage for newly discovered findings (fire-and-forget)
+    // Priority: CRITICAL=1 … INFO=5 so critical findings are triaged first
+    const TRIAGE_PRIORITY: Record<string, number> = {
+      CRITICAL: 1, HIGH: 2, MEDIUM: 3, LOW: 4, INFO: 5,
+    };
+    if (upsertResult.newFindings.length > 0) {
+      const triageJobs = upsertResult.newFindings.map((f) => ({
+        name:    "triage",
+        data:    { findingId: f.id, scanType: f.scanType, severity: f.severity },
+        opts:    {
+          priority: TRIAGE_PRIORITY[f.severity] ?? 5,
+          jobId:    `triage-${f.id}`,  // dedup: same finding never queued twice
+        },
+      }));
+      aiTriageQueue.addBulk(triageJobs).catch((err: Error) =>
+        logger.warn("Failed to enqueue AI triage jobs", { error: err.message })
+      );
+      logger.info(`[ai-triage] queued ${triageJobs.length} triage jobs`, { scanJobId, scanType });
+    }
+
     if (result.findings.length > 0) {
       const breakdown = countBySeverity(result.findings as unknown as NormalizedFinding[]);
       emitFindingsBatch(scanJobId, scanType, result.findings.length, breakdown);
@@ -270,6 +292,9 @@ async function processScanJob(payload: ScanJobPayload) {
 
     // Fire-and-forget AI risk score for the scanned target (non-blocking)
     scoreTarget(targetType as TargetType, targetId).catch(() => {/* already logged inside */});
+
+    // Fire-and-forget HTML security report — ON_SCAN_COMPLETE trigger
+    generateTargetReport(scanJobId).catch(() => {/* already logged inside */});
   }
 }
 

@@ -91,6 +91,11 @@ enum IntegrationType {
   MICROSOFT_TEAMS
 }
 
+enum ReportTrigger {
+  ON_SCAN_COMPLETE
+  MANUAL
+}
+
 enum PentestDepth {
   STANDARD    // recon + discovery + vuln scan (no exploitation)
   AGGRESSIVE  // + exploitation phase (SQLMap, XSStrike) — requires authorization
@@ -135,6 +140,7 @@ model Organization {
   findings     Finding[]
   tickets      Ticket[]
   scanJobs     ScanJob[]
+  reports      Report[]
 }
 
 model OrganizationMember {
@@ -304,6 +310,7 @@ model ScanJob {
   container  Container?   @relation(fields: [containerId], references: [id])
   domain     Domain?      @relation(fields: [domainId], references: [id])
   findings   Finding[]
+  reports    Report[]
 
   @@index([orgId, status])
   @@index([orgId, createdAt])
@@ -386,6 +393,25 @@ model Ticket {
   createdBy User         @relation(fields: [createdById], references: [id])
 
   @@index([orgId, status])
+}
+
+model Report {
+  id          String        @id @default(cuid())
+  orgId       String
+  scanJobId   String?
+  targetType  TargetType
+  targetId    String
+  trigger     ReportTrigger @default(ON_SCAN_COMPLETE)
+  title       String
+  htmlContent String        @db.Text
+  metadata    Json          // { targetName, riskScore, riskGrade, criticalCount, highCount, ... }
+  generatedAt DateTime      @default(now())
+
+  org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  scanJob ScanJob?     @relation(fields: [scanJobId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, generatedAt])
+  @@index([orgId, targetType, targetId])
 }
 
 model Integration {

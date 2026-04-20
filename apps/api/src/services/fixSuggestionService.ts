@@ -56,15 +56,28 @@ function extractFromRawOutput(
   }
 
   if (scanType === "IAC") {
-    // Checkov: code_block is [[lineNo, "content\n"], ...]
-    const codeBlock = raw["code_block"];
+    // Merged IAC: use the first resource's stored snippet (clean code, no N: prefixes)
+    if (raw["merged"] === true) {
+      const resources = raw["resources"] as Array<{ snippet?: string | null; resource?: string | null }> | undefined;
+      if (Array.isArray(resources)) {
+        const rs = resources.find((r) => r.snippet);
+        if (rs?.snippet) return rs.snippet;
+        // No snippet — at least surface the resource name
+        const firstResource = resources[0]?.resource;
+        if (firstResource) return `Resource: ${firstResource}`;
+      }
+    }
+    // Non-merged: Checkov code_block is [[lineNo, "content\n"], ...]
+    const src = (raw["merged"] === true ? raw["primary"] : raw) as Record<string, unknown> | undefined ?? raw;
+    const codeBlock = src["code_block"];
     if (Array.isArray(codeBlock) && codeBlock.length > 0) {
       return (codeBlock as Array<[number, string]>)
         .map(([no, content]) => `${no}: ${content.replace(/\n$/, "")}`)
         .join("\n");
     }
     // Fallback: surface the resource name so the AI has something to work with
-    if (raw["resource"]) return `Resource: ${String(raw["resource"])}`;
+    const resource = src["resource"] ?? raw["resource"];
+    if (resource) return `Resource: ${String(resource)}`;
   }
 
   if (scanType === "SECRET") {
@@ -72,6 +85,38 @@ function extractFromRawOutput(
     const detector = raw["DetectorName"] ?? raw["DetectorType"] ?? "unknown";
     const verified  = raw["Verified"] ? "verified" : "unverified";
     return `[${verified} ${detector} credential detected at line ${lineStart ?? "?"}]`;
+  }
+
+  if (scanType === "DAST" || scanType === "PENTEST" || scanType === "PENTEST_FULL") {
+    // Merged DAST findings store occurrences[] — extract the first 3 as evidence blocks
+    const occurrences = raw["occurrences"] as Array<{
+      url?: string; param?: string; attack?: string; evidence?: string;
+      responseStatus?: string | number | null; confidence?: string; severity?: string;
+    }> | undefined;
+
+    if (Array.isArray(occurrences) && occurrences.length > 0) {
+      const blocks = occurrences.slice(0, 3).map((occ, i) => {
+        const lines: string[] = [`[Affected URL ${i + 1}]`];
+        if (occ.url)                    lines.push(`URL: ${occ.url}`);
+        if (occ.param)                  lines.push(`Vulnerable Parameter: ${occ.param}`);
+        if (occ.responseStatus != null) lines.push(`HTTP Status: ${occ.responseStatus}`);
+        if (occ.confidence)             lines.push(`Confidence: ${occ.confidence}`);
+        if (occ.attack)                 lines.push(`Attack Payload: ${String(occ.attack).slice(0, 200)}`);
+        if (occ.evidence)               lines.push(`Evidence: ${String(occ.evidence).slice(0, 200)}`);
+        return lines.join("\n");
+      });
+      return blocks.join("\n\n");
+    }
+
+    // Non-merged: try to surface URL and any attack data from the primary object
+    const url    = raw["url"]    ?? raw["filePath"];
+    const attack = raw["attack"] ?? raw["other"];
+    if (url || attack) {
+      const lines: string[] = [];
+      if (url)    lines.push(`URL: ${url}`);
+      if (attack) lines.push(`Attack Payload: ${String(attack).slice(0, 200)}`);
+      return lines.join("\n");
+    }
   }
 
   return null;
@@ -116,11 +161,14 @@ function buildPrompt(
   const fixVer      = f["fixVersion"]     ? String(f["fixVersion"])     : null;
   const cveId       = f["cveId"]          ? String(f["cveId"])          : null;
 
-  // IAC extras from rawOutput
-  const raw = (f["rawOutput"] ?? {}) as Record<string, unknown>;
-  const iacResource  = raw["resource"]    ? String(raw["resource"])   : null;
-  const iacCheckId   = raw["check_id"]    ? String(raw["check_id"])   : null;
-  const iacGuideline = raw["guideline"]   ? String(raw["guideline"])  : null;
+  // IAC extras: for merged findings read from primary (original Checkov JSON)
+  const raw    = (f["rawOutput"] ?? {}) as Record<string, unknown>;
+  const rawSrc = (raw["merged"] === true && raw["primary"])
+    ? raw["primary"] as Record<string, unknown>
+    : raw;
+  const iacResource  = rawSrc["resource"]  ? String(rawSrc["resource"])  : null;
+  const iacCheckId   = rawSrc["check_id"]  ? String(rawSrc["check_id"])  : null;
+  const iacGuideline = rawSrc["guideline"] ? String(rawSrc["guideline"]) : null;
 
   const FORMAT = `Return ONLY a unified diff — no explanation, no markdown fences.
 Format exactly:
@@ -208,15 +256,26 @@ IMPORTANT:
 ${FORMAT}`;
   }
 
-  // ── DAST / PENTEST: server-side code or config ────────────────────────────
+  // ── DAST / PENTEST: server-side fix using real scanner evidence ──────────────
   const guessedFile = guessFileFromTitle(title);
-  return `Provide a server-side code or configuration fix for this vulnerability.
+  // Count how many affected URLs were found for the log label
+  const urlCount = snippet
+    ? (snippet.match(/\[Affected URL/g) ?? []).length || 1
+    : 0;
+  return `Fix this web vulnerability detected by dynamic scanning (DAST/Pentest).
 
 Vulnerability : ${title}
 Description   : ${description}
-${remediation ? `Fix hint: ${remediation}` : ""}
+${remediation ? `Fix hint      : ${remediation}` : ""}
+${snippet
+    ? `\nScanner Evidence (${urlCount} affected URL${urlCount !== 1 ? "s" : ""}):\n${snippet}`
+    : ""}
 
-Use a realistic filename such as ${guessedFile}.
+The fix must be server-side (e.g. middleware, route handler, response header, input validation, or web server config).
+${snippet
+    ? `The attack payloads and evidence above show exactly what the scanner exploited — use them to target the fix precisely.`
+    : `Use a realistic filename such as ${guessedFile}.`}
+
 ${FORMAT}`;
 }
 
@@ -262,14 +321,14 @@ export async function generateFixSuggestion(
 
   const f = finding as unknown as Record<string, unknown>;
 
-  // ── Use scan-time stored code snippet (no external auth needed) ───────────
+  // ── Use scan-time stored code snippet / evidence (no external auth needed) ─
   let snippet: string | null = null;
-  if (["SAST", "IAC", "SECRET"].includes(finding.scanType)) {
-    snippet = extractFromRawOutput(finding.rawOutput, finding.scanType, finding.lineStart);
-    // Also check the codeSnippet field stored directly on the finding
-    if (!snippet && finding.codeSnippet) snippet = finding.codeSnippet;
-    logger.info(`[fix] code context for ${findingId}: ${snippet ? "stored snippet" : "description only"}`);
+  snippet = extractFromRawOutput(finding.rawOutput, finding.scanType, finding.lineStart);
+  // For SAST/IAC/SECRET also check the dedicated codeSnippet column
+  if (!snippet && ["SAST", "IAC", "SECRET"].includes(finding.scanType) && finding.codeSnippet) {
+    snippet = finding.codeSnippet;
   }
+  logger.info(`[fix] code context for ${findingId}: ${snippet ? "stored snippet/evidence" : "description only"}`);
 
   const prompt = buildPrompt(f, snippet);
   logger.info(`[fix] generating fix for ${findingId} (${finding.scanType})`);
