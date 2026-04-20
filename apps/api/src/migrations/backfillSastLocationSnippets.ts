@@ -36,6 +36,13 @@ interface MergedRawOutput {
 
 const REQUIRES_LOGIN = /^requires?\s+login$/i;
 
+/** A location needs a snippet if it has no snippet, has an empty snippet,
+ *  or still has the old "requires login" placeholder string. */
+function needsSnippet(loc: SastLocation): boolean {
+  if (!loc.snippet) return true;                          // null / ""
+  return REQUIRES_LOGIN.test(loc.snippet.trim());         // old placeholder
+}
+
 async function fetchLines(
   rawUrl: string,
   token: string | null,
@@ -55,10 +62,8 @@ async function fetchLines(
     const ctxStart = Math.max(0, lineStart - 3);
     const ctxEnd   = Math.min(allLines.length, lineEnd + 2);
     const slice    = allLines.slice(ctxStart, ctxEnd);
-    return slice
-      .map((line, i) => `${ctxStart + i + 1}: ${line}`)
-      .join("\n")
-      .slice(0, 1000);
+    // Return clean code — NO "N: " prefixes. SyntaxHighlight renders line numbers.
+    return slice.join("\n").slice(0, 1000);
   } catch {
     return null;
   }
@@ -81,13 +86,11 @@ async function run() {
     },
   });
 
-  // Filter to those that actually have the placeholder
+  // Filter to merged findings that have at least one location with a missing/stale snippet
   const needsBackfill = findings.filter((f) => {
     const raw = f.rawOutput as MergedRawOutput | null;
     if (!raw?.merged || !Array.isArray(raw.locations)) return false;
-    return (raw.locations as SastLocation[]).some(
-      (loc) => loc.snippet && REQUIRES_LOGIN.test(loc.snippet.trim()),
-    );
+    return (raw.locations as SastLocation[]).some(needsSnippet);
   });
 
   logger.info(`[backfill-sast-locs] ${needsBackfill.length} merged SAST findings need location snippet backfill`);
@@ -131,7 +134,7 @@ async function run() {
 
     for (let i = 0; i < locations.length; i++) {
       const loc = locations[i]!;
-      if (!loc.snippet || !REQUIRES_LOGIN.test(loc.snippet.trim())) continue;
+      if (!needsSnippet(loc)) continue;
       if (!loc.filePath || loc.lineStart == null) { skippedLocations++; continue; }
 
       const cleanPath = loc.filePath.replace(/^\/+/, "");

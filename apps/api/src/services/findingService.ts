@@ -424,12 +424,14 @@ export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: n
     findings = rawFindings;
   }
 
-  // Pre-fetch existing fingerprints to count truly new findings
+  // Pre-fetch existing findings — need fingerprint for new-count tracking, and
+  // rawOutput so we can preserve backfilled location snippets on re-scan.
   const fingerprints = findings.map((f) => f.fingerprint);
   const existing = await prisma.finding.findMany({
     where:  { fingerprint: { in: fingerprints } },
-    select: { fingerprint: true },
+    select: { fingerprint: true, rawOutput: true },
   });
+  const existingMap = new Map(existing.map((e: { fingerprint: string; rawOutput: unknown }) => [e.fingerprint, e]));
   const existingSet = new Set(existing.map((e: { fingerprint: string }) => e.fingerprint));
 
   const now = new Date();
@@ -480,7 +482,25 @@ export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: n
         fixVersion:   f.fixVersion   ?? null,
         remediation:  f.remediation  ?? null,
         references:   f.references   ?? [],
-        rawOutput:    (f.rawOutput   ?? {}) as object,
+        rawOutput:    (() => {
+          const newRaw = (f.rawOutput ?? {}) as Record<string, unknown>;
+          // Preserve backfilled location snippets in merged SAST findings:
+          // the scanner always returns null snippets (Semgrep Pro paywall) so a
+          // re-scan must not overwrite snippets that were fetched from GitHub.
+          if (newRaw["merged"] === true && Array.isArray(newRaw["locations"])) {
+            const prevRaw = existingMap.get(f.fingerprint)?.rawOutput as Record<string, unknown> | undefined;
+            const prevLocs = prevRaw?.["locations"] as Array<Record<string, unknown>> | undefined;
+            if (prevLocs) {
+              const newLocs = (newRaw["locations"] as Array<Record<string, unknown>>).map((loc, i) => {
+                const prevSnippet = prevLocs[i]?.["snippet"] as string | null | undefined;
+                const hasSnippet  = typeof loc["snippet"] === "string" && (loc["snippet"] as string).trim().length > 0;
+                return hasSnippet ? loc : { ...loc, snippet: prevSnippet ?? null };
+              });
+              return { ...newRaw, locations: newLocs } as object;
+            }
+          }
+          return newRaw as object;
+        })(),
         confidence:   (f.confidence  ?? "POSSIBLE") as "CONFIRMED" | "LIKELY" | "POSSIBLE",
         ...(f.evidence ? { evidence: f.evidence as object } : {}),
         // NOT updated on re-scan:
