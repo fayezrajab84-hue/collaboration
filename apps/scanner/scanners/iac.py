@@ -1,7 +1,7 @@
 from __future__ import annotations
 import json
 
-from models import NormalizedFinding, ScanRequest, ScanType, Severity
+from models import Confidence, NormalizedFinding, ScanRequest, ScanType, Severity
 from .base import BaseScanner
 
 
@@ -29,7 +29,7 @@ class IACScanner(BaseScanner):
             "-d", repo_dir,
             "-o", "json",
             "--quiet",
-            "--compact",
+            # NOTE: do NOT add --compact — it suppresses code_block which we need for the code preview
         ])
 
         findings: list[NormalizedFinding] = []
@@ -75,9 +75,21 @@ class IACScanner(BaseScanner):
 
             severity = CHECKOV_SEVERITY_MAP.get(severity_str.upper(), Severity.MEDIUM)
             fingerprint = self.compute_fingerprint(
-                request.org_id, request.scan_job_id, ScanType.IAC,
+                request.org_id, request.target_id, ScanType.IAC,
                 check_id, file_path, file_line_range[0] if file_line_range else None
             )
+
+            # Extract code snippet from Checkov's code_block field.
+            # Format: [[lineNo, "content\n"], ...]  →  "42: resource ... \n43:   ..."
+            code_block = check.get("code_block") or []
+            code_snippet: str | None = None
+            if code_block:
+                lines = []
+                for entry in code_block:
+                    if isinstance(entry, (list, tuple)) and len(entry) == 2:
+                        no, text = entry
+                        lines.append(f"{no}: {str(text).rstrip()}")
+                code_snippet = "\n".join(lines)[:1000] or None
 
             findings.append(NormalizedFinding(
                 fingerprint=fingerprint,
@@ -90,9 +102,20 @@ class IACScanner(BaseScanner):
                 file_path=file_path,
                 line_start=file_line_range[0] if file_line_range else None,
                 line_end=file_line_range[1] if len(file_line_range) > 1 else None,
+                code_snippet=code_snippet,
                 remediation=guideline or None,
                 references=[guideline] if guideline else [],
                 raw_output=check,
+                # Checkov is deterministic pattern matching — failed check = confirmed misconfiguration
+                confidence=Confidence.CONFIRMED,
+                evidence={
+                    "check_id": check_id,
+                    "check_type": check_type,
+                    "resource": resource,
+                    "file": file_path,
+                    "lines": file_line_range,
+                    "result": check.get("check_result", {}).get("result", "failed"),
+                },
             ))
 
         return findings

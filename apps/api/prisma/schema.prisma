@@ -32,6 +32,7 @@ enum ScanType {
   CONTAINER
   DAST
   PENTEST
+  PENTEST_FULL
 }
 
 enum Severity {
@@ -47,6 +48,13 @@ enum FindingStatus {
   ACKNOWLEDGED
   FALSE_POSITIVE
   FIXED
+  IGNORED          // AI-auto-dismissed: LIKELY_FP + HIGH confidence in sweep
+}
+
+enum Confidence {
+  CONFIRMED
+  LIKELY
+  POSSIBLE
 }
 
 enum ScanStatus {
@@ -81,6 +89,18 @@ enum IntegrationType {
   JIRA
   SLACK
   MICROSOFT_TEAMS
+}
+
+enum PentestDepth {
+  STANDARD    // recon + discovery + vuln scan (no exploitation)
+  AGGRESSIVE  // + exploitation phase (SQLMap, XSStrike) — requires authorization
+}
+
+enum AuthType {
+  FORM    // submit username/password form, maintain session cookie
+  HEADER  // inject a static HTTP header (API key, Bearer token)
+  COOKIE  // inject a pre-obtained cookie string directly
+  OAUTH2  // exchange client credentials / ROPC for a Bearer token
 }
 
 // ── Models ────────────────────────────────────────────────────────────────
@@ -138,10 +158,13 @@ model Repository {
   isPrivate     Boolean   @default(false)
   language      String?
   webhookId     Int?
-  webhookSecret String?   // AES-256-GCM encrypted
-  lastScannedAt DateTime?
-  addedAt       DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  webhookSecret  String?   // AES-256-GCM encrypted
+  lastScannedAt  DateTime?
+  aiRiskScore    Int?      // 0-100
+  aiRiskReason   String?
+  aiRiskScoredAt DateTime?
+  addedAt        DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   scans    ScanJob[]
@@ -149,13 +172,16 @@ model Repository {
 }
 
 model Container {
-  id            String    @id @default(cuid())
-  orgId         String
-  imageRef      String
-  registry      String?
-  lastScannedAt DateTime?
-  addedAt       DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  id             String    @id @default(cuid())
+  orgId          String
+  imageRef       String
+  registry       String?
+  lastScannedAt  DateTime?
+  aiRiskScore    Int?
+  aiRiskReason   String?
+  aiRiskScoredAt DateTime?
+  addedAt        DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   scans    ScanJob[]
@@ -163,16 +189,87 @@ model Container {
 }
 
 model Domain {
-  id            String    @id @default(cuid())
-  orgId         String
-  domain        String
-  lastScannedAt DateTime?
-  addedAt       DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  id              String       @id @default(cuid())
+  orgId           String
+  domain          String
+  lastScannedAt   DateTime?
+  aiRiskScore     Int?
+  aiRiskReason    String?
+  aiRiskScoredAt  DateTime?
+  addedAt         DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  // Pentest authorization
+  authorized      Boolean      @default(false)
+  authorizedAt    DateTime?
+  authorizedById  String?
+  pentestDepth    PentestDepth @default(STANDARD)
+  excludePaths    String[]
 
-  org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  scans    ScanJob[]
-  findings Finding[]
+  org        Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  scans      ScanJob[]
+  findings   Finding[]
+  subdomains SubdomainDiscovery[]
+  authConfig DomainAuthConfig?
+  apiSpec    DomainApiSpec?
+}
+
+// ── Scan authentication config ────────────────────────────────────────────────
+// Stores encrypted credentials used by ZAP and Nuclei for authenticated scans.
+model DomainAuthConfig {
+  id               String   @id @default(cuid())
+  domainId         String   @unique
+  authType         AuthType @default(FORM)
+  // FORM auth fields
+  loginUrl         String?                   // absolute or path: /login.php
+  usernameField    String   @default("username")
+  passwordField    String   @default("password")
+  loggedInPattern  String   @default("Logout")   // regex ZAP checks to confirm auth
+  loggedOutPattern String   @default("login")    // redirect URL fragment = session expired
+  // HEADER / COOKIE auth fields
+  headerName       String?                   // e.g. "Authorization", "Cookie"
+  // OAuth2 fields (authType = OAUTH2)
+  oauth2TokenUrl   String?                   // e.g. https://auth.example.com/oauth/token
+  oauth2ClientId   String?
+  oauth2Scope      String?                   // space-separated, e.g. "openid profile api:read"
+  oauth2GrantType  String   @default("client_credentials")  // client_credentials | password
+  // Encrypted payload — AES-256-GCM JSON blob:
+  //   FORM         → { username, password }
+  //   HEADER       → { headerValue }
+  //   COOKIE       → { cookieValue }
+  //   OAUTH2       → { clientSecret, username?, password? }
+  encryptedCreds   String
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  domain Domain @relation(fields: [domainId], references: [id], onDelete: Cascade)
+}
+
+model DomainApiSpec {
+  id          String   @id @default(cuid())
+  domainId    String   @unique
+  filename    String                        // original filename, e.g. "openapi.json"
+  specJson    Json                          // parsed OpenAPI/Swagger spec
+  endpoints   Int      @default(0)          // count of extracted endpoints
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  domain Domain @relation(fields: [domainId], references: [id], onDelete: Cascade)
+}
+
+model SubdomainDiscovery {
+  id             String   @id @default(cuid())
+  domainId       String
+  subdomain      String
+  isLive         Boolean  @default(false)
+  statusCode     Int?
+  technologies   String[]
+  includedInScan Boolean  @default(false)
+  discoveredAt   DateTime @default(now())
+
+  domain Domain @relation(fields: [domainId], references: [id], onDelete: Cascade)
+
+  @@unique([domainId, subdomain])
+  @@index([domainId])
 }
 
 model ScanJob {
@@ -196,6 +293,9 @@ model ScanJob {
   mediumCount    Int        @default(0)
   lowCount       Int        @default(0)
   infoCount      Int        @default(0)
+  // AI-generated scan summary (Phase 2)
+  aiSummary      String?    @db.Text
+  aiSummarisedAt DateTime?
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
 
@@ -241,6 +341,17 @@ model Finding {
   firstSeen      DateTime      @default(now())
   lastSeen       DateTime      @default(now())
   resolvedAt     DateTime?
+  confidence     Confidence    @default(POSSIBLE)
+  evidence       Json?
+  verifiedAt     DateTime?
+  aiAnalysis     Json?         // cached AI analysis result
+  aiAnalysedAt   DateTime?     // when the AI analysis was last generated
+  // AI false-positive detection (Phase FP)
+  aiFpAnalysis   Json?         // { verdict, confidence, reasoning, indicators }
+  aiFpAnalysedAt DateTime?
+  // AI fix suggestion — unified diff
+  aiFixSuggestion   String?   @db.Text
+  aiFixSuggestedAt  DateTime?
 
   org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   scanJob    ScanJob      @relation(fields: [scanJobId], references: [id])

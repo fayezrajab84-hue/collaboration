@@ -1,7 +1,7 @@
 from __future__ import annotations
 import json
 
-from models import NormalizedFinding, ScanRequest, ScanType
+from models import Confidence, NormalizedFinding, ScanRequest, ScanType
 from .base import BaseScanner
 
 
@@ -30,6 +30,8 @@ class SCAScanner(BaseScanner):
             return findings
 
         for result_item in data.get("Results", []):
+            # Trivy reports the manifest file path at the result level (e.g. "pom.xml", "package.json")
+            dep_file = result_item.get("Target", "") or None
             for vuln in result_item.get("Vulnerabilities", []):
                 cve_id = vuln.get("VulnerabilityID", "")
                 pkg_name = vuln.get("PkgName", "")
@@ -54,9 +56,12 @@ class SCAScanner(BaseScanner):
                     severity = Severity.HIGH
 
                 fingerprint = self.compute_fingerprint(
-                    request.org_id, request.scan_job_id, ScanType.SCA,
+                    request.org_id, request.target_id, ScanType.SCA,
                     cve_id, pkg_name, None
                 )
+
+                # A CVE ID means Trivy matched against the NVD database — confirmed match
+                confidence = Confidence.CONFIRMED if cve_id else Confidence.LIKELY
 
                 findings.append(NormalizedFinding(
                     fingerprint=fingerprint,
@@ -66,6 +71,7 @@ class SCAScanner(BaseScanner):
                     severity=severity,
                     scan_type=ScanType.SCA,
                     scanner="trivy",
+                    file_path=dep_file,
                     cve_id=cve_id or None,
                     package_name=pkg_name,
                     package_version=installed_ver,
@@ -73,6 +79,15 @@ class SCAScanner(BaseScanner):
                     cvss_score=cvss_score,
                     references=vuln.get("References", []),
                     raw_output=vuln,
+                    confidence=confidence,
+                    evidence={
+                        "cve_id": cve_id,
+                        "package": pkg_name,
+                        "installed_version": installed_ver,
+                        "fixed_version": fixed_ver or "no fix available",
+                        "cvss_score": cvss_score,
+                        "data_source": vuln.get("DataSource", {}).get("Name", "NVD") if vuln.get("DataSource") else "NVD",
+                    },
                 ))
 
         return findings

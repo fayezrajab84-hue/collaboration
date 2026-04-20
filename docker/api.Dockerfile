@@ -24,10 +24,12 @@ COPY apps/api/ ./apps/api/
 # Generate Prisma client — use hoisted binary from workspace root
 RUN node_modules/.bin/prisma generate --schema=apps/api/prisma/schema.prisma
 
-# Build shared types package first (creates dist/*.d.ts for project references)
-RUN node_modules/.bin/tsc --project packages/types/tsconfig.json
+# Compile shared types first so dist/*.d.ts exists for API compilation
+RUN node_modules/.bin/tsc --project packages/types/tsconfig.json && \
+    echo "=== packages/types/dist contents ===" && \
+    ls -la packages/types/dist/ 2>&1
 
-# Compile API (references types via TypeScript project references)
+# Compile API — paths in tsconfig maps @devsecops/types → packages/types/dist
 RUN node_modules/.bin/tsc --project apps/api/tsconfig.json
 
 # ── Migrate stage ────────────────────────────────────────────────────────

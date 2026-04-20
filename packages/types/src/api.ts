@@ -1,4 +1,4 @@
-import type { FindingStatus, Priority, ScanType, TicketStatus } from "./enums.js";
+import type { Confidence, FindingStatus, PentestDepth, Priority, ScanType, TicketStatus } from "./enums.js";
 
 // ── Generic wrappers ──────────────────────────────────────────────────────
 
@@ -62,6 +62,28 @@ export interface CreateDomainRequest {
 
 export interface UpdateDomainRequest {
   domain?: string;
+  pentestDepth?: PentestDepth;
+  excludePaths?: string[];
+}
+
+export interface AuthorizeDomainRequest {
+  confirmed: true; // must be exactly true
+}
+
+export interface SubdomainToggleRequest {
+  includedInScan: boolean;
+}
+
+export interface TriggerPentestRequest {
+  depth: PentestDepth;
+  authorized: true; // must be exactly true — server re-validates
+}
+
+export interface ReconSubdomainInfo {
+  subdomain: string;
+  isLive: boolean;
+  statusCode?: number;
+  technologies: string[];
 }
 
 // ── Scan trigger ──────────────────────────────────────────────────────────
@@ -83,6 +105,7 @@ export interface FindingFilterParams {
   severity?: string | string[];
   scanType?: ScanType | ScanType[];
   status?: FindingStatus | FindingStatus[];
+  confidence?: Confidence | Confidence[];
   repoId?: string;
   containerId?: string;
   domainId?: string;

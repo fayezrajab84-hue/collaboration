@@ -1,7 +1,9 @@
 import type {
+  Confidence,
   FindingStatus,
   IntegrationType,
   OrgType,
+  PentestDepth,
   Priority,
   Role,
   ScanStatus,
@@ -53,6 +55,9 @@ export interface Repository {
   isPrivate: boolean;
   language: string | null;
   lastScannedAt: Date | null;
+  aiRiskScore?: number | null;
+  aiRiskReason?: string | null;
+  aiRiskScoredAt?: Date | null;
   addedAt: Date;
   findingCounts?: FindingCounts;
 }
@@ -63,6 +68,9 @@ export interface Container {
   imageRef: string;
   registry: string | null;
   lastScannedAt: Date | null;
+  aiRiskScore?: number | null;
+  aiRiskReason?: string | null;
+  aiRiskScoredAt?: Date | null;
   addedAt: Date;
   findingCounts?: FindingCounts;
 }
@@ -72,8 +80,26 @@ export interface Domain {
   orgId: string;
   domain: string;
   lastScannedAt: Date | null;
+  aiRiskScore?: number | null;
+  aiRiskReason?: string | null;
+  aiRiskScoredAt?: Date | null;
   addedAt: Date;
   findingCounts?: FindingCounts;
+  authorized: boolean;
+  authorizedAt: Date | null;
+  pentestDepth: PentestDepth;
+  excludePaths: string[];
+}
+
+export interface SubdomainDiscovery {
+  id: string;
+  domainId: string;
+  subdomain: string;
+  isLive: boolean;
+  statusCode: number | null;
+  technologies: string[];
+  includedInScan: boolean;
+  discoveredAt: Date;
 }
 
 export interface ScanJob {
@@ -94,6 +120,28 @@ export interface ScanJob {
   highCount?: number;
   mediumCount?: number;
   lowCount?: number;
+  // AI-generated summary (Phase 2)
+  aiSummary?: string | null;
+  aiSummarisedAt?: Date | null;
+  // Joined target (present in list/detail responses)
+  repository?: { id: string; fullName: string } | null;
+  container?: { id: string; imageRef: string } | null;
+  domain?: { id: string; domain: string } | null;
+}
+
+// ── Phase 6: Finding groups ───────────────────────────────────────────────────
+export interface FindingGroup {
+  key:          string;             // ruleId | cveId | normalised title slug
+  label:        string;             // human-readable group name
+  scanType:     string;
+  count:        number;
+  criticalCount: number;
+  highCount:    number;
+  mediumCount:  number;
+  lowCount:     number;
+  affectedTargets: string[];        // up to 5 target names
+  sampleFindings:  Array<{ id: string; title: string; severity: string; targetName: string }>;
+  aiInsight?:   string | null;      // generated on demand
 }
 
 export interface Finding {
@@ -110,6 +158,8 @@ export interface Finding {
   filePath: string | null;
   lineStart: number | null;
   lineEnd: number | null;
+  // Code snippet captured at scan time (SAST/IAC/SECRET)
+  codeSnippet: string | null;
   cveId: string | null;
   cweId: string | null;
   packageName: string | null;
@@ -120,14 +170,38 @@ export interface Finding {
   ruleId: string | null;
   fingerprint: string;
   remediation: string | null;
+  references: string[];
+  rawOutput: Record<string, unknown>;
   firstSeen: Date;
   lastSeen: Date;
   resolvedAt: Date | null;
+  // Confidence & false-positive triage
+  confidence: Confidence;
+  evidence: Record<string, unknown> | null;
+  verifiedAt: Date | null;
+  // AI analysis
+  aiAnalysis?: Record<string, unknown> | null;
+  aiAnalysedAt?: Date | null;
+  // AI false-positive analysis
+  aiFpAnalysis?: FpAnalysis | null;
+  aiFpAnalysedAt?: Date | null;
+  // AI fix suggestion (unified diff)
+  aiFixSuggestion?: string | null;
+  aiFixSuggestedAt?: Date | null;
   // Joined from related target (present in list/detail responses)
   targetName?: string;
-  repository?: { fullName: string } | null;
+  repository?: { fullName: string; defaultBranch: string } | null;
   container?: { imageRef: string } | null;
   domain?: { domain: string } | null;
+  // Joined ticket (present in detail response)
+  ticket?: { id: string; status: string; jiraKey: string | null } | null;
+}
+
+export interface FpAnalysis {
+  verdict:    "LIKELY_FP" | "LIKELY_REAL" | "UNCERTAIN";
+  confidence: "HIGH" | "MEDIUM" | "LOW";
+  reasoning:  string;
+  indicators: string[];
 }
 
 export interface Ticket {

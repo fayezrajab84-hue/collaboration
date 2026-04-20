@@ -1,4 +1,58 @@
-import { Shield } from "lucide-react";
+/** BreachLens login page — matches the sidebar brand identity */
+
+function BreachLensLoginLogo() {
+  return (
+    <svg
+      viewBox="0 0 36 36"
+      className="h-full w-full"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-label="BreachLens logo"
+    >
+      <defs>
+        <filter id="lp-glow" x="-50%" y="-50%" width="200%" height="200%">
+          <feGaussianBlur stdDeviation="1.4" result="blur" />
+          <feMerge>
+            <feMergeNode in="blur" />
+            <feMergeNode in="SourceGraphic" />
+          </feMerge>
+        </filter>
+        <radialGradient id="lp-glass" cx="38%" cy="32%" r="70%">
+          <stop offset="0%" stopColor="#818cf8" stopOpacity="0.28" />
+          <stop offset="100%" stopColor="#3730a3" stopOpacity="0.07" />
+        </radialGradient>
+      </defs>
+
+      {/* Outer lens body */}
+      <circle cx="18" cy="18" r="15.5" stroke="#6366f1" strokeWidth="1.4" fill="url(#lp-glass)" />
+
+      {/* Aperture ring */}
+      <circle cx="18" cy="18" r="9.5" stroke="#4f46e5" strokeWidth="0.7" fill="none" opacity="0.55" />
+
+      {/* 6 aperture blades */}
+      <path d="M 27.36 19.65 A 9.5 9.5 0 0 1 24.11 25.28" stroke="#818cf8" strokeWidth="2.1" strokeLinecap="round" opacity="0.65" />
+      <path d="M 21.25 26.93 A 9.5 9.5 0 0 1 14.75 26.93" stroke="#818cf8" strokeWidth="2.1" strokeLinecap="round" opacity="0.65" />
+      <path d="M 11.89 25.28 A 9.5 9.5 0 0 1  8.64 19.65" stroke="#818cf8" strokeWidth="2.1" strokeLinecap="round" opacity="0.65" />
+      <path d="M  8.64 16.35 A 9.5 9.5 0 0 1 11.89 10.72" stroke="#818cf8" strokeWidth="2.1" strokeLinecap="round" opacity="0.65" />
+      <path d="M 14.75  9.07 A 9.5 9.5 0 0 1 21.25  9.07" stroke="#818cf8" strokeWidth="2.1" strokeLinecap="round" opacity="0.65" />
+      <path d="M 24.11 10.72 A 9.5 9.5 0 0 1 27.36 16.35" stroke="#818cf8" strokeWidth="2.1" strokeLinecap="round" opacity="0.65" />
+
+      {/* Scope crosshair */}
+      <line x1="18" y1="3"    x2="18" y2="13.5" stroke="#6366f1" strokeWidth="1.1" strokeLinecap="round" opacity="0.8" />
+      <line x1="18" y1="22.5" x2="18" y2="33"   stroke="#6366f1" strokeWidth="1.1" strokeLinecap="round" opacity="0.8" />
+      <line x1="3"  y1="18"   x2="13.5" y2="18" stroke="#6366f1" strokeWidth="1.1" strokeLinecap="round" opacity="0.8" />
+      <line x1="22.5" y1="18" x2="33"   y2="18" stroke="#6366f1" strokeWidth="1.1" strokeLinecap="round" opacity="0.8" />
+
+      {/* Central focal point */}
+      <g filter="url(#lp-glow)">
+        <circle cx="18" cy="18" r="3.6" fill="#3730a3" stroke="#6366f1" strokeWidth="0.8" />
+        <circle cx="18" cy="18" r="1.9" fill="#6366f1" />
+      </g>
+      {/* Lens glint */}
+      <circle cx="19.2" cy="16.8" r="0.75" fill="#c7d2fe" opacity="0.72" />
+    </svg>
+  );
+}
 
 export default function LoginPage() {
   const error = new URLSearchParams(window.location.search).get("error");
@@ -6,14 +60,20 @@ export default function LoginPage() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-gray-950 px-4">
       <div className="w-full max-w-sm">
-        {/* Logo */}
-        <div className="mb-8 flex flex-col items-center gap-3 text-center">
-          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-indigo-600 shadow-lg shadow-indigo-900">
-            <Shield className="h-7 w-7 text-white" />
+
+        {/* Brand */}
+        <div className="mb-8 flex flex-col items-center gap-4 text-center">
+          <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-indigo-950 ring-1 ring-indigo-700 shadow-xl shadow-indigo-950">
+            <BreachLensLoginLogo />
           </div>
-          <h1 className="text-2xl font-bold text-white">DevSecOps Platform</h1>
+          <div>
+            <h1 className="text-3xl font-extrabold tracking-wide text-white">BreachLens</h1>
+            <p className="mt-0.5 text-xs font-semibold tracking-widest text-indigo-400 uppercase">
+              DevSecOps Platform
+            </p>
+          </div>
           <p className="text-sm text-gray-400">
-            Centralized SAST, SCA, IaC, Secrets, DAST &amp; Pentest scanning
+            Unified SAST · SCA · IaC · Secrets · DAST · Pentest
           </p>
         </div>
 

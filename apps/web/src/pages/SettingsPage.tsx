@@ -127,8 +127,8 @@ function JiraTab() {
 
       {existing && (
         <div className="rounded-lg border border-gray-700 bg-gray-800/50 p-3 text-sm text-gray-300">
-          <span className="font-medium">{existing.host}</span> · Project:{" "}
-          <span className="font-medium">{existing.projectKey}</span> · {existing.email}
+          <span className="font-medium">{(existing as unknown as Record<string, string>)["host"]}</span> · Project:{" "}
+          <span className="font-medium">{(existing as unknown as Record<string, string>)["projectKey"]}</span> · {(existing as unknown as Record<string, string>)["email"]}
         </div>
       )}
 
@@ -356,7 +356,7 @@ export default function SettingsPage() {
     <div className="p-6">
       <div className="mb-6 flex items-center gap-3">
         <Settings className="h-5 w-5 text-gray-400" />
-        <h1 className="text-xl font-bold text-white">Settings</h1>
+        <h1 className="text-3xl font-bold text-white">Settings</h1>
       </div>
 
       <div className="flex gap-6">

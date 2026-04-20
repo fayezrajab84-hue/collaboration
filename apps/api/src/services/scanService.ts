@@ -13,6 +13,9 @@ interface TriggerScanOptions {
   encryptedGitToken?: string;
   imageRef?: string;
   domain?: string;
+  selectedSubdomains?: string[];
+  pentestDepth?: "STANDARD" | "AGGRESSIVE";
+  domainAuthConfigId?: string;
 }
 
 export async function triggerScan(opts: TriggerScanOptions) {
@@ -48,6 +51,9 @@ export async function triggerScan(opts: TriggerScanOptions) {
       encryptedGitToken: opts.encryptedGitToken,
       imageRef: opts.imageRef,
       domain: opts.domain,
+      selectedSubdomains: opts.selectedSubdomains,
+      pentestDepth: opts.pentestDepth,
+      domainAuthConfigId: opts.domainAuthConfigId,
     };
 
     const queue = scanQueues[scanType];

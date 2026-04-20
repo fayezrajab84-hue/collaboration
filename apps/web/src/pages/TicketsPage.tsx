@@ -84,7 +84,7 @@ export default function TicketsPage() {
 
   return (
     <div className="p-6">
-      <h1 className="mb-6 text-xl font-bold text-white">Tickets</h1>
+      <h1 className="mb-6 text-3xl font-bold text-white">Tickets</h1>
 
       {/* Kanban board */}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">

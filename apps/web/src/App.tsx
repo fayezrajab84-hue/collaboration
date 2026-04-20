@@ -8,7 +8,10 @@ import ContainersPage from "./pages/ContainersPage";
 import DomainsPage from "./pages/DomainsPage";
 import FindingsPage from "./pages/FindingsPage";
 import TicketsPage from "./pages/TicketsPage";
+import ScansPage from "./pages/ScansPage";
 import SettingsPage from "./pages/SettingsPage";
+import ChatPage from "./pages/ChatPage";
+import ReportPage from "./pages/ReportPage";
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth();
@@ -45,9 +48,12 @@ export default function App() {
         <Route path="repositories" element={<RepositoriesPage />} />
         <Route path="containers" element={<ContainersPage />} />
         <Route path="domains" element={<DomainsPage />} />
+        <Route path="scans" element={<ScansPage />} />
         <Route path="findings" element={<FindingsPage />} />
         <Route path="tickets" element={<TicketsPage />} />
         <Route path="settings" element={<SettingsPage />} />
+        <Route path="chat" element={<ChatPage />} />
+        <Route path="report" element={<ReportPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>

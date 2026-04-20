@@ -11,8 +11,10 @@ import type { ScanJobPayload } from "../queues/definitions.js";
 import type { NormalizedFinding, ScanType, TargetType } from "@devsecops/types";
 import type { ScanResult } from "@devsecops/types";
 import { notifyNewFindings } from "../services/notificationService.js";
+import { generateScanSummary } from "../services/scanSummaryService.js";
+import { scoreTarget } from "../services/riskScoringService.js";
 
-const SCAN_TYPES: ScanType[] = ["SAST", "SCA", "SECRET", "IAC", "CONTAINER", "DAST", "PENTEST"];
+const SCAN_TYPES: ScanType[] = ["SAST", "SCA", "SECRET", "IAC", "CONTAINER", "DAST", "PENTEST", "PENTEST_FULL"];
 
 async function processScanJob(payload: ScanJobPayload) {
   const { scanJobId, orgId, targetType, targetId, scanType, encryptedGitToken } = payload;
@@ -39,10 +41,83 @@ async function processScanJob(payload: ScanJobPayload) {
     }
   }
 
+  // Decrypt domain auth config if present (DAST / PENTEST scans only)
+  let authConfig: Record<string, unknown> | null = null;
+  if (targetType === "DOMAIN" && payload.domainAuthConfigId) {
+    try {
+      const cfg = await prisma.domainAuthConfig.findUnique({
+        where: { id: payload.domainAuthConfigId },
+      });
+      if (cfg) {
+        const creds = JSON.parse(decrypt(cfg.encryptedCreds)) as Record<string, string>;
+        authConfig = {
+          auth_type:        cfg.authType,
+          login_url:        cfg.loginUrl        ?? null,
+          username_field:   cfg.usernameField,
+          password_field:   cfg.passwordField,
+          username:         creds["username"]   ?? null,
+          password:         creds["password"]   ?? null,
+          logged_in_pattern:  cfg.loggedInPattern,
+          logged_out_pattern: cfg.loggedOutPattern,
+          header_name:      cfg.headerName      ?? null,
+          header_value:     creds["headerValue"] ?? null,
+          // OAuth2 fields — secret (clientSecret) from encrypted blob, non-secrets from DB
+          oauth2_token_url:    cfg.oauth2TokenUrl    ?? null,
+          oauth2_client_id:    cfg.oauth2ClientId    ?? null,
+          oauth2_client_secret: creds["clientSecret"] ?? null,
+          oauth2_scope:        cfg.oauth2Scope       ?? null,
+          oauth2_grant_type:   cfg.oauth2GrantType   ?? "client_credentials",
+        };
+      }
+    } catch (err) {
+      logger.error("Failed to decrypt domain auth config", { scanJobId, error: (err as Error).message });
+    }
+  }
+
+  // Extract API spec URLs from imported OpenAPI/Swagger spec (DAST & PENTEST_FULL only)
+  let apiSpecUrls: string[] = [];
+  if (targetType === "DOMAIN" && payload.domain && ["DAST", "PENTEST_FULL", "PENTEST"].includes(scanType)) {
+    try {
+      const spec = await prisma.domainApiSpec.findUnique({ where: { domainId: targetId } });
+      if (spec?.specJson) {
+        const specJson = spec.specJson as Record<string, unknown>;
+        const paths = (specJson.paths ?? {}) as Record<string, unknown>;
+
+        // Resolve base URL from spec (OpenAPI 3.x servers[] or Swagger 2.x host+basePath)
+        let baseUrl = `http://${payload.domain}`;
+        const servers = specJson.servers as Array<{ url: string }> | undefined;
+        if (servers?.length) {
+          // Use first server; if relative, resolve against the domain
+          const serverUrl = servers[0]!.url;
+          baseUrl = serverUrl.startsWith("http") ? serverUrl : `http://${payload.domain}${serverUrl}`;
+        } else if (specJson.host) {
+          const scheme = (specJson.schemes as string[] | undefined)?.[0] ?? "http";
+          const basePath = (specJson.basePath as string) ?? "";
+          baseUrl = `${scheme}://${specJson.host}${basePath}`;
+        }
+
+        // Build a URL for each path (one per path, not per method — tools enumerate methods)
+        const methods = ["get", "post", "put", "patch", "delete"];
+        for (const [path, pathItem] of Object.entries(paths)) {
+          const item = pathItem as Record<string, unknown>;
+          const hasOp = methods.some((m) => item[m]);
+          if (!hasOp) continue;
+          // Replace path params with placeholder values so URLs are valid
+          const concretePath = path.replace(/\{[^}]+\}/g, "1");
+          apiSpecUrls.push(`${baseUrl.replace(/\/$/, "")}${concretePath}`);
+        }
+        logger.info(`OpenAPI spec: ${apiSpecUrls.length} endpoint URLs extracted`, { scanJobId });
+      }
+    } catch (err) {
+      logger.warn("Failed to extract OpenAPI spec URLs", { scanJobId, error: (err as Error).message });
+    }
+  }
+
   // Build scanner request payload
   const scanRequest = {
     scan_job_id: scanJobId,
     org_id: orgId,
+    target_id: targetId,
     scan_type: scanType,
     target_type: targetType,
     repo_url: payload.repoUrl,
@@ -50,13 +125,25 @@ async function processScanJob(payload: ScanJobPayload) {
     git_token: gitToken, // decrypted, sent over internal Docker network
     image_ref: payload.imageRef,
     domain: payload.domain,
+    selected_subdomains: payload.selectedSubdomains ?? [],
+    pentest_depth: payload.pentestDepth ?? "STANDARD",
+    auth_config: authConfig,  // decrypted, sent over internal Docker network only
+    api_spec_urls: apiSpecUrls,
+    // Internal callback so scanner can report phase progress via SSE
+    api_url: config.API_INTERNAL_URL ?? null,
   };
+
+  // Route PENTEST_FULL to the dedicated pentest scanner if configured
+  const scannerUrl =
+    scanType === "PENTEST_FULL" && config.SCANNER_PENTEST_URL
+      ? config.SCANNER_PENTEST_URL
+      : config.SCANNER_URL;
 
   // Call Python scanner service
   let result: ScanResult;
   try {
     const response = await axios.post<ScanResult>(
-      `${config.SCANNER_URL}/scan`,
+      `${scannerUrl}/scan`,
       scanRequest,
       { timeout: 1_500_000 } // 25 min
     );
@@ -75,20 +162,37 @@ async function processScanJob(payload: ScanJobPayload) {
     };
   }
 
-  // Store findings
+  // Store findings and auto-fix any that disappeared since the last scan
   let newCount = 0;
-  if (result.success && result.findings.length > 0) {
+  if (result.success) {
     const upsertResult = await upsertFindings({
       scanJobId,
       orgId,
       targetType: targetType as TargetType,
       targetId,
+      scanType: scanType as ScanType,
       findings: result.findings as unknown as NormalizedFinding[],
     });
     newCount = upsertResult.newCount;
 
-    const breakdown = countBySeverity(result.findings as unknown as NormalizedFinding[]);
-    emitFindingsBatch(scanJobId, scanType, result.findings.length, breakdown);
+    if (upsertResult.fixedCount > 0) {
+      logger.info("Auto-fixed resolved findings", { scanJobId, scanType, fixedCount: upsertResult.fixedCount });
+    }
+
+    if (result.findings.length > 0) {
+      const breakdown = countBySeverity(result.findings as unknown as NormalizedFinding[]);
+      emitFindingsBatch(scanJobId, scanType, result.findings.length, breakdown);
+    }
+  }
+
+  // If the scan was cancelled while the scanner was running, bail out
+  const currentStatus = await prisma.scanJob.findUnique({
+    where: { id: scanJobId },
+    select: { status: true },
+  });
+  if (currentStatus?.status === "CANCELLED") {
+    logger.info("Scan job was cancelled — skipping completion", { scanJobId, scanType });
+    return;
   }
 
   // Increment completedScans counter
@@ -160,6 +264,12 @@ async function processScanJob(payload: ScanJobPayload) {
     }
 
     logger.info("Scan job completed", { scanJobId, totalFindings: result.findings.length });
+
+    // Fire-and-forget AI scan summary (non-blocking)
+    generateScanSummary(scanJobId).catch(() => {/* already logged inside */});
+
+    // Fire-and-forget AI risk score for the scanned target (non-blocking)
+    scoreTarget(targetType as TargetType, targetId).catch(() => {/* already logged inside */});
   }
 }
 

@@ -17,7 +17,9 @@ networks:
 volumes:
   postgres_data:
   redis_data:
-  nuclei_templates:      # cache downloaded Nuclei templates between restarts
+  nuclei_templates:           # cache downloaded Nuclei templates between restarts
+  nuclei_templates_pentest:   # separate cache for pentest scanner instance
+  ollama_data:                # persists downloaded LLM model weights (~2 GB)
 
 services:
 
@@ -39,12 +41,14 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+    mem_limit: 512m
+    cpus: '1.0'
 
   # ── Redis ──────────────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: redis-server --save 60 1 --loglevel warning
+    command: redis-server --save 60 1 --loglevel warning --maxmemory 128mb --maxmemory-policy allkeys-lru
     volumes:
       - redis_data:/data
     networks:
@@ -54,6 +58,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    mem_limit: 256m
+    cpus: '0.5'
 
   # ── Database migrations (one-shot, runs before api starts) ─────────────────
   migrate:
@@ -61,6 +67,9 @@ services:
       context: .
       dockerfile: docker/api.Dockerfile
       target: migrate          # uses CMD from migrate stage in Dockerfile
+    # Use db push (schema sync) — avoids issues with migration files that
+    # drop enum variants while rows referencing them still exist in the DB.
+    command: ["node_modules/.bin/prisma", "db", "push", "--schema=apps/api/prisma/schema.prisma", "--skip-generate", "--accept-data-loss"]
     env_file: .env
     environment:
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
@@ -70,12 +79,102 @@ services:
       postgres:
         condition: service_healthy
     restart: on-failure        # retry until migrations succeed
+    mem_limit: 256m
+    cpus: '0.5'
+
+  # ── DVWA — MariaDB backend ─────────────────────────────────────────────────
+  # Dedicated DB for DVWA — kept separate from the platform's Postgres.
+  dvwa-db:
+    image: mariadb:10
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: dvwa
+      MYSQL_DATABASE: dvwa
+      MYSQL_USER: dvwa
+      MYSQL_PASSWORD: p@ssw0rd
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "dvwa", "-pp@ssw0rd"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    mem_limit: 256m
+    cpus: '0.5'
+
+  # ── DVWA (Damn Vulnerable Web Application) — deliberate scan target ────────
+  # A purposely-insecure app for testing DAST and Pentest scans.
+  # Add domain "dvwa" in the platform to scan it (use http:// scheme).
+  # Browse it at http://localhost:4280  (default login: admin / password)
+  # First-time setup: visit http://localhost:4280/setup.php → click "Create / Reset Database"
+  # ⚠️  Never expose this service to the internet — it is intentionally insecure.
+  dvwa:
+    image: ghcr.io/digininja/dvwa:latest
+    restart: unless-stopped
+    depends_on:
+      dvwa-db:
+        condition: service_healthy
+    environment:
+      DB_SERVER: dvwa-db
+      DB_PORT: "3306"
+      DB_USER: dvwa
+      DB_PASSWORD: p@ssw0rd
+      DB_DATABASE: dvwa
+      DEFAULT_SECURITY_LEVEL: low   # low = most vulnerabilities visible for scanning
+      RECAPTCHA_PUBLIC_KEY: ""
+      RECAPTCHA_PRIVATE_KEY: ""
+    networks:
+      - internal    # reachable by ZAP (DAST) and scanner (Nuclei/pentest)
+      - public      # required for host port binding (4280) on Docker Desktop
+    ports:
+      - "4280:80"   # host access for manual browsing — not needed for scans
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    mem_limit: 512m
+    cpus: '0.5'
+
+  # ── DVWA DB init (one-shot) ─────────────────────────────────────────────────
+  # Automatically initialises the DVWA database on first start so you don't
+  # have to visit setup.php manually. Safe to re-run — CREATE TABLE IF NOT EXISTS.
+  dvwa-init:
+    image: php:8-cli-alpine
+    restart: "no"
+    depends_on:
+      dvwa:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "Waiting for MariaDB to accept connections..."
+        until php -r "new mysqli('dvwa-db','dvwa','p@ssw0rd','',3306);" 2>/dev/null; do sleep 2; done
+        php -r "
+          \$c = new mysqli('dvwa-db','dvwa','p@ssw0rd','dvwa',3306);
+          if(\$c->connect_error){ die('DB connect failed: '.\$c->connect_error); }
+          \$c->query('CREATE TABLE IF NOT EXISTS users (user_id int(6), first_name varchar(15), last_name varchar(15), user varchar(15), password varchar(32), avatar varchar(70), last_login TIMESTAMP, failed_login INT(3), PRIMARY KEY (user_id))');
+          \$r = \$c->query('SELECT COUNT(*) c FROM users');
+          if(\$r->fetch_assoc()['c'] == 0) {
+            \$c->query(\"INSERT INTO users VALUES (1,'admin','admin','admin','5f4dcc3b5aa765d61d8327deb882cf99','/hackable/users/admin.jpg',NOW(),0),(2,'Gordon','Brown','gordonb','e99a18c428cb38d5f260853678922e03','/hackable/users/gordonb.jpg',NOW(),0),(3,'Hack','Me','1337','8d3533d75ae2c3966d7e0d4fcc69216b','/hackable/users/1337.jpg',NOW(),0),(4,'Pablo','Picasso','pablo','0d107d09f5bbe40cade3de5c71e9e9b7','/hackable/users/pablo.jpg',NOW(),0),(5,'Bob','Smith','smithy','5f4dcc3b5aa765d61d8327deb882cf99','/hackable/users/smithy.jpg',NOW(),0)\");
+          }
+          \$c->query('CREATE TABLE IF NOT EXISTS guestbook (comment_id SMALLINT UNSIGNED NOT NULL AUTO_INCREMENT, comment varchar(300), name varchar(100), PRIMARY KEY (comment_id))');
+          \$r2 = \$c->query('SELECT COUNT(*) c FROM users'); echo 'DVWA ready. Users: '.\$r2->fetch_assoc()['c'].PHP_EOL;
+          \$c->close();
+        "
+    networks:
+      - internal
 
   # ── OWASP ZAP (DAST sidecar) ───────────────────────────────────────────────
   # Remove this service (and scanner's depends_on) if you don't need DAST scans.
   zap:
     image: ghcr.io/zaproxy/zaproxy:stable
     restart: unless-stopped
+    # Cap JVM heap — without this Java will grab 25% of host RAM (can be several GB)
+    environment:
+      JVM_PROPERTIES: "-Xmx1200m -Xms256m -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
     command: >
       zap.sh
       -daemon
@@ -99,9 +198,20 @@ services:
       timeout: 15s
       retries: 10
       start_period: 90s   # ZAP JVM startup is slow
+    mem_limit: 1500m
+    cpus: '1.5'
+
+  # ── interactsh — Out-of-band (OAST) callback server for blind vuln detection ──
+  # interactsh-server requires a real public IP/domain to function (DNS callbacks).
+  # For local Docker deployments, Nuclei automatically uses ProjectDiscovery's
+  # hosted OAST infrastructure (oast.pro / oast.fun) when INTERACTSH_URL is unset.
+  # To use a self-hosted interactsh, set INTERACTSH_URL=https://your-domain and run:
+  #   interactsh-server -d your-domain -i <public-ip> -sa
+  # The scanner containers are on the `public` network and have outbound internet access.
 
   # ── Scanner microservice ────────────────────────────────────────────────────
   scanner:
+    image: devsecops-scanner:latest   # fixed name so scanner-pentest can use FROM devsecops-scanner:latest
     build:
       context: .
       dockerfile: docker/scanner.Dockerfile
@@ -110,8 +220,9 @@ services:
       SCAN_WORKSPACE_DIR: /tmp/scan_workspace
       ZAP_BASE_URL: ${ZAP_BASE_URL:-http://zap:8080}
       ZAP_API_KEY: ${ZAP_API_KEY:-}
+      INTERACTSH_URL: ${INTERACTSH_URL:-}
     volumes:
-      - nuclei_templates:/home/scanner/.config/nuclei    # persist template cache
+      - nuclei_templates:/home/scanner/nuclei-templates    # nuclei v3 stores templates here
     networks:
       - internal
       - public    # needs outbound: git clone, trivy db, nuclei templates
@@ -124,8 +235,73 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
-    # Limit memory — scans can be large
+    mem_limit: 3g
+    cpus: '2.0'
+
+  # ── Scanner (pentest) — opt-in via `--profile pentest` ────────────────────
+  # Extends the base scanner with nmap, nikto, testssl, subfinder, httpx,
+  # ffuf, sqlmap, and xsstrike.  The API routes PENTEST_FULL jobs to this
+  # service when SCANNER_PENTEST_URL is set.
+  scanner-pentest:
+    image: devsecops-scanner-pentest:latest
+    build:
+      context: .
+      dockerfile: docker/scanner-pentest.Dockerfile
+    profiles: ["pentest"]
+    restart: unless-stopped
+    environment:
+      SCAN_WORKSPACE_DIR: /tmp/scan_workspace
+      ZAP_BASE_URL: ${ZAP_BASE_URL:-http://zap:8080}
+      ZAP_API_KEY: ${ZAP_API_KEY:-}
+      INTERACTSH_URL: ${INTERACTSH_URL:-}
+    volumes:
+      - nuclei_templates_pentest:/home/scanner/nuclei-templates    # nuclei v3 stores templates here
+    networks:
+      - internal
+      - public
+    depends_on:
+      zap:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    mem_limit: 6g
+
+  # ── Ollama — local LLM inference (CPU mode, no GPU required) ─────────────
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - internal   # API communicates with Ollama on the internal network
+      - public     # Ollama needs outbound internet to download model weights
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     mem_limit: 4g
+    cpus: '4.0'
+
+  # ── Ollama model pull (one-shot: downloads llama3.2:3b on first start) ─────
+  # Safe to re-run — ollama pull is a no-op when model is already present.
+  ollama-init:
+    image: ollama/ollama:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["/bin/sh", "-c", "ollama pull ${OLLAMA_MODEL:-llama3.2:3b}"]
+    networks:
+      - internal   # reaches Ollama server
+      - public     # downloads model weights from Ollama registry
+    restart: "no"
 
   # ── API server ──────────────────────────────────────────────────────────────
   api:
@@ -139,8 +315,13 @@ services:
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       SCANNER_URL: http://scanner:8000
+      SCANNER_PENTEST_URL: ${SCANNER_PENTEST_URL:-http://scanner-pentest:8000}
+      API_INTERNAL_URL: http://api:3000
       NODE_ENV: ${NODE_ENV:-production}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost}
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
+      INTERACTSH_URL: ${INTERACTSH_URL:-}
     networks:
       - internal
       - public     # needs outbound: GitHub API calls
@@ -161,6 +342,8 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
+    mem_limit: 512m
+    cpus: '1.0'
 
   # ── Web frontend (nginx) ────────────────────────────────────────────────────
   web:
@@ -181,3 +364,5 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+    mem_limit: 2g
+    cpus: '2.0'

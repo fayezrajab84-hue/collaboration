@@ -10,12 +10,16 @@ const envSchema = z.object({
   GITHUB_CLIENT_SECRET: z.string().min(1),
   GITHUB_CALLBACK_URL: z.string().url(),
   SCANNER_URL: z.string().url(),
+  SCANNER_PENTEST_URL: z.string().url().optional(),
+  API_INTERNAL_URL: z.string().url().optional(), // e.g. http://api:3000 — used by scanner for phase callbacks
   API_PUBLIC_URL: z.string().url(),
   FRONTEND_URL: z.string().url(),
   ENCRYPTION_KEY: z.string().length(64), // 32 bytes as hex
   ZAP_API_KEY: z.string().min(1),
   ZAP_BASE_URL: z.string().url(),
   SCAN_WORKSPACE_DIR: z.string().default("/tmp/scan_workspace"),
+  OLLAMA_URL:   z.string().url().default("http://ollama:11434"),
+  OLLAMA_MODEL: z.string().default("llama3.2:3b"),
 });
 
 const parsed = envSchema.safeParse(process.env);

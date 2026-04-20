@@ -20,6 +20,8 @@ import ticketsRouter from "./routes/tickets/router.js";
 import scansRouter from "./routes/scans/router.js";
 import integrationsRouter from "./routes/integrations/router.js";
 import webhooksRouter from "./routes/webhooks/router.js";
+import chatRouter from "./routes/chat/router.js";
+import reportsRouter from "./routes/reports/router.js";
 
 import "./auth/passport.js"; // side-effect: registers passport strategies
 
@@ -91,6 +93,8 @@ app.use("/api/tickets", apiLimiter, ticketsRouter);
 app.use("/api/scans", apiLimiter, scansRouter);
 app.use("/api/integrations", apiLimiter, integrationsRouter);
 app.use("/api/webhooks", webhooksRouter);
+app.use("/api/chat", apiLimiter, chatRouter);
+app.use("/api/reports", apiLimiter, reportsRouter);
 
 // ── Error handler (must be last) ──────────────────────────────────────────
 app.use(errorHandler);

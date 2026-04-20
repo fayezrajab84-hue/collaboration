@@ -1,7 +1,7 @@
 from __future__ import annotations
 import json
 
-from models import NormalizedFinding, ScanRequest, ScanType, Severity
+from models import Confidence, NormalizedFinding, ScanRequest, ScanType, Severity
 from .base import BaseScanner
 
 
@@ -16,6 +16,7 @@ class ContainerScanner(BaseScanner):
             "trivy", "image",
             "--format", "json",
             "--scanners", "vuln,secret,misconfig",
+            "--timeout", "15m",
             "--quiet",
             request.image_ref,
         ])
@@ -49,9 +50,12 @@ class ContainerScanner(BaseScanner):
                 }
                 severity = sev_map.get(sev_str.upper(), Severity.INFO)
                 fingerprint = self.compute_fingerprint(
-                    request.org_id, request.scan_job_id, ScanType.CONTAINER,
+                    request.org_id, request.target_id, ScanType.CONTAINER,
                     cve_id or pkg_name, request.image_ref, None
                 )
+
+                # CVE ID = confirmed match against NVD database
+                confidence = Confidence.CONFIRMED if cve_id else Confidence.LIKELY
 
                 findings.append(NormalizedFinding(
                     fingerprint=fingerprint,
@@ -68,6 +72,16 @@ class ContainerScanner(BaseScanner):
                     cvss_score=cvss_score,
                     references=vuln.get("References", []),
                     raw_output=vuln,
+                    confidence=confidence,
+                    evidence={
+                        "cve_id": cve_id,
+                        "package": pkg_name,
+                        "installed_version": installed_ver,
+                        "fixed_version": fixed_ver or "no fix available",
+                        "cvss_score": cvss_score,
+                        "image": request.image_ref,
+                        "target": result_item.get("Target", ""),
+                    },
                 ))
 
         return findings

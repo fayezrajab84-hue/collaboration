@@ -16,6 +16,11 @@ export interface ScanJobPayload {
   imageRef?: string;
   // Domain
   domain?: string;
+  // PENTEST_FULL extras
+  selectedSubdomains?: string[];
+  pentestDepth?: "STANDARD" | "AGGRESSIVE";
+  // Authenticated scan — domain auth config id (looked up + decrypted in worker)
+  domainAuthConfigId?: string;
 }
 
 const QUEUE_OPTS = {
@@ -25,9 +30,18 @@ const QUEUE_OPTS = {
     backoff: { type: "exponential" as const, delay: 5000 },
     removeOnComplete: 100,
     removeOnFail: 200,
-    timeout: 1_560_000, // 26 min — scanner timeout is 24 min
   },
 };
+
+// ── FP Sweep queue ────────────────────────────────────────────────────────────
+// Runs a repeatable job every 10 minutes to auto-ignore high-confidence FPs.
+export const fpSweepQueue = new Queue("fp-sweep", {
+  connection: bullRedis,
+  defaultJobOptions: {
+    removeOnComplete: 10,
+    removeOnFail:     20,
+  },
+});
 
 export const scanQueues: Record<ScanType, Queue<ScanJobPayload>> = {
   SAST: new Queue("scan-SAST", QUEUE_OPTS),
@@ -37,4 +51,5 @@ export const scanQueues: Record<ScanType, Queue<ScanJobPayload>> = {
   CONTAINER: new Queue("scan-CONTAINER", QUEUE_OPTS),
   DAST: new Queue("scan-DAST", QUEUE_OPTS),
   PENTEST: new Queue("scan-PENTEST", QUEUE_OPTS),
+  PENTEST_FULL: new Queue("scan-PENTEST_FULL", QUEUE_OPTS),
 };

@@ -5,3 +5,9 @@ pydantic-settings==2.2.1
 httpx==0.27.0
 semgrep>=1.70.0
 checkov>=3.2.250
+# setuptools<81 required: semgrep's opentelemetry dependency uses pkg_resources
+# which was removed in setuptools>=81. Pin to last version that ships it.
+setuptools==75.8.2
+# Playwright: headless Chromium for true SPA crawling (React/Angular/Vue)
+# Captures network requests made by JS frameworks that static crawlers miss.
+playwright==1.44.0

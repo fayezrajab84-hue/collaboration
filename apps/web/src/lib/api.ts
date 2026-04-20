@@ -1,9 +1,10 @@
 import axios from "axios";
 import type {
-  Repository, Container, Domain, ScanJob, Finding, Ticket, Integration,
+  Repository, Container, Domain, ScanJob, Finding, FindingGroup, FpAnalysis, Ticket, Integration, SubdomainDiscovery,
   CreateRepoRequest, UpdateRepoRequest,
   CreateContainerRequest, UpdateContainerRequest,
   CreateDomainRequest, UpdateDomainRequest,
+  AuthorizeDomainRequest, TriggerPentestRequest, SubdomainToggleRequest,
   TriggerScanRequest, TriggerScanResponse,
   FindingFilterParams, UpdateFindingRequest,
   CreateTicketRequest, UpdateTicketRequest,
@@ -69,7 +70,74 @@ export const domainsApi = {
   delete: (id: string) => apiClient.delete(`/domains/${id}`),
   triggerScan: (id: string) =>
     apiClient.post<TriggerScanResponse>(`/domains/${id}/scan`).then((r) => r.data),
+  authorize: (id: string, data: AuthorizeDomainRequest) =>
+    apiClient.post<Domain>(`/domains/${id}/authorize`, data).then((r) => r.data),
+  recon: (id: string) =>
+    apiClient.post<{ domain: string; subdomains: SubdomainDiscovery[] }>(`/domains/${id}/recon`).then((r) => r.data),
+  getSubdomains: (id: string) =>
+    apiClient.get<SubdomainDiscovery[]>(`/domains/${id}/subdomains`).then((r) => r.data),
+  toggleSubdomain: (id: string, subId: string, data: SubdomainToggleRequest) =>
+    apiClient.patch<SubdomainDiscovery>(`/domains/${id}/subdomains/${subId}`, data).then((r) => r.data),
+  triggerPentest: (id: string, data: TriggerPentestRequest) =>
+    apiClient.post<TriggerScanResponse>(`/domains/${id}/pentest`, data).then((r) => r.data),
+  getAuth: (id: string) =>
+    apiClient.get<DomainAuthConfigView | null>(`/domains/${id}/auth`).then((r) => r.data),
+  saveAuth: (id: string, data: DomainAuthConfigInput) =>
+    apiClient.put(`/domains/${id}/auth`, data).then((r) => r.data),
+  deleteAuth: (id: string) =>
+    apiClient.delete(`/domains/${id}/auth`).then((r) => r.data),
+  getApiSpec: (id: string) =>
+    apiClient.get<DomainApiSpecView | null>(`/domains/${id}/apispec`).then((r) => r.data),
+  saveApiSpec: (id: string, data: { filename: string; specJson: Record<string, unknown> }) =>
+    apiClient.put<DomainApiSpecView>(`/domains/${id}/apispec`, data).then((r) => r.data),
+  deleteApiSpec: (id: string) =>
+    apiClient.delete(`/domains/${id}/apispec`).then((r) => r.data),
 };
+
+export interface DomainAuthConfigView {
+  id: string;
+  authType: "FORM" | "HEADER" | "COOKIE" | "OAUTH2";
+  loginUrl?: string | null;
+  usernameField: string;
+  passwordField: string;
+  loggedInPattern: string;
+  loggedOutPattern: string;
+  headerName?: string | null;
+  // OAuth2 non-secret fields (returned from API)
+  oauth2TokenUrl?: string | null;
+  oauth2ClientId?: string | null;
+  oauth2Scope?: string | null;
+  oauth2GrantType?: string | null;
+  hasCredentials: boolean;
+}
+
+export interface DomainAuthConfigInput {
+  authType: "FORM" | "HEADER" | "COOKIE" | "OAUTH2";
+  loginUrl?: string;
+  usernameField?: string;
+  passwordField?: string;
+  username?: string;
+  password?: string;
+  loggedInPattern?: string;
+  loggedOutPattern?: string;
+  headerName?: string;
+  headerValue?: string;
+  // OAuth2 fields
+  oauth2TokenUrl?: string;
+  oauth2ClientId?: string;
+  oauth2ClientSecret?: string;
+  oauth2Scope?: string;
+  oauth2GrantType?: "client_credentials" | "password";
+}
+
+export interface DomainApiSpecView {
+  id: string;
+  domainId: string;
+  filename: string;
+  endpoints: number;
+  createdAt: string;
+  updatedAt: string;
+}
 
 // ── Scans ─────────────────────────────────────────────────────────────────
 
@@ -77,6 +145,10 @@ export const scansApi = {
   list: (page = 1, limit = 20) =>
     apiClient.get<PaginatedResponse<ScanJob>>("/scans", { params: { page, limit } }).then((r) => r.data),
   get: (id: string) => apiClient.get<ScanJob>(`/scans/${id}`).then((r) => r.data),
+  cancel: (id: string) => apiClient.post<{ success: boolean }>(`/scans/${id}/cancel`).then((r) => r.data),
+  delete: (id: string) => apiClient.delete<{ success: boolean }>(`/scans/${id}`).then((r) => r.data),
+  clearFailed: () => apiClient.delete<{ count: number }>("/scans", { params: { status: "FAILED" } }).then((r) => r.data),
+  generateSummary: (id: string) => apiClient.post<{ queued: boolean }>(`/scans/${id}/summary`).then((r) => r.data),
 };
 
 // ── Findings ──────────────────────────────────────────────────────────────
@@ -87,12 +159,54 @@ export const findingsApi = {
   get: (id: string) => apiClient.get<Finding>(`/findings/${id}`).then((r) => r.data),
   update: (id: string, data: UpdateFindingRequest) =>
     apiClient.patch<Finding>(`/findings/${id}`, data).then((r) => r.data),
+  verify: (id: string) =>
+    apiClient.post<{
+      confirmed: boolean;
+      confidence: string;
+      evidence: Record<string, unknown>;
+      finding: Finding;
+    }>(`/findings/${id}/verify`).then((r) => r.data),
+  analyse: (id: string, force = false) =>
+    apiClient.post<{
+      analysis: {
+        summary:      string;
+        impact:       string;
+        remediation:  string[];
+        risk_context: string;
+      };
+      aiAnalysedAt: string;
+    }>(
+      `/findings/${id}/analyse`,
+      {},
+      { params: force ? { force: "true" } : undefined, timeout: 200_000 },
+    ).then((r) => r.data),
   stats: () =>
     apiClient.get<{
       severityCounts: Array<{ severity: string; _count: number }>;
       scanTypeCounts: Array<{ scanType: string; _count: number }>;
       statusCounts: Array<{ status: string; _count: number }>;
+      confidenceCounts: Array<{ confidence: string; _count: number }>;
     }>("/findings/summary/stats").then((r) => r.data),
+  // Phase 6 — Finding groups
+  groups: () =>
+    apiClient.get<FindingGroup[]>("/findings/groups").then((r) => r.data),
+  groupInsight: (groupKey: string) =>
+    apiClient.post<{ insight: string }>("/findings/groups/insight", { groupKey }, { timeout: 300_000 })
+      .then((r) => r.data),
+  // FP detection
+  checkFp: (id: string, force = false) =>
+    apiClient.post<{ analysis: FpAnalysis; aiFpAnalysedAt: string }>(
+      `/findings/${id}/check-fp`,
+      {},
+      { params: force ? { force: "true" } : undefined, timeout: 200_000 },
+    ).then((r) => r.data),
+  // Fix suggestion
+  fixSuggestion: (id: string, force = false) =>
+    apiClient.post<{ diff: string; aiFixSuggestedAt: string }>(
+      `/findings/${id}/fix`,
+      {},
+      { params: force ? { force: "true" } : undefined, timeout: 300_000 },
+    ).then((r) => r.data),
 };
 
 // ── Tickets ───────────────────────────────────────────────────────────────

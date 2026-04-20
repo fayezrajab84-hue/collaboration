@@ -3,6 +3,7 @@ import { z } from "zod";
 import { requireAuth } from "../../middleware/requireAuth.js";
 import prisma from "../../db.js";
 import { triggerScan } from "../../services/scanService.js";
+import { scoreTarget } from "../../services/riskScoringService.js";
 import type { ScanType } from "@devsecops/types";
 
 const router = Router();
@@ -137,6 +138,19 @@ router.post("/:id/scan", async (req, res, next) => {
       imageRef: container.imageRef,
     });
     res.status(202).json(result);
+  } catch (err) { next(err); }
+});
+
+// POST /api/containers/:id/risk-score
+router.post("/:id/risk-score", async (req, res, next) => {
+  try {
+    const user   = req.user as { id: string };
+    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const target = await prisma.container.findFirst({ where: { id: req.params["id"], orgId: member?.orgId } });
+    if (!target) { res.status(404).json({ error: "Container not found" }); return; }
+    await scoreTarget("CONTAINER", target.id);
+    const updated = await prisma.container.findUniqueOrThrow({ where: { id: target.id } });
+    res.json({ aiRiskScore: updated.aiRiskScore, aiRiskReason: updated.aiRiskReason, aiRiskScoredAt: updated.aiRiskScoredAt });
   } catch (err) { next(err); }
 });
 

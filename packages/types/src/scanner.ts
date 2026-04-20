@@ -1,4 +1,4 @@
-import type { ScanType, Severity, TargetType } from "./enums.js";
+import type { Confidence, ScanType, Severity, TargetType } from "./enums.js";
 
 // ── Request sent from API to Python scanner service ───────────────────────
 
@@ -51,6 +51,25 @@ export interface NormalizedFinding {
 
   // Raw scanner output (for debugging / display)
   rawOutput: Record<string, unknown>;
+
+  // Confidence & evidence
+  confidence?: Confidence;          // defaults to POSSIBLE if omitted
+  evidence?: Record<string, unknown>; // {request, responseStatus, snippet, trigger}
+}
+
+// ── Verify request/response (POST /verify) ───────────────────────────────
+
+export interface VerifyRequest {
+  ruleId: string;
+  targetUrl: string;
+  scanType: ScanType;
+}
+
+export interface VerifyResponse {
+  ruleId: string;
+  confirmed: boolean;
+  confidence: Confidence;
+  evidence: Record<string, unknown>;
 }
 
 // ── Response from Python scanner service ─────────────────────────────────

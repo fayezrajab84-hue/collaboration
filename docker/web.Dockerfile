@@ -18,8 +18,8 @@ RUN pnpm install --no-frozen-lockfile
 COPY packages/types/ ./packages/types/
 COPY apps/web/ ./apps/web/
 
-# Build — use hoisted vite binary from workspace root
-RUN node_modules/.bin/vite build --config apps/web/vite.config.ts
+# Build — run from the web app directory so Vite finds index.html correctly
+RUN cd apps/web && ../../node_modules/.bin/vite build
 
 # ── Runtime stage (nginx) ───────────────────────────────────────────────
 FROM nginx:1.25-alpine AS runtime

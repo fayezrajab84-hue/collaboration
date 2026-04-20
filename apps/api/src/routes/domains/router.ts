@@ -1,26 +1,31 @@
 import { Router } from "express";
 import { z } from "zod";
+import axios from "axios";
 import { requireAuth } from "../../middleware/requireAuth.js";
 import prisma from "../../db.js";
+import { scoreTarget } from "../../services/riskScoringService.js";
+import { config } from "../../config.js";
 import { triggerScan } from "../../services/scanService.js";
+import { encrypt, decrypt } from "../../services/encryptionService.js";
 import type { ScanType } from "@devsecops/types";
 
 const router = Router();
 router.use(requireAuth);
 
+// Accepts:
+//   - Standard FQDNs:          example.com, sub.example.com
+//   - Bare hostnames:           localhost, dvwa  (internal Docker service names)
+//   - Host + port:              localhost:4280, dvwa:80, example.com:8443
+//   - IPv4 addresses:           192.168.1.1, 10.0.0.1:8080
+const DOMAIN_RE =
+  /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-\.]*[a-zA-Z0-9])?)(:[0-9]{1,5})?$/;
+
 const createDomainSchema = z.object({
-  domain: z
-    .string()
-    .min(1)
-    .regex(/^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/, "Invalid domain"),
+  domain: z.string().min(1).regex(DOMAIN_RE, "Invalid domain or hostname"),
 });
 
 const updateDomainSchema = z.object({
-  domain: z
-    .string()
-    .min(1)
-    .regex(/^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/, "Invalid domain")
-    .optional(),
+  domain: z.string().min(1).regex(DOMAIN_RE, "Invalid domain or hostname").optional(),
 });
 
 // List domains
@@ -120,6 +125,177 @@ router.delete("/:id", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// ── Pentest authorization ─────────────────────────────────────────────────────
+
+router.post("/:id/authorize", async (req, res, next) => {
+  try {
+    const { confirmed } = z.object({ confirmed: z.literal(true) }).parse(req.body);
+    if (!confirmed) { res.status(400).json({ error: "confirmed must be true" }); return; }
+    const user = req.user as { id: string };
+    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const domain = await prisma.domain.findFirst({ where: { id: req.params["id"], orgId: member?.orgId } });
+    if (!domain) { res.status(404).json({ error: "Domain not found" }); return; }
+    const updated = await prisma.domain.update({
+      where: { id: domain.id },
+      data: { authorized: true, authorizedAt: new Date(), authorizedById: user.id },
+    });
+    res.json(updated);
+  } catch (err) { next(err); }
+});
+
+// ── Recon (Phase 1 — subdomain discovery) ─────────────────────────────────────
+
+/** Returns true when the axios error is a network-level connection failure */
+function isConnectionError(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException & { code?: string }).code;
+  return code === "ENOTFOUND" || code === "ECONNREFUSED" || code === "ECONNRESET" || code === "ETIMEDOUT";
+}
+
+router.post("/:id/recon", async (req, res, next) => {
+  try {
+    const user = req.user as { id: string };
+    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const domain = await prisma.domain.findFirst({ where: { id: req.params["id"], orgId: member?.orgId } });
+    if (!domain) { res.status(404).json({ error: "Domain not found" }); return; }
+
+    // Call scanner /recon endpoint synchronously (fast, ~2 min).
+    // Prefer the dedicated pentest scanner; fall back to the base scanner.
+    const preferredUrl = config.SCANNER_PENTEST_URL ?? config.SCANNER_URL;
+    let reconResponse;
+    try {
+      reconResponse = await axios.post(
+        `${preferredUrl}/recon`,
+        { org_id: member!.orgId, domain: domain.domain },
+        { timeout: 180_000 } // 3 min
+      );
+    } catch (scannerErr) {
+      // If the pentest scanner isn't running, give a clear actionable message
+      if (isConnectionError(scannerErr) && config.SCANNER_PENTEST_URL) {
+        res.status(503).json({
+          error:
+            "The pentest scanner is not running. " +
+            "Start it with: docker compose --profile pentest up -d scanner-pentest",
+        });
+        return;
+      }
+      throw scannerErr; // re-throw anything else (HTTP 4xx/5xx from scanner, timeouts, etc.)
+    }
+
+    const subdomains: Array<{
+      subdomain: string; isLive: boolean; statusCode?: number; technologies: string[];
+    }> = reconResponse.data.subdomains ?? [];
+
+    // Upsert discovered subdomains (preserves existing includedInScan selections)
+    await Promise.all(subdomains.map((s) =>
+      prisma.subdomainDiscovery.upsert({
+        where: { domainId_subdomain: { domainId: domain.id, subdomain: s.subdomain } },
+        create: {
+          domainId: domain.id,
+          subdomain: s.subdomain,
+          isLive: s.isLive,
+          statusCode: s.statusCode ?? null,
+          technologies: s.technologies,
+          includedInScan: s.isLive, // default: include live subdomains
+        },
+        update: {
+          isLive: s.isLive,
+          statusCode: s.statusCode ?? null,
+          technologies: s.technologies,
+          discoveredAt: new Date(),
+        },
+      })
+    ));
+
+    const stored = await prisma.subdomainDiscovery.findMany({
+      where: { domainId: domain.id },
+      orderBy: [{ isLive: "desc" }, { subdomain: "asc" }],
+    });
+    res.json({ domain: domain.domain, subdomains: stored });
+  } catch (err) { next(err); }
+});
+
+// ── List / update subdomains ───────────────────────────────────────────────────
+
+router.get("/:id/subdomains", async (req, res, next) => {
+  try {
+    const user = req.user as { id: string };
+    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const domain = await prisma.domain.findFirst({ where: { id: req.params["id"], orgId: member?.orgId } });
+    if (!domain) { res.status(404).json({ error: "Domain not found" }); return; }
+    const subdomains = await prisma.subdomainDiscovery.findMany({
+      where: { domainId: domain.id },
+      orderBy: [{ isLive: "desc" }, { subdomain: "asc" }],
+    });
+    res.json(subdomains);
+  } catch (err) { next(err); }
+});
+
+router.patch("/:id/subdomains/:subId", async (req, res, next) => {
+  try {
+    const { includedInScan } = z.object({ includedInScan: z.boolean() }).parse(req.body);
+    const user = req.user as { id: string };
+    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const domain = await prisma.domain.findFirst({ where: { id: req.params["id"], orgId: member?.orgId } });
+    if (!domain) { res.status(404).json({ error: "Domain not found" }); return; }
+    const sub = await prisma.subdomainDiscovery.findFirst({
+      where: { id: req.params["subId"], domainId: domain.id },
+    });
+    if (!sub) { res.status(404).json({ error: "Subdomain not found" }); return; }
+    const updated = await prisma.subdomainDiscovery.update({
+      where: { id: sub.id },
+      data: { includedInScan },
+    });
+    res.json(updated);
+  } catch (err) { next(err); }
+});
+
+// ── Full Pentest ───────────────────────────────────────────────────────────────
+
+router.post("/:id/pentest", async (req, res, next) => {
+  try {
+    const body = z.object({
+      depth: z.enum(["STANDARD", "AGGRESSIVE"]).default("STANDARD"),
+      authorized: z.literal(true),
+    }).parse(req.body);
+
+    const user = req.user as { id: string };
+    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const domain = await prisma.domain.findFirst({
+      where: { id: req.params["id"], orgId: member?.orgId },
+      include: { authConfig: true },
+    });
+    if (!domain) { res.status(404).json({ error: "Domain not found" }); return; }
+
+    // Server-side authorization check
+    if (!domain.authorized) {
+      res.status(403).json({ error: "Domain not authorized for pentest. Call POST /authorize first." });
+      return;
+    }
+
+    // Get user-selected subdomains
+    const selectedSubdomains = await prisma.subdomainDiscovery.findMany({
+      where: { domainId: domain.id, includedInScan: true },
+      select: { subdomain: true },
+    });
+
+    // Update pentestDepth on domain
+    await prisma.domain.update({ where: { id: domain.id }, data: { pentestDepth: body.depth } });
+
+    const result = await triggerScan({
+      orgId: member!.orgId,
+      targetType: "DOMAIN",
+      targetId: domain.id,
+      scanTypes: ["PENTEST_FULL"] as ScanType[],
+      domain: domain.domain,
+      selectedSubdomains: selectedSubdomains.map((s) => s.subdomain),
+      pentestDepth: body.depth,
+      domainAuthConfigId: domain.authConfig?.id,
+    });
+
+    res.status(202).json(result);
+  } catch (err) { next(err); }
+});
+
 // Trigger scan (DAST + Pentest)
 router.post("/:id/scan", async (req, res, next) => {
   try {
@@ -127,6 +303,7 @@ router.post("/:id/scan", async (req, res, next) => {
     const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
     const domain = await prisma.domain.findFirst({
       where: { id: req.params["id"], orgId: member?.orgId },
+      include: { authConfig: true },
     });
     if (!domain) { res.status(404).json({ error: "Domain not found" }); return; }
 
@@ -137,8 +314,210 @@ router.post("/:id/scan", async (req, res, next) => {
       targetId: domain.id,
       scanTypes,
       domain: domain.domain,
+      domainAuthConfigId: domain.authConfig?.id,
     });
     res.status(202).json(result);
+  } catch (err) { next(err); }
+});
+
+// ── Auth config ───────────────────────────────────────────────────────────────
+
+const authConfigSchema = z.object({
+  authType:         z.enum(["FORM", "HEADER", "COOKIE", "OAUTH2"]).default("FORM"),
+  // FORM fields
+  loginUrl:         z.string().optional(),
+  usernameField:    z.string().default("username"),
+  passwordField:    z.string().default("password"),
+  username:         z.string().optional(),
+  password:         z.string().optional(),
+  loggedInPattern:  z.string().default("Logout"),
+  loggedOutPattern: z.string().default("login"),
+  // HEADER / COOKIE fields
+  headerName:       z.string().optional(),
+  headerValue:      z.string().optional(),
+  // OAuth2 fields
+  oauth2TokenUrl:    z.string().url().optional(),
+  oauth2ClientId:    z.string().optional(),
+  oauth2ClientSecret: z.string().optional(),
+  oauth2Scope:       z.string().optional(),
+  oauth2GrantType:   z.enum(["client_credentials", "password"]).default("client_credentials"),
+});
+
+// GET /api/domains/:id/auth — return config without credentials
+router.get("/:id/auth", async (req, res, next) => {
+  try {
+    const user = req.user as { id: string };
+    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const domain = await prisma.domain.findFirst({ where: { id: req.params["id"], orgId: member?.orgId } });
+    if (!domain) { res.status(404).json({ error: "Domain not found" }); return; }
+
+    const cfg = await prisma.domainAuthConfig.findUnique({ where: { domainId: domain.id } });
+    if (!cfg) { res.json(null); return; }
+
+    // Return config without decrypted secrets
+    res.json({
+      id:               cfg.id,
+      authType:         cfg.authType,
+      loginUrl:         cfg.loginUrl,
+      usernameField:    cfg.usernameField,
+      passwordField:    cfg.passwordField,
+      loggedInPattern:  cfg.loggedInPattern,
+      loggedOutPattern: cfg.loggedOutPattern,
+      headerName:       cfg.headerName,
+      // OAuth2 non-secret fields
+      oauth2TokenUrl:   cfg.oauth2TokenUrl,
+      oauth2ClientId:   cfg.oauth2ClientId,
+      oauth2Scope:      cfg.oauth2Scope,
+      oauth2GrantType:  cfg.oauth2GrantType,
+      hasCredentials:   true,  // secrets stored encrypted, not returned
+    });
+  } catch (err) { next(err); }
+});
+
+// PUT /api/domains/:id/auth — create or replace auth config
+router.put("/:id/auth", async (req, res, next) => {
+  try {
+    const body = authConfigSchema.parse(req.body);
+    const user = req.user as { id: string };
+    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const domain = await prisma.domain.findFirst({ where: { id: req.params["id"], orgId: member?.orgId } });
+    if (!domain) { res.status(404).json({ error: "Domain not found" }); return; }
+
+    // Build and encrypt the credentials blob (secrets only — never return them)
+    let credsPlain: string;
+    if (body.authType === "FORM") {
+      credsPlain = JSON.stringify({ username: body.username ?? "", password: body.password ?? "" });
+    } else if (body.authType === "OAUTH2") {
+      credsPlain = JSON.stringify({
+        clientSecret: body.oauth2ClientSecret ?? "",
+        username:     body.username           ?? "",
+        password:     body.password           ?? "",
+      });
+    } else {
+      credsPlain = JSON.stringify({ headerValue: body.headerValue ?? "" });
+    }
+    const encryptedCreds = encrypt(credsPlain);
+
+    const cfg = await prisma.domainAuthConfig.upsert({
+      where:  { domainId: domain.id },
+      create: {
+        domainId:         domain.id,
+        authType:         body.authType,
+        loginUrl:         body.loginUrl        ?? null,
+        usernameField:    body.usernameField,
+        passwordField:    body.passwordField,
+        loggedInPattern:  body.loggedInPattern,
+        loggedOutPattern: body.loggedOutPattern,
+        headerName:       body.headerName      ?? null,
+        // OAuth2
+        oauth2TokenUrl:   body.oauth2TokenUrl   ?? null,
+        oauth2ClientId:   body.oauth2ClientId   ?? null,
+        oauth2Scope:      body.oauth2Scope       ?? null,
+        oauth2GrantType:  body.oauth2GrantType,
+        encryptedCreds,
+      },
+      update: {
+        authType:         body.authType,
+        loginUrl:         body.loginUrl        ?? null,
+        usernameField:    body.usernameField,
+        passwordField:    body.passwordField,
+        loggedInPattern:  body.loggedInPattern,
+        loggedOutPattern: body.loggedOutPattern,
+        headerName:       body.headerName      ?? null,
+        // OAuth2
+        oauth2TokenUrl:   body.oauth2TokenUrl   ?? null,
+        oauth2ClientId:   body.oauth2ClientId   ?? null,
+        oauth2Scope:      body.oauth2Scope       ?? null,
+        oauth2GrantType:  body.oauth2GrantType,
+        encryptedCreds,
+      },
+    });
+
+    res.json({ id: cfg.id, authType: cfg.authType, hasCredentials: true });
+  } catch (err) { next(err); }
+});
+
+// DELETE /api/domains/:id/auth — remove auth config
+router.delete("/:id/auth", async (req, res, next) => {
+  try {
+    const user = req.user as { id: string };
+    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const domain = await prisma.domain.findFirst({ where: { id: req.params["id"], orgId: member?.orgId } });
+    if (!domain) { res.status(404).json({ error: "Domain not found" }); return; }
+
+    await prisma.domainAuthConfig.deleteMany({ where: { domainId: domain.id } });
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// POST /api/domains/:id/risk-score
+router.post("/:id/risk-score", async (req, res, next) => {
+  try {
+    const user   = req.user as { id: string };
+    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const target = await prisma.domain.findFirst({ where: { id: req.params["id"], orgId: member?.orgId } });
+    if (!target) { res.status(404).json({ error: "Domain not found" }); return; }
+    await scoreTarget("DOMAIN", target.id);
+    const updated = await prisma.domain.findUniqueOrThrow({ where: { id: target.id } });
+    res.json({ aiRiskScore: updated.aiRiskScore, aiRiskReason: updated.aiRiskReason, aiRiskScoredAt: updated.aiRiskScoredAt });
+  } catch (err) { next(err); }
+});
+
+// ── OpenAPI / Swagger spec import ────────────────────────────────────────────
+
+const upsertApiSpec = z.object({
+  filename: z.string().max(255),
+  specJson: z.record(z.unknown()),
+});
+
+// GET /domains/:id/apispec
+router.get("/:id/apispec", requireAuth, async (req, res, next) => {
+  try {
+    const user = req.user as { id: string };
+    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    if (!member) { res.status(403).json({ error: "Forbidden" }); return; }
+
+    const spec = await prisma.domainApiSpec.findUnique({ where: { domainId: req.params.id } });
+    res.json(spec);
+  } catch (err) { next(err); }
+});
+
+// PUT /domains/:id/apispec
+router.put("/:id/apispec", requireAuth, async (req, res, next) => {
+  try {
+    const user = req.user as { id: string };
+    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    if (!member) { res.status(403).json({ error: "Forbidden" }); return; }
+
+    const body = upsertApiSpec.parse(req.body);
+
+    // Count endpoints from OpenAPI 3.x or Swagger 2.x spec
+    const paths = (body.specJson as Record<string, unknown>)["paths"] as Record<string, Record<string, unknown>> ?? {};
+    const methods = ["get","post","put","patch","delete","options","head"];
+    let endpoints = 0;
+    for (const pathItem of Object.values(paths)) {
+      endpoints += methods.filter(m => pathItem[m] !== undefined).length;
+    }
+
+    const domainId = req.params["id"]!;
+    const spec = await prisma.domainApiSpec.upsert({
+      where:  { domainId },
+      create: { domainId, filename: body.filename, specJson: body.specJson as object, endpoints },
+      update: { filename: body.filename, specJson: body.specJson as object, endpoints },
+    });
+    res.json(spec);
+  } catch (err) { next(err); }
+});
+
+// DELETE /domains/:id/apispec
+router.delete("/:id/apispec", requireAuth, async (req, res, next) => {
+  try {
+    const user = req.user as { id: string };
+    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    if (!member) { res.status(403).json({ error: "Forbidden" }); return; }
+
+    await prisma.domainApiSpec.deleteMany({ where: { domainId: req.params.id } });
+    res.status(204).send();
   } catch (err) { next(err); }
 });
 

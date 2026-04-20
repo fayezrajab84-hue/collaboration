@@ -3,6 +3,7 @@ import { config } from "./config.js";
 import { logger } from "./logger.js";
 import prisma from "./db.js";
 import { initWorkers } from "./workers/scanWorker.js";
+import { initFpSweepWorker, scheduleFpSweep } from "./workers/fpSweepWorker.js";
 
 async function start() {
   // Run Prisma migrations on startup in development
@@ -15,6 +16,10 @@ async function start() {
   // Initialize BullMQ scan workers
   initWorkers();
   logger.info("BullMQ scan workers initialized.");
+
+  // Initialize & schedule AI false-positive sweep
+  initFpSweepWorker();
+  await scheduleFpSweep();
 
   app.listen(config.PORT, () => {
     logger.info(`🚀 API server running on port ${config.PORT} (${config.NODE_ENV})`);

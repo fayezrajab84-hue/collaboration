@@ -5,6 +5,7 @@ from .iac import IACScanner
 from .container import ContainerScanner
 from .dast import DASTScanner
 from .pentest import PentestScanner
+from .pentest_full import PentestFullScanner
 
 __all__ = [
     "SASTScanner",
@@ -14,4 +15,5 @@ __all__ = [
     "ContainerScanner",
     "DASTScanner",
     "PentestScanner",
+    "PentestFullScanner",
 ]

@@ -3,6 +3,7 @@ import { requireAuth } from "../../middleware/requireAuth.js";
 import prisma from "../../db.js";
 import * as gh from "../../github/client.js";
 import { createRepoSchema, updateRepoSchema, triggerScanSchema } from "./validators.js";
+import { scoreTarget } from "../../services/riskScoringService.js";
 import { encrypt } from "../../services/encryptionService.js";
 import { randomBytes } from "crypto";
 import { triggerScan } from "../../services/scanService.js";
@@ -179,6 +180,19 @@ router.post("/:id/scan", async (req, res, next) => {
     });
 
     res.status(202).json(result);
+  } catch (err) { next(err); }
+});
+
+// POST /api/repos/:id/risk-score — regenerate AI risk score on demand
+router.post("/:id/risk-score", async (req, res, next) => {
+  try {
+    const user   = req.user as { id: string };
+    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const repo   = await prisma.repository.findFirst({ where: { id: req.params["id"], orgId: member?.orgId } });
+    if (!repo) { res.status(404).json({ error: "Repository not found" }); return; }
+    await scoreTarget("REPOSITORY", repo.id);
+    const updated = await prisma.repository.findUniqueOrThrow({ where: { id: repo.id } });
+    res.json({ aiRiskScore: updated.aiRiskScore, aiRiskReason: updated.aiRiskReason, aiRiskScoredAt: updated.aiRiskScoredAt });
   } catch (err) { next(err); }
 });
 

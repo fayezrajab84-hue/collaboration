@@ -3,28 +3,33 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Play, Trash2, Pencil, Box, X } from "lucide-react";
 import { containersApi } from "../lib/api";
 import type { Container } from "@devsecops/types";
+import RiskScoreBadge from "../components/RiskScoreBadge";
 import ScanStatusBadge from "../components/ScanStatusBadge";
 import FindingCountBadges from "../components/FindingCountBadges";
-import { useSSE } from "../hooks/useSSE";
+import ChecksTab from "../components/ChecksTab";
+import { useTargetScanStatus } from "../hooks/useTargetScanStatus";
 import { formatRelative } from "../lib/utils";
+import { CONTAINER_CHECKS } from "../data/checks";
 
 function ScanButton({ containerId }: { containerId: string }) {
-  const [activeScanId, setActiveScanId] = useState<string | null>(null);
-  const { status } = useSSE(activeScanId);
   const qc = useQueryClient();
+  const { status, isActive } = useTargetScanStatus(containerId);
 
   const scan = useMutation({
     mutationFn: () => containersApi.triggerScan(containerId),
-    onSuccess: (data) => { setActiveScanId(data.scanJobId); qc.invalidateQueries({ queryKey: ["scans"] }); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["scans"] });
+      qc.invalidateQueries({ queryKey: ["scans", "active"] });
+    },
   });
 
-  const liveStatus = status ?? (scan.isPending ? "PENDING" : null);
+  const displayStatus = status ?? (scan.isPending ? "PENDING" : null);
   return (
     <div className="flex items-center gap-2">
-      {liveStatus && <ScanStatusBadge status={liveStatus} />}
+      {displayStatus && <ScanStatusBadge status={displayStatus} />}
       <button
         onClick={() => scan.mutate()}
-        disabled={scan.isPending || liveStatus === "RUNNING"}
+        disabled={scan.isPending || isActive}
         className="flex items-center gap-1.5 rounded bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
       >
         <Play className="h-3 w-3" /> Scan
@@ -74,7 +79,7 @@ function EditContainerModal({ container, onClose }: { container: Container; onCl
   const update = useMutation({
     mutationFn: () => containersApi.update(container.id, {
       imageRef,
-      registry: registry || null,
+      registry: registry || undefined,
     }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["containers"] }); onClose(); },
   });
@@ -127,20 +132,42 @@ function EditContainerModal({ container, onClose }: { container: Container; onCl
 export default function ContainersPage() {
   const [showAdd, setShowAdd] = useState(false);
   const [editContainer, setEditContainer] = useState<Container | null>(null);
+  const [tab, setTab] = useState<"containers" | "checks">("containers");
   const qc = useQueryClient();
   const { data: containers, isLoading } = useQuery({ queryKey: ["containers"], queryFn: containersApi.list });
   const del = useMutation({ mutationFn: (id: string) => containersApi.delete(id), onSuccess: () => qc.invalidateQueries({ queryKey: ["containers"] }) });
 
   return (
     <div className="p-6">
-      <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-xl font-bold text-white">Containers</h1>
-        <button onClick={() => setShowAdd(true)} className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500">
-          <Plus className="h-4 w-4" /> Add Image
-        </button>
+      <div className="mb-4 flex items-center justify-between">
+        <h1 className="text-3xl font-bold text-white">Containers</h1>
+        {tab === "containers" && (
+          <button onClick={() => setShowAdd(true)} className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500">
+            <Plus className="h-4 w-4" /> Add Image
+          </button>
+        )}
       </div>
 
-      {isLoading ? (
+      {/* Tabs */}
+      <div className="mb-5 flex gap-1 border-b border-gray-800">
+        {(["containers", "checks"] as const).map((t) => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
+              tab === t
+                ? "border-indigo-500 text-white"
+                : "border-transparent text-gray-500 hover:text-gray-300"
+            }`}
+          >
+            {t === "containers" ? "Containers" : "Checks"}
+          </button>
+        ))}
+      </div>
+
+      {tab === "checks" ? (
+        <ChecksTab checks={CONTAINER_CHECKS} />
+      ) : isLoading ? (
         <div className="flex h-48 items-center justify-center text-gray-500">Loading…</div>
       ) : containers?.length === 0 ? (
         <div className="flex h-48 flex-col items-center justify-center gap-3 text-gray-500">
@@ -155,6 +182,7 @@ export default function ContainersPage() {
                 <th className="px-4 py-3 font-medium">Image</th>
                 <th className="px-4 py-3 font-medium">Registry</th>
                 <th className="px-4 py-3 font-medium">Issues</th>
+                <th className="px-4 py-3 font-medium">AI Risk</th>
                 <th className="px-4 py-3 font-medium">Last Scanned</th>
                 <th className="px-4 py-3 font-medium">Actions</th>
               </tr>
@@ -165,6 +193,7 @@ export default function ContainersPage() {
                   <td className="px-4 py-3 font-mono text-sm text-gray-200">{c.imageRef}</td>
                   <td className="px-4 py-3 text-gray-400">{c.registry ?? "Docker Hub"}</td>
                   <td className="px-4 py-3"><FindingCountBadges counts={c.findingCounts} /></td>
+                  <td className="px-4 py-3"><RiskScoreBadge score={c.aiRiskScore} reason={c.aiRiskReason} /></td>
                   <td className="px-4 py-3 text-gray-400">{c.lastScannedAt ? formatRelative(c.lastScannedAt) : "Never"}</td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">

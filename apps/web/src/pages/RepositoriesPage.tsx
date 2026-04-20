@@ -3,32 +3,34 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Play, Trash2, Pencil, GitBranch, X } from "lucide-react";
 import { reposApi } from "../lib/api";
 import type { Repository } from "@devsecops/types";
+import RiskScoreBadge from "../components/RiskScoreBadge";
 import ScanStatusBadge from "../components/ScanStatusBadge";
 import FindingCountBadges from "../components/FindingCountBadges";
-import { useSSE } from "../hooks/useSSE";
+import ChecksTab from "../components/ChecksTab";
+import { useTargetScanStatus } from "../hooks/useTargetScanStatus";
 import { formatRelative } from "../lib/utils";
+import { REPO_CHECKS } from "../data/checks";
 
 function ScanButton({ repoId }: { repoId: string }) {
-  const [activeScanId, setActiveScanId] = useState<string | null>(null);
-  const { status } = useSSE(activeScanId);
   const qc = useQueryClient();
+  const { status, isActive } = useTargetScanStatus(repoId);
 
   const scan = useMutation({
     mutationFn: () => reposApi.triggerScan(repoId),
-    onSuccess: (data) => {
-      setActiveScanId(data.scanJobId);
+    onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["scans"] });
+      qc.invalidateQueries({ queryKey: ["scans", "active"] });
     },
   });
 
-  const liveStatus = status ?? (scan.isPending ? "PENDING" : null);
+  const displayStatus = status ?? (scan.isPending ? "PENDING" : null);
 
   return (
     <div className="flex items-center gap-2">
-      {liveStatus && <ScanStatusBadge status={liveStatus} />}
+      {displayStatus && <ScanStatusBadge status={displayStatus} />}
       <button
         onClick={() => scan.mutate()}
-        disabled={scan.isPending || liveStatus === "RUNNING"}
+        disabled={scan.isPending || isActive}
         className="flex items-center gap-1.5 rounded bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
       >
         <Play className="h-3 w-3" />
@@ -130,6 +132,7 @@ function EditRepoModal({ repo, onClose }: { repo: Repository; onClose: () => voi
 export default function RepositoriesPage() {
   const [showAdd, setShowAdd] = useState(false);
   const [editRepo, setEditRepo] = useState<Repository | null>(null);
+  const [tab, setTab] = useState<"repos" | "checks">("repos");
   const qc = useQueryClient();
   const { data: repos, isLoading } = useQuery({ queryKey: ["repos"], queryFn: reposApi.list });
 
@@ -140,17 +143,38 @@ export default function RepositoriesPage() {
 
   return (
     <div className="p-6">
-      <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-xl font-bold text-white">Repositories</h1>
-        <button
-          onClick={() => setShowAdd(true)}
-          className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500"
-        >
-          <Plus className="h-4 w-4" /> Add Repository
-        </button>
+      <div className="mb-4 flex items-center justify-between">
+        <h1 className="text-3xl font-bold text-white">Repositories</h1>
+        {tab === "repos" && (
+          <button
+            onClick={() => setShowAdd(true)}
+            className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500"
+          >
+            <Plus className="h-4 w-4" /> Add Repository
+          </button>
+        )}
       </div>
 
-      {isLoading ? (
+      {/* Tabs */}
+      <div className="mb-5 flex gap-1 border-b border-gray-800">
+        {(["repos", "checks"] as const).map((t) => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
+              tab === t
+                ? "border-indigo-500 text-white"
+                : "border-transparent text-gray-500 hover:text-gray-300"
+            }`}
+          >
+            {t === "repos" ? "Repositories" : "Checks"}
+          </button>
+        ))}
+      </div>
+
+      {tab === "checks" ? (
+        <ChecksTab checks={REPO_CHECKS} />
+      ) : isLoading ? (
         <div className="flex h-48 items-center justify-center text-gray-500">Loading…</div>
       ) : repos?.length === 0 ? (
         <div className="flex h-48 flex-col items-center justify-center gap-3 text-gray-500">
@@ -166,6 +190,7 @@ export default function RepositoriesPage() {
                 <th className="px-4 py-3 font-medium">Repository</th>
                 <th className="px-4 py-3 font-medium">Language</th>
                 <th className="px-4 py-3 font-medium">Issues</th>
+                <th className="px-4 py-3 font-medium">AI Risk</th>
                 <th className="px-4 py-3 font-medium">Last Scanned</th>
                 <th className="px-4 py-3 font-medium">Actions</th>
               </tr>
@@ -181,6 +206,12 @@ export default function RepositoriesPage() {
                   </td>
                   <td className="px-4 py-3 text-gray-400">{repo.language ?? "—"}</td>
                   <td className="px-4 py-3"><FindingCountBadges counts={repo.findingCounts} /></td>
+                  <td className="px-4 py-3">
+                    <RiskScoreBadge score={repo.aiRiskScore} reason={repo.aiRiskReason} />
+                    {repo.aiRiskScore == null && repo.lastScannedAt && (
+                      <span className="text-[10px] text-gray-600">—</span>
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-gray-400">
                     {repo.lastScannedAt ? formatRelative(repo.lastScannedAt) : "Never"}
                   </td>
