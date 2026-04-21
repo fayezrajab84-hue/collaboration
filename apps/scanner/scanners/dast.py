@@ -439,6 +439,25 @@ class DASTScanner(BaseScanner):
         if auth_payload is not None:
             payload["auth"] = auth_payload
 
+        # ZAP's Forced-User Mode (if the scanner set up an auth context earlier)
+        # will rewrite session cookies on every request flowing through ZAP. That
+        # breaks the crawler's *own* form-login flow: when Playwright POSTs to
+        # /login.php, ZAP substitutes the forced user's (stale/empty) session,
+        # and DVWA rejects the login. We therefore disable forced-user mode for
+        # the duration of the crawler run and restore it afterwards.
+        forced_user_was_on = False
+        try:
+            r = self._zap("/JSON/forcedUser/view/isForcedUserModeEnabled/")
+            forced_user_was_on = str(r.get("forcedModeEnabled", "false")).lower() == "true"
+            if forced_user_was_on:
+                self._zap(
+                    "/JSON/forcedUser/action/setForcedUserModeEnabled/",
+                    {"boolean": "false"},
+                )
+                print("[dast] Disabled ZAP forced-user mode for crawler sidecar")
+        except Exception as exc:
+            print(f"[dast] Warning: could not toggle forced-user mode: {exc}")
+
         try:
             with httpx.Client(timeout=settings.crawler_timeout_secs) as client:
                 resp = client.post(f"{settings.crawler_url}/crawl", json=payload)
@@ -447,6 +466,15 @@ class DASTScanner(BaseScanner):
         except Exception as exc:
             print(f"[dast] Crawler sidecar unavailable, falling back: {exc}")
             return []
+        finally:
+            if forced_user_was_on:
+                try:
+                    self._zap(
+                        "/JSON/forcedUser/action/setForcedUserModeEnabled/",
+                        {"boolean": "true"},
+                    )
+                except Exception as exc:
+                    print(f"[dast] Warning: could not re-enable forced-user mode: {exc}")
 
         discovered = body.get("discovered_urls") or []
         api_endpoints = body.get("api_endpoints") or []

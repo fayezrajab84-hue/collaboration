@@ -96,25 +96,28 @@ async def _apply_form(page: Page, auth: FormAuth) -> AuthResult:
     except Exception as exc:
         return AuthResult(success=False, evidence=f"filling credentials failed: {exc}")
 
-    # Submit — click and wait for navigation or AJAX settle.
-    # ``no_wait_after=True`` is critical: without it, page.click's internal
-    # post-click wait races against expect_navigation and times out on server-
-    # rendered forms (e.g. DVWA) even though the navigation actually completes.
+    # Submit — click, then settle.
+    #
+    # We used to wrap this in ``page.expect_navigation``, but that approach is
+    # fragile: on server-rendered forms (DVWA) the click's internal post-click
+    # wait races against expect_navigation and times out even though the
+    # navigation actually completes. Instead we:
+    #
+    #   1. Click with ``no_wait_after=True`` so Playwright does NOT auto-wait
+    #      for post-click navigation (avoids the race entirely).
+    #   2. Then ``wait_for_load_state`` ourselves — best-effort, so SPAs that
+    #      never reach ``networkidle`` don't fail the whole auth.
     try:
-        async with page.expect_navigation(wait_until="domcontentloaded", timeout=15000):
-            await page.click(auth.submit_selector, timeout=5000, no_wait_after=True)
-    except Exception:
-        # SPAs often don't trigger a full navigation. Fall back to clicking
-        # and giving the page a brief settle window.
+        await page.click(auth.submit_selector, timeout=5000, no_wait_after=True)
+    except Exception as exc:
+        return AuthResult(success=False, evidence=f"submit click failed: {exc}")
+
+    # Best-effort settle — both states are attempted, both failures ignored.
+    for state in ("domcontentloaded", "networkidle"):
         try:
-            await page.click(auth.submit_selector, timeout=5000, no_wait_after=True)
-            try:
-                await page.wait_for_load_state("networkidle", timeout=5000)
-            except Exception:
-                # networkidle is best-effort — some pages never settle.
-                pass
-        except Exception as exc:
-            return AuthResult(success=False, evidence=f"submit failed: {exc}")
+            await page.wait_for_load_state(state, timeout=10000)
+        except Exception:
+            pass
 
     # Verify — OR across configured indicators (any match = success).
     return await _verify_form_success(page, auth)
