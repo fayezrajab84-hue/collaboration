@@ -99,6 +99,87 @@ async def run_verify(request: VerifyRequest) -> VerifyResponse:
     return result
 
 
+@app.post("/sbom")
+async def generate_sbom(request: dict):
+    """
+    Generate a CycloneDX SBOM JSON for a repository or a container image.
+    Request body:
+      - target_type: "REPOSITORY" | "CONTAINER"
+      - image_ref:   when CONTAINER
+      - repo_url, branch, git_token: when REPOSITORY
+    Returns CycloneDX JSON directly (response is proxied by the API).
+    """
+    import json as _json
+    import subprocess as _subprocess
+    from scanners.base import BaseScanner
+
+    target_type = request.get("target_type")
+    if target_type not in ("REPOSITORY", "CONTAINER"):
+        raise HTTPException(status_code=400, detail="target_type must be REPOSITORY or CONTAINER")
+
+    import tempfile as _tempfile
+    import shutil as _shutil
+    import os as _os
+    scanner = BaseScanner.__subclasses__()[0]()  # any concrete subclass — only using clone_repo/workspace
+    workspace = scanner.make_workspace()
+    # Per-request trivy cache dir — avoids "cache may be in use by another process: timeout"
+    # when a concurrent scan holds the shared cache lock. We copy the existing
+    # default cache (if it exists) so we don't re-download the vuln/java DBs.
+    trivy_cache = _tempfile.mkdtemp(prefix="trivy-sbom-cache-")
+    default_cache = _os.path.expanduser("~/.cache/trivy")
+    # Copy only the read-only DB + policy subdirs (via hardlinks to avoid ~1GB duplication).
+    # Leave fanal/ (the per-scan state with its lock file) fresh for each request.
+    for sub in ("db", "policy"):
+        src = _os.path.join(default_cache, sub)
+        if _os.path.isdir(src):
+            try:
+                _shutil.copytree(src, _os.path.join(trivy_cache, sub), copy_function=_os.link)
+            except Exception:
+                try:
+                    _shutil.copytree(src, _os.path.join(trivy_cache, sub), dirs_exist_ok=True)
+                except Exception:
+                    pass  # copy failure non-fatal — trivy will re-fetch
+    # SBOM only needs package inventory — explicitly disable vuln scanning so trivy
+    # doesn't try to download/refresh the vuln DB (which also takes the cache lock).
+    # Per-request cache dir avoids lock contention with concurrent vuln scans.
+    # We still let trivy fetch the Java DB on demand — without it, container SBOMs
+    # miss jar packages. The 15m timeout accommodates first-run DB downloads.
+    common = [
+        "--cache-dir", trivy_cache,
+        "--format", "cyclonedx",
+        "--quiet",
+        "--timeout", "15m",
+    ]
+    try:
+        if target_type == "CONTAINER":
+            image_ref = request.get("image_ref")
+            if not image_ref:
+                raise HTTPException(status_code=400, detail="image_ref required for CONTAINER")
+            cmd = ["trivy", "image", *common, image_ref]
+        else:
+            repo_url = request.get("repo_url")
+            branch   = request.get("branch") or "main"
+            if not repo_url:
+                raise HTTPException(status_code=400, detail="repo_url required for REPOSITORY")
+            scanner.clone_repo(repo_url, branch, request.get("git_token"), workspace)
+            cmd = ["trivy", "fs", *common, workspace]
+
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            _executor,
+            lambda: _subprocess.run(cmd, capture_output=True, text=True, timeout=960),
+        )
+        if result.returncode != 0:
+            raise HTTPException(status_code=500, detail=f"trivy failed: {result.stderr[:500]}")
+        try:
+            return _json.loads(result.stdout or "{}")
+        except _json.JSONDecodeError:
+            raise HTTPException(status_code=500, detail="trivy returned invalid JSON")
+    finally:
+        scanner.cleanup(workspace)
+        _shutil.rmtree(trivy_cache, ignore_errors=True)
+
+
 @app.post("/scan", response_model=ScanResult, response_model_by_alias=True)
 async def run_scan(request: ScanRequest) -> ScanResult:
     scanner_cls = SCANNER_MAP.get(request.scan_type)

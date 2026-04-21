@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Play, Trash2, Pencil, GitBranch, X } from "lucide-react";
-import { reposApi } from "../lib/api";
+import { Plus, Play, Trash2, Pencil, GitBranch, X, FileDown, Lock, Globe, Check, Search } from "lucide-react";
+import { reposApi, sbomApi } from "../lib/api";
+import Can from "../components/Can";
 import type { Repository } from "@devsecops/types";
 import RiskScoreBadge from "../components/RiskScoreBadge";
 import ScanStatusBadge from "../components/ScanStatusBadge";
@@ -35,7 +36,7 @@ function ScanButton({ repoId }: { repoId: string }) {
       <button
         onClick={() => scan.mutate()}
         disabled={scan.isPending || isActive}
-        className="flex items-center gap-1.5 rounded bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+        className="flex items-center gap-1.5 rounded bg-indigo-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
       >
         <Play className="h-3 w-3" />
         Scan
@@ -45,45 +46,152 @@ function ScanButton({ repoId }: { repoId: string }) {
 }
 
 function AddRepoModal({ onClose }: { onClose: () => void }) {
+  const [mode, setMode] = useState<"github" | "url">("github");
   const [url, setUrl] = useState("");
+  const [search, setSearch] = useState("");
+  const [pendingFullName, setPendingFullName] = useState<string | null>(null);
   const qc = useQueryClient();
 
+  const { data: ghRepos, isLoading: ghLoading, error: ghError } = useQuery({
+    queryKey: ["repos", "github"],
+    queryFn:  () => reposApi.listGitHub(1),
+    enabled:  mode === "github",
+    staleTime: 60_000,
+  });
+
   const add = useMutation({
-    mutationFn: () => reposApi.create({ githubUrl: url }),
+    mutationFn: (githubUrl: string) => reposApi.create({ githubUrl }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["repos"] });
-      onClose();
+      qc.invalidateQueries({ queryKey: ["repos", "github"] });
+      setPendingFullName(null);
+      if (mode === "url") onClose();
     },
+    onError: () => setPendingFullName(null),
   });
+
+  const filtered = (ghRepos ?? []).filter((r) =>
+    search.trim() === "" || r.fullName.toLowerCase().includes(search.toLowerCase()),
+  );
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="w-full max-w-md rounded-xl border border-gray-700 bg-gray-900 p-6 shadow-2xl">
-        <div className="mb-4 flex items-center justify-between">
+      <div className="w-full max-w-2xl rounded-xl border border-gray-700 bg-gray-900 shadow-2xl flex flex-col max-h-[85vh]">
+        <div className="flex items-center justify-between border-b border-gray-800 px-6 py-4">
           <h2 className="text-base font-semibold text-white">Add Repository</h2>
           <button onClick={onClose} className="text-gray-500 hover:text-gray-200"><X className="h-4 w-4" /></button>
         </div>
-        <input
-          className="w-full rounded bg-gray-800 px-3 py-2 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-          placeholder="https://github.com/owner/repo"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && add.mutate()}
-        />
-        {add.error && (
-          <p className="mt-2 text-xs text-red-400">
-            {(add.error as Error).message}
-          </p>
-        )}
-        <div className="mt-4 flex justify-end gap-2">
-          <button onClick={onClose} className="rounded px-3 py-1.5 text-sm text-gray-400 hover:text-gray-200">Cancel</button>
-          <button
-            onClick={() => add.mutate()}
-            disabled={!url || add.isPending}
-            className="rounded bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
-          >
-            {add.isPending ? "Adding…" : "Add Repository"}
+
+        {/* Tabs */}
+        <div className="flex gap-1 border-b border-gray-800 px-6">
+          {(["github", "url"] as const).map((m) => (
+            <button
+              key={m}
+              onClick={() => setMode(m)}
+              className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px ${
+                mode === m
+                  ? "border-indigo-500 text-white"
+                  : "border-transparent text-gray-500 hover:text-gray-300"
+              }`}
+            >
+              {m === "github" ? "From my GitHub" : "By URL"}
+            </button>
+          ))}
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto px-6 py-4">
+          {mode === "github" ? (
+            <>
+              <div className="relative mb-3">
+                <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-500" />
+                <input
+                  className="w-full rounded bg-gray-800 pl-8 pr-3 py-2 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  placeholder="Filter your repositories…"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  autoFocus
+                />
+              </div>
+              {ghLoading ? (
+                <div className="flex h-40 items-center justify-center text-sm text-gray-500">Loading your GitHub repositories…</div>
+              ) : ghError ? (
+                <div className="rounded border border-red-900/60 bg-red-950/30 p-4 text-sm text-red-300">
+                  Failed to load GitHub repos. Make sure you granted the <code className="rounded bg-red-900/40 px-1">repo</code> scope when signing in.
+                </div>
+              ) : filtered.length === 0 ? (
+                <div className="flex h-40 items-center justify-center text-sm text-gray-500">
+                  {search ? "No repositories match." : "No repositories found on your GitHub account."}
+                </div>
+              ) : (
+                <ul className="divide-y divide-gray-800 rounded border border-gray-800">
+                  {filtered.map((r) => {
+                    const adding = add.isPending && pendingFullName === r.fullName;
+                    return (
+                      <li key={r.id} className="flex items-center gap-3 px-3 py-2.5 hover:bg-gray-800/40">
+                        <span className="shrink-0" title={r.isPrivate ? "Private" : "Public"}>
+                          {r.isPrivate ? <Lock className="h-3.5 w-3.5 text-amber-400" /> : <Globe className="h-3.5 w-3.5 text-gray-500" />}
+                        </span>
+                        <div className="flex-1 min-w-0">
+                          <div className="truncate font-medium text-gray-200">{r.fullName}</div>
+                          <div className="text-xs text-gray-500">
+                            {r.language ?? "—"} · default branch <code className="rounded bg-gray-800 px-1">{r.defaultBranch}</code>
+                          </div>
+                        </div>
+                        {r.added ? (
+                          <span className="flex items-center gap-1 rounded bg-teal-900/30 border border-teal-800/50 px-2 py-1 text-xs text-teal-400">
+                            <Check className="h-3 w-3" /> Added
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => { setPendingFullName(r.fullName); add.mutate(r.url); }}
+                            disabled={add.isPending}
+                            className="rounded bg-indigo-700 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-600 disabled:opacity-50"
+                          >
+                            {adding ? "Adding…" : "Add"}
+                          </button>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+              {add.error && (
+                <p className="mt-3 text-xs text-red-400">{(add.error as Error).message}</p>
+              )}
+            </>
+          ) : (
+            <>
+              <label className="mb-1 block text-xs font-medium text-gray-400">GitHub URL</label>
+              <input
+                className="w-full rounded bg-gray-800 px-3 py-2 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                placeholder="https://github.com/owner/repo"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && url && add.mutate(url)}
+                autoFocus
+              />
+              <p className="mt-2 text-xs text-gray-500">Works for any repo your GitHub token can access, including private ones.</p>
+              {add.error && (
+                <p className="mt-2 text-xs text-red-400">{(add.error as Error).message}</p>
+              )}
+            </>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-2 border-t border-gray-800 px-6 py-3">
+          <button onClick={onClose} className="rounded px-3 py-1.5 text-sm text-gray-400 hover:text-gray-200">
+            {mode === "github" ? "Done" : "Cancel"}
           </button>
+          {mode === "url" && (
+            <button
+              onClick={() => add.mutate(url)}
+              disabled={!url || add.isPending}
+              className="rounded bg-indigo-700 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-600 disabled:opacity-50"
+            >
+              {add.isPending ? "Adding…" : "Add Repository"}
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -123,7 +231,7 @@ function EditRepoModal({ repo, onClose }: { repo: Repository; onClose: () => voi
           <button
             onClick={() => update.mutate()}
             disabled={!branch || update.isPending}
-            className="rounded bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+            className="rounded bg-indigo-700 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-600 disabled:opacity-50"
           >
             {update.isPending ? "Saving…" : "Save Changes"}
           </button>
@@ -152,7 +260,7 @@ export default function RepositoriesPage() {
         {tab === "repos" && (
           <button
             onClick={() => setShowAdd(true)}
-            className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500"
+            className="flex items-center gap-2 rounded-lg bg-indigo-700 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-600"
           >
             <Plus className="h-4 w-4" /> Add Repository
           </button>
@@ -222,20 +330,33 @@ export default function RepositoriesPage() {
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
                       <ScanButton repoId={repo.id} />
-                      <button
-                        onClick={() => setEditRepo(repo)}
-                        className="text-gray-600 hover:text-indigo-400"
-                        title="Edit repository"
+                      <a
+                        href={sbomApi.repoUrl(repo.id)}
+                        className="flex items-center gap-1 rounded border border-gray-700 bg-gray-800 px-2 py-1 text-xs text-gray-300 hover:border-indigo-600 hover:bg-indigo-900/30 hover:text-indigo-300"
+                        title="Download CycloneDX SBOM (software bill of materials)"
+                        download
                       >
-                        <Pencil className="h-4 w-4" />
-                      </button>
-                      <button
-                        onClick={() => deleteRepo.mutate(repo.id)}
-                        className="text-gray-600 hover:text-red-400"
-                        title="Remove repository"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
+                        <FileDown className="h-3 w-3" />
+                        SBOM
+                      </a>
+                      <Can role="DEVELOPER">
+                        <button
+                          onClick={() => setEditRepo(repo)}
+                          className="text-gray-600 hover:text-indigo-400"
+                          title="Edit repository"
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </button>
+                      </Can>
+                      <Can role="ADMIN">
+                        <button
+                          onClick={() => deleteRepo.mutate(repo.id)}
+                          className="text-gray-600 hover:text-red-400"
+                          title="Remove repository"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </Can>
                     </div>
                   </td>
                 </tr>

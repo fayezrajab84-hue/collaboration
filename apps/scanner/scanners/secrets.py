@@ -9,7 +9,7 @@ from .base import BaseScanner
 def _read_snippet(file_path: str, line_num: int, context: int = 2) -> str | None:
     """Read ±context lines around line_num from a local file.
 
-    Returns a numbered snippet string (same format as SAST), or None on error.
+    Returns clean code (no N: prefixes) — SyntaxHighlight renders line numbers.
     The matched line itself is included; the secret value remains visible so the
     developer can confirm the finding — TruffleHog already stripped the raw
     bytes from its JSON output.
@@ -19,10 +19,7 @@ def _read_snippet(file_path: str, line_num: int, context: int = 2) -> str | None
             lines = fh.readlines()
         start = max(0, line_num - context - 1)   # line_num is 1-based
         end   = min(len(lines), line_num + context)
-        slice_ = lines[start:end]
-        return "".join(
-            f"{start + i + 1}: {ln}" for i, ln in enumerate(slice_)
-        ).rstrip()[:1000]
+        return "".join(lines[start:end]).rstrip()[:1000]
     except Exception:
         return None
 

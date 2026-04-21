@@ -145,6 +145,216 @@ function mergePackageFindings(
   return result;
 }
 
+// ── IAC rule-level merge ──────────────────────────────────────────────────────
+
+/**
+ * One failing resource for a given Checkov rule.
+ * Stored inside rawOutput.resources[] of the merged finding.
+ */
+interface IacResource {
+  filePath:  string | null;
+  lineStart: number | null;
+  lineEnd:   number | null;
+  resource:  string | null;   // e.g. "aws_s3_bucket.my_bucket"
+  snippet:   string | null;
+  severity:  string;
+  checkType: string | null;   // e.g. "terraform", "kubernetes"
+}
+
+/**
+ * Deterministic fingerprint keyed to Checkov rule identity within a repo target.
+ */
+function iacRuleFingerprint(orgId: string, targetId: string, ruleId: string): string {
+  return createHash("sha256")
+    .update(`${orgId}:iac-rule:${targetId}:${ruleId}`)
+    .digest("hex");
+}
+
+/**
+ * Collapse per-resource IAC findings for the same Checkov rule into one merged
+ * finding. Each failing resource becomes an entry in rawOutput.resources[].
+ *
+ * Rules:
+ *  - Severity   → highest across all failing resources
+ *  - title      → unchanged (the Checkov check_name)
+ *  - description → updated to reflect count ("…affects N resources")
+ *  - rawOutput  → { merged: true, count, ruleId, scanner, resources: [...] }
+ */
+function mergeIacFindings(
+  findings: NormalizedFinding[],
+  orgId:    string,
+  targetId: string,
+): NormalizedFinding[] {
+  const groups = new Map<string, NormalizedFinding[]>();
+  for (const f of findings) {
+    const key = f.ruleId ?? f.title ?? "unknown";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(f);
+  }
+
+  const result: NormalizedFinding[] = [];
+
+  for (const [ruleId, group] of groups.entries()) {
+    const fp = iacRuleFingerprint(orgId, targetId, ruleId);
+
+    if (group.length === 1) {
+      result.push({ ...group[0]!, fingerprint: fp });
+      continue;
+    }
+
+    // ── Multiple failing resources → build merged finding ─────────────────
+    const topSev = highestSeverity(group.map((f) => f.severity));
+
+    // Sort by severity (worst first), then by file path for stable ordering
+    const sorted = [...group].sort((a, b) => {
+      const sevDiff = (SEV_RANK[a.severity] ?? 99) - (SEV_RANK[b.severity] ?? 99);
+      if (sevDiff !== 0) return sevDiff;
+      return (a.filePath ?? "").localeCompare(b.filePath ?? "");
+    });
+
+    const primary = sorted[0]!;
+
+    const resources: IacResource[] = sorted.map((f) => {
+      const raw = (f.rawOutput ?? {}) as Record<string, unknown>;
+      return {
+        filePath:  f.filePath  ?? null,
+        lineStart: f.lineStart ?? null,
+        lineEnd:   f.lineEnd   ?? null,
+        resource:  (raw["resource"]    as string | null) ?? null,
+        snippet:   f.codeSnippet       ?? null,
+        severity:  f.severity,
+        checkType: (raw["check_type"]  as string | null) ?? null,
+      };
+    });
+
+    // Update description to mention the count
+    const countLabel = `${group.length} resource${group.length !== 1 ? "s" : ""}`;
+    const baseDesc   = primary.description ?? primary.title;
+    // Strip any old "affects N resources" suffix before appending a fresh one
+    const cleanDesc  = baseDesc.replace(/\s*—\s*affects \d+ resources?\.?$/, "");
+    const description = `${cleanDesc} — affects ${countLabel}.`;
+
+    result.push({
+      ...primary,
+      fingerprint: fp,
+      severity:    topSev as NormalizedFinding["severity"],
+      description,
+      rawOutput: {
+        merged:    true,
+        count:     group.length,
+        ruleId,
+        scanner:   primary.scanner,
+        resources,
+        primary:   primary.rawOutput,
+      },
+    });
+  }
+
+  return result;
+}
+
+// ── SECRET rule-level merge ───────────────────────────────────────────────────
+
+/**
+ * One occurrence of a secret type found in a different file/line.
+ * Stored inside rawOutput.occurrences[] of the merged finding.
+ */
+interface SecretOccurrence {
+  filePath:  string | null;
+  lineStart: number | null;
+  snippet:   string | null;
+  verified:  boolean;
+  severity:  string;
+  scanner:   string;
+}
+
+/**
+ * Deterministic fingerprint keyed to detector identity within a repo target.
+ */
+function secretRuleFingerprint(orgId: string, targetId: string, ruleId: string): string {
+  return createHash("sha256")
+    .update(`${orgId}:secret-rule:${targetId}:${ruleId}`)
+    .digest("hex");
+}
+
+/**
+ * Collapse all per-file SECRET findings for the same detector/ruleId into one
+ * merged finding. Each file occurrence becomes an entry in rawOutput.occurrences[].
+ *
+ * Rules:
+ *  - Severity   → highest (CRITICAL if any verified, else HIGH)
+ *  - Confidence → highest across occurrences
+ *  - title      → unchanged (detector name)
+ *  - rawOutput  → { merged: true, count, ruleId, scanner, occurrences: [...] }
+ */
+function mergeSecretFindings(
+  findings: NormalizedFinding[],
+  orgId:    string,
+  targetId: string,
+): NormalizedFinding[] {
+  const groups = new Map<string, NormalizedFinding[]>();
+  for (const f of findings) {
+    const key = f.ruleId ?? f.title ?? "unknown";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(f);
+  }
+
+  const result: NormalizedFinding[] = [];
+
+  for (const [ruleId, group] of groups.entries()) {
+    const fp = secretRuleFingerprint(orgId, targetId, ruleId);
+
+    if (group.length === 1) {
+      result.push({ ...group[0]!, fingerprint: fp });
+      continue;
+    }
+
+    // ── Multiple occurrences → build merged finding ───────────────────────
+    const topSev  = highestSeverity(group.map((f) => f.severity));
+    const topConf = group.reduce<string>((best, f) => {
+      const c = f.confidence ?? "POSSIBLE";
+      const CONF_RANK: Record<string, number> = { POSSIBLE: 0, LIKELY: 1, CONFIRMED: 2 };
+      return (CONF_RANK[c] ?? 0) > (CONF_RANK[best] ?? 0) ? c : best;
+    }, "POSSIBLE");
+
+    // Sort: verified first, then by severity
+    const sorted = [...group].sort((a, b) => {
+      const aVerified = (a.rawOutput as Record<string, unknown>)?.["Verified"] === true ? 0 : 1;
+      const bVerified = (b.rawOutput as Record<string, unknown>)?.["Verified"] === true ? 0 : 1;
+      if (aVerified !== bVerified) return aVerified - bVerified;
+      return (SEV_RANK[a.severity] ?? 99) - (SEV_RANK[b.severity] ?? 99);
+    });
+
+    const primary = sorted[0]!;
+
+    const occurrences: SecretOccurrence[] = sorted.map((f) => ({
+      filePath:  f.filePath  ?? null,
+      lineStart: f.lineStart ?? null,
+      snippet:   f.codeSnippet ?? null,
+      verified:  (f.rawOutput as Record<string, unknown>)?.["Verified"] === true,
+      severity:  f.severity,
+      scanner:   f.scanner,
+    }));
+
+    result.push({
+      ...primary,
+      fingerprint: fp,
+      severity:    topSev as NormalizedFinding["severity"],
+      confidence:  topConf as NormalizedFinding["confidence"],
+      rawOutput: {
+        merged:      true,
+        count:       group.length,
+        ruleId,
+        scanner:     primary.scanner,
+        occurrences,
+        primary:     primary.rawOutput,
+      },
+    });
+  }
+
+  return result;
+}
+
 // ── SAST rule-level merge ─────────────────────────────────────────────────────
 
 /**
@@ -399,10 +609,16 @@ interface UpsertOptions {
   findings:   NormalizedFinding[];
 }
 
-export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: number; totalCount: number; fixedCount: number }> {
+export interface NewFindingRef {
+  id:       string;
+  scanType: string;
+  severity: string;
+}
+
+export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: number; totalCount: number; fixedCount: number; newFindings: NewFindingRef[] }> {
   const { scanJobId, orgId, targetType, targetId, scanType, findings: rawFindings } = opts;
 
-  if (rawFindings.length === 0) return { newCount: 0, totalCount: 0, fixedCount: 0 };
+  if (rawFindings.length === 0) return { newCount: 0, totalCount: 0, fixedCount: 0, newFindings: [] };
 
   // Merge per-CVE SCA/CONTAINER findings → one per package+version
   // Merge per-location SAST findings       → one per rule per target
@@ -420,6 +636,10 @@ export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: n
     findings = [...mergeSastFindings(trueSast, orgId, targetId), ...nonSast];
   } else if (scanType === "DAST" || scanType === "PENTEST" || scanType === "PENTEST_FULL") {
     findings = mergeDastFindings(rawFindings, orgId, targetId, scanType);
+  } else if (scanType === "SECRET") {
+    findings = mergeSecretFindings(rawFindings, orgId, targetId);
+  } else if (scanType === "IAC") {
+    findings = mergeIacFindings(rawFindings, orgId, targetId);
   } else {
     findings = rawFindings;
   }
@@ -484,11 +704,12 @@ export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: n
         references:   f.references   ?? [],
         rawOutput:    (() => {
           const newRaw = (f.rawOutput ?? {}) as Record<string, unknown>;
+          const prevRaw = existingMap.get(f.fingerprint)?.rawOutput as Record<string, unknown> | undefined;
+
           // Preserve backfilled location snippets in merged SAST findings:
           // the scanner always returns null snippets (Semgrep Pro paywall) so a
           // re-scan must not overwrite snippets that were fetched from GitHub.
           if (newRaw["merged"] === true && Array.isArray(newRaw["locations"])) {
-            const prevRaw = existingMap.get(f.fingerprint)?.rawOutput as Record<string, unknown> | undefined;
             const prevLocs = prevRaw?.["locations"] as Array<Record<string, unknown>> | undefined;
             if (prevLocs) {
               const newLocs = (newRaw["locations"] as Array<Record<string, unknown>>).map((loc, i) => {
@@ -499,6 +720,37 @@ export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: n
               return { ...newRaw, locations: newLocs } as object;
             }
           }
+
+          // Preserve per-resource snippets in merged IAC findings:
+          // Checkov emits code_block in the raw JSON which is always present, but
+          // we re-read it from rawOutput on re-scan. Preserve old snippets just in case.
+          if (newRaw["merged"] === true && Array.isArray(newRaw["resources"])) {
+            const prevResources = prevRaw?.["resources"] as Array<Record<string, unknown>> | undefined;
+            if (prevResources) {
+              const newResources = (newRaw["resources"] as Array<Record<string, unknown>>).map((res, i) => {
+                const prevSnippet = prevResources[i]?.["snippet"] as string | null | undefined;
+                const hasSnippet  = typeof res["snippet"] === "string" && (res["snippet"] as string).trim().length > 0;
+                return hasSnippet ? res : { ...res, snippet: prevSnippet ?? null };
+              });
+              return { ...newRaw, resources: newResources } as object;
+            }
+          }
+
+          // Preserve per-occurrence snippets in merged SECRET findings:
+          // TruffleHog only provides snippets when the file is readable on disk at
+          // scan time; on re-scans the snippets may be missing — keep previous ones.
+          if (newRaw["merged"] === true && Array.isArray(newRaw["occurrences"])) {
+            const prevOccs = prevRaw?.["occurrences"] as Array<Record<string, unknown>> | undefined;
+            if (prevOccs) {
+              const newOccs = (newRaw["occurrences"] as Array<Record<string, unknown>>).map((occ, i) => {
+                const prevSnippet = prevOccs[i]?.["snippet"] as string | null | undefined;
+                const hasSnippet  = typeof occ["snippet"] === "string" && (occ["snippet"] as string).trim().length > 0;
+                return hasSnippet ? occ : { ...occ, snippet: prevSnippet ?? null };
+              });
+              return { ...newRaw, occurrences: newOccs } as object;
+            }
+          }
+
           return newRaw as object;
         })(),
         confidence:   (f.confidence  ?? "POSSIBLE") as "CONFIRMED" | "LIKELY" | "POSSIBLE",
@@ -513,7 +765,10 @@ export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: n
     existingSet.add(f.fingerprint);
   }
 
-  const newCount = fingerprints.filter((fp) => !existing.some((e: { fingerprint: string }) => e.fingerprint === fp)).length;
+  const newFingerprints = new Set(
+    fingerprints.filter((fp) => !existing.some((e: { fingerprint: string }) => e.fingerprint === fp))
+  );
+  const newCount = newFingerprints.size;
 
   // ── Auto-fix resolved findings ───────────────────────────────────────────
   // Any OPEN/ACKNOWLEDGED finding for this target+scanType absent from this
@@ -537,7 +792,16 @@ export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: n
     },
   });
 
-  return { newCount, totalCount: findings.length, fixedCount };
+  // Fetch IDs for newly created findings so the scan worker can enqueue AI triage
+  let newFindings: NewFindingRef[] = [];
+  if (newFingerprints.size > 0) {
+    newFindings = await prisma.finding.findMany({
+      where:  { fingerprint: { in: [...newFingerprints] } },
+      select: { id: true, scanType: true, severity: true },
+    });
+  }
+
+  return { newCount, totalCount: findings.length, fixedCount, newFindings };
 }
 
 export function countBySeverity(findings: NormalizedFinding[]): Record<string, number> {

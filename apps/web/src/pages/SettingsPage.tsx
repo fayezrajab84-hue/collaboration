@@ -12,7 +12,7 @@ function SaveButton({ isPending, saved }: { isPending: boolean; saved: boolean }
     <button
       type="submit"
       disabled={isPending}
-      className="rounded bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+      className="rounded bg-indigo-700 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-600 disabled:opacity-50"
     >
       {isPending ? "Saving…" : saved ? "Saved!" : "Save"}
     </button>
@@ -127,7 +127,7 @@ function JiraTab() {
           </p>
         </div>
         {existing && (
-          <span className="rounded-full bg-green-900/40 px-2.5 py-0.5 text-xs text-green-400">
+          <span className="rounded-full bg-teal-900/40 border border-teal-800/40 px-2.5 py-0.5 text-xs text-teal-300">
             Connected
           </span>
         )}
@@ -220,7 +220,7 @@ function SlackTab() {
           </p>
         </div>
         {existing && (
-          <span className="rounded-full bg-green-900/40 px-2.5 py-0.5 text-xs text-green-400">
+          <span className="rounded-full bg-teal-900/40 border border-teal-800/40 px-2.5 py-0.5 text-xs text-teal-300">
             Connected
           </span>
         )}
@@ -319,7 +319,7 @@ function TeamsTab() {
           </p>
         </div>
         {existing && (
-          <span className="rounded-full bg-green-900/40 px-2.5 py-0.5 text-xs text-green-400">
+          <span className="rounded-full bg-teal-900/40 border border-teal-800/40 px-2.5 py-0.5 text-xs text-teal-300">
             Connected
           </span>
         )}
@@ -403,14 +403,14 @@ export default function SettingsPage() {
               onClick={() => setActiveTab(id)}
               className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm font-medium transition-colors ${
                 activeTab === id
-                  ? "bg-indigo-600/20 text-indigo-300"
+                  ? "bg-indigo-700/20 text-indigo-300"
                   : "text-gray-400 hover:bg-gray-800 hover:text-gray-200"
               }`}
             >
               <span>{label}</span>
               {connected[id] && (
                 <span
-                  className="h-2 w-2 rounded-full bg-green-500 shrink-0"
+                  className="h-2 w-2 rounded-full bg-teal-500 shrink-0"
                   title="Connected"
                 />
               )}

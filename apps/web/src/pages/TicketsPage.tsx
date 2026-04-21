@@ -8,7 +8,7 @@ import { formatRelative } from "../lib/utils";
 const COLUMNS = [
   { status: "OPEN",        label: "Open",        color: "border-red-800" },
   { status: "IN_PROGRESS", label: "In Progress",  color: "border-amber-700" },
-  { status: "RESOLVED",    label: "Resolved",     color: "border-green-800" },
+  { status: "RESOLVED",    label: "Resolved",     color: "border-teal-800" },
   { status: "CLOSED",      label: "Closed",       color: "border-gray-700" },
 ];
 
@@ -104,7 +104,7 @@ export default function TicketsPage() {
                   <TicketCard key={ticket.id} ticket={ticket} />
                 ))}
                 {col.length === 0 && (
-                  <p className="py-6 text-center text-xs text-gray-600">No tickets</p>
+                  <p className="py-6 text-center text-xs text-gray-600">No tickets yet.</p>
                 )}
               </div>
             </div>

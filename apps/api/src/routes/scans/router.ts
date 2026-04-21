@@ -21,6 +21,32 @@ router.post("/:id/progress", async (req, res) => {
   res.json({ ok: true });
 });
 
+// ── Crawler-progress callback (Phase 5) ──────────────────────────────────────
+// The Playwright crawler sidecar posts live crawl stats here during a DAST
+// scan's pre-crawl phase. The API fans them out over the existing SSE stream
+// so the frontend can show "pages crawled: 42, XHR found: 19, current URL…"
+// without polling.
+router.post("/:id/crawler-progress", async (req, res) => {
+  const b = req.body as {
+    pages_visited?: number;
+    pages_queued?: number;
+    xhr_observed?: number;
+    forms_found?: number;
+    current_url?: string | null;
+    elapsed_secs?: number;
+  };
+  emit(req.params["id"], {
+    type: "CRAWLER_PROGRESS",
+    pagesVisited: Math.max(0, b.pages_visited ?? 0),
+    pagesQueued:  Math.max(0, b.pages_queued ?? 0),
+    xhrObserved:  Math.max(0, b.xhr_observed ?? 0),
+    formsFound:   Math.max(0, b.forms_found ?? 0),
+    currentUrl:   b.current_url ?? null,
+    elapsedSecs:  b.elapsed_secs ?? 0,
+  });
+  res.json({ ok: true });
+});
+
 router.use(requireAuth);
 
 // List scan jobs

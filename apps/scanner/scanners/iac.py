@@ -64,9 +64,13 @@ class IACScanner(BaseScanner):
         findings: list[NormalizedFinding] = []
         failed_checks = data.get("results", {}).get("failed_checks", [])
 
+        # check_type lives at the top-level result object (e.g. "terraform", "kubernetes")
+        top_level_check_type = data.get("check_type", "") or ""
+
         for check in failed_checks:
             check_id = check.get("check_id", "")
-            check_type = check.get("check_type", "")
+            # Per-check check_type may also be present; fall back to top-level
+            check_type = check.get("check_type") or top_level_check_type or ""
             resource = check.get("resource", "")
             file_path = check.get("file_path", "")
             file_line_range = check.get("file_line_range", [None, None])
@@ -91,11 +95,29 @@ class IACScanner(BaseScanner):
                         lines.append(f"{no}: {str(text).rstrip()}")
                 code_snippet = "\n".join(lines)[:1000] or None
 
+            # check_name is Checkov's human-readable rule description, e.g.
+            # "Ensure all data stored in the Launch configuration EBS is securely encrypted"
+            check_name = check.get("check_name") or check_id
+
+            # Build a concise title: human name is enough — no need to prefix the rule ID
+            # (rule_id is stored separately and shown in the drawer)
+            title = check_name
+
+            # Rich description: what the check verifies + which resource failed + framework
+            resource_label = f" on `{resource}`" if resource else ""
+            framework_label = f" ({check_type})" if check_type else ""
+            description = (
+                f"{check_name}{resource_label}. "
+                f"Checkov rule {check_id}{framework_label} flagged this misconfiguration."
+            )
+            if guideline:
+                description += f" See: {guideline}"
+
             findings.append(NormalizedFinding(
                 fingerprint=fingerprint,
                 rule_id=check_id,
-                title=f"{check_id}: {check.get('check_result', {}).get('evaluated_keys', [check_id])[:1][0] if check.get('check_result', {}).get('evaluated_keys') else resource}",
-                description=check.get("check_id", "") + " — " + check.get("check_result", {}).get("result", ""),
+                title=title,
+                description=description,
                 severity=severity,
                 scan_type=ScanType.IAC,
                 scanner="checkov",

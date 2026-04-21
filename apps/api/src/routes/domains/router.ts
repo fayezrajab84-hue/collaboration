@@ -2,7 +2,9 @@ import { Router } from "express";
 import { z } from "zod";
 import axios from "axios";
 import { requireAuth } from "../../middleware/requireAuth.js";
+import { requireRole } from "../../middleware/requireRole.js";
 import prisma from "../../db.js";
+import * as audit from "../../services/auditService.js";
 import { scoreTarget } from "../../services/riskScoringService.js";
 import { config } from "../../config.js";
 import { triggerScan } from "../../services/scanService.js";
@@ -111,16 +113,23 @@ router.patch("/:id", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// Delete domain
-router.delete("/:id", async (req, res, next) => {
+// Delete domain — ADMIN+
+router.delete("/:id", requireRole("ADMIN"), async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
     const domain = await prisma.domain.findFirst({
-      where: { id: req.params["id"], orgId: member?.orgId },
+      where: { id: req.params["id"], orgId: req.orgId! },
     });
     if (!domain) { res.status(404).json({ error: "Domain not found" }); return; }
     await prisma.domain.delete({ where: { id: domain.id } });
+    await audit.log({
+      orgId:        req.orgId!,
+      userId:       user.id,
+      action:       "domain.delete",
+      resourceType: "Domain",
+      resourceId:   domain.id,
+      metadata:     { domain: domain.domain },
+    });
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
@@ -336,7 +345,13 @@ const authConfigSchema = z.object({
   headerName:       z.string().optional(),
   headerValue:      z.string().optional(),
   // OAuth2 fields
-  oauth2TokenUrl:    z.string().url().optional(),
+  // Frontend always sends this field (empty string when FORM/HEADER/COOKIE
+  // auth is selected). Coerce "" → undefined before URL validation so the
+  // non-OAuth2 flow doesn't fail Zod with a 422.
+  oauth2TokenUrl:    z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+    z.string().url().optional(),
+  ),
   oauth2ClientId:    z.string().optional(),
   oauth2ClientSecret: z.string().optional(),
   oauth2Scope:       z.string().optional(),

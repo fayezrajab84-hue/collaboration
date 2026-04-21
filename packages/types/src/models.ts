@@ -223,6 +223,32 @@ export interface Ticket {
   createdBy?: User;
 }
 
+export interface Suppression {
+  id: string;
+  orgId: string;
+  fingerprint: string;
+  reason: string;
+  expiresAt: Date | string | null;
+  approvedById: string;
+  createdAt: Date | string;
+  revokedAt: Date | string | null;
+  revokedById: string | null;
+  // Joined
+  approvedBy?: { username: string };
+}
+
+export interface AuditEvent {
+  id: string;
+  orgId: string;
+  userId: string;
+  action: string;
+  resourceType: string;
+  resourceId: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: Date | string;
+  user?: { username: string; avatarUrl: string | null };
+}
+
 export interface Integration {
   id: string;
   orgId: string;

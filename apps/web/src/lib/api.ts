@@ -38,8 +38,20 @@ export const authApi = {
 
 // ── Repositories ──────────────────────────────────────────────────────────
 
+export interface GitHubRepoSummary {
+  id:            number;
+  fullName:      string;
+  url:           string;
+  defaultBranch: string;
+  isPrivate:     boolean;
+  language:      string | null;
+  added:         boolean;
+}
+
 export const reposApi = {
   list: () => apiClient.get<Repository[]>("/repos").then((r) => r.data),
+  listGitHub: (page = 1) =>
+    apiClient.get<GitHubRepoSummary[]>("/repos/github", { params: { page } }).then((r) => r.data),
   get: (id: string) => apiClient.get<Repository>(`/repos/${id}`).then((r) => r.data),
   create: (data: CreateRepoRequest) => apiClient.post<Repository>("/repos", data).then((r) => r.data),
   update: (id: string, data: UpdateRepoRequest) => apiClient.patch<Repository>(`/repos/${id}`, data).then((r) => r.data),
@@ -264,6 +276,35 @@ export const reportsApi = {
 
   delete: (id: string) =>
     apiClient.delete<{ success: boolean }>(`/reports/${id}`).then((r) => r.data),
+};
+
+// ── Suppressions ──────────────────────────────────────────────────────────
+
+export interface Suppression {
+  id:           string;
+  orgId:        string;
+  fingerprint:  string;
+  reason:       string;
+  expiresAt:    string | null;
+  approvedById: string;
+  createdAt:    string;
+  revokedAt:    string | null;
+  revokedById:  string | null;
+}
+
+export const suppressionsApi = {
+  list: (active = true) =>
+    apiClient.get<Suppression[]>("/suppressions", { params: { active } }).then((r) => r.data),
+  create: (data: { fingerprint: string; reason: string; expiresAt?: string | null }) =>
+    apiClient.post<Suppression>("/suppressions", data).then((r) => r.data),
+  revoke: (id: string) => apiClient.delete(`/suppressions/${id}`).then((r) => r.data),
+};
+
+// ── SBOM ──────────────────────────────────────────────────────────────────
+
+export const sbomApi = {
+  repoUrl:      (id: string) => `/api/repos/${id}/sbom`,
+  containerUrl: (id: string) => `/api/containers/${id}/sbom`,
 };
 
 // ── Integrations ──────────────────────────────────────────────────────────

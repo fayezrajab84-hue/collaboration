@@ -20,20 +20,23 @@ import { logger } from "../logger.js";
 
 // ── Colour palettes ───────────────────────────────────────────────────────────
 
+// Toned-down palette — strong colour reserved for Critical; other severities
+// use progressively softer hues so the page doesn't feel like a rainbow.
+// LOW switched away from green to avoid clashing with "Fixed"/"Clean" greens.
 const SEV_HEX: Record<string, string> = {
-  CRITICAL: "#dc2626",
-  HIGH:     "#ea580c",
-  MEDIUM:   "#d97706",
-  LOW:      "#65a30d",
-  INFO:     "#3b82f6",
+  CRITICAL: "#b91c1c",  // red-700 (slightly deeper, less neon)
+  HIGH:     "#c2410c",  // orange-700
+  MEDIUM:   "#a16207",  // yellow-700 (muted amber)
+  LOW:      "#0369a1",  // sky-700
+  INFO:     "#64748b",  // slate-500
 };
 
 const SEV_BG: Record<string, string> = {
   CRITICAL: "#fef2f2",
   HIGH:     "#fff7ed",
-  MEDIUM:   "#fffbeb",
-  LOW:      "#f7fee7",
-  INFO:     "#eff6ff",
+  MEDIUM:   "#fefce8",
+  LOW:      "#f0f9ff",
+  INFO:     "#f8fafc",
 };
 
 const SEV_LABEL: Record<string, string> = {
@@ -44,15 +47,18 @@ const SEV_LABEL: Record<string, string> = {
   INFO:     "Info",
 };
 
+// Unified scan-type palette — all drawn from a cool indigo/teal/slate family
+// instead of 8 clashing hues. The chart still reads as distinct segments but
+// the overall page keeps a calm tone.
 const TYPE_HEX: Record<string, string> = {
-  SAST:         "#8b5cf6",
-  SCA:          "#ec4899",
-  SECRET:       "#f59e0b",
-  IAC:          "#10b981",
-  CONTAINER:    "#06b6d4",
-  DAST:         "#f97316",
-  PENTEST:      "#ef4444",
-  PENTEST_FULL: "#b91c1c",
+  SAST:         "#4f46e5",  // indigo-600
+  SCA:          "#0d9488",  // teal-600
+  SECRET:       "#a16207",  // yellow-700 (muted)
+  IAC:          "#0891b2",  // cyan-600
+  CONTAINER:    "#7c3aed",  // violet-600
+  DAST:         "#c2410c",  // orange-700
+  PENTEST:      "#b91c1c",  // red-700
+  PENTEST_FULL: "#991b1b",  // red-800
 };
 
 // ── SVG helpers ───────────────────────────────────────────────────────────────
@@ -64,9 +70,9 @@ function svgDonut(slices: Slice[], size = 180): string {
   if (total === 0) {
     return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
       <circle cx="${size / 2}" cy="${size / 2}" r="${size * 0.37}"
-        fill="none" stroke="#d1fae5" stroke-width="${size * 0.13}" />
+        fill="none" stroke="#ccfbf1" stroke-width="${size * 0.13}" />
       <text x="${size / 2}" y="${size / 2 + 8}" text-anchor="middle"
-        fill="#16a34a" font-size="28" font-weight="700" font-family="system-ui">✓</text>
+        fill="#0d9488" font-size="28" font-weight="700" font-family="system-ui">✓</text>
     </svg>`;
   }
 
@@ -141,12 +147,14 @@ function gradeInfo(
   else if (high > 0    || (riskScore !== null && riskScore >= 20))  g = "B";
   else                                                               g = "A";
 
+  // Only A and F carry real colour weight; B/C/D sit on a neutral slate tone
+  // with a subtle hue hint — matches the calmer web UI treatment.
   const map: Record<string, { color: string; bg: string; label: string }> = {
-    A: { color: "#16a34a", bg: "#dcfce7", label: "Excellent" },
-    B: { color: "#65a30d", bg: "#ecfccb", label: "Good" },
-    C: { color: "#d97706", bg: "#fef3c7", label: "Fair" },
-    D: { color: "#ea580c", bg: "#ffedd5", label: "Poor" },
-    F: { color: "#dc2626", bg: "#fee2e2", label: "Critical" },
+    A: { color: "#0d9488", bg: "#f0fdfa", label: "Excellent" },
+    B: { color: "#475569", bg: "#f1f5f9", label: "Good" },
+    C: { color: "#475569", bg: "#f1f5f9", label: "Fair" },
+    D: { color: "#475569", bg: "#f1f5f9", label: "Poor" },
+    F: { color: "#b91c1c", bg: "#fef2f2", label: "Critical" },
   };
   return { grade: g, ...map[g]! };
 }
@@ -227,7 +235,7 @@ function buildHtml(d: ReportData): string {
     { value: d.sevCounts.CRITICAL ?? 0, color: SEV_HEX.CRITICAL ?? "#dc2626", label: "Critical" },
     { value: d.sevCounts.HIGH     ?? 0, color: SEV_HEX.HIGH     ?? "#ea580c", label: "High"     },
     { value: d.sevCounts.MEDIUM   ?? 0, color: SEV_HEX.MEDIUM   ?? "#d97706", label: "Medium"   },
-    { value: d.sevCounts.LOW      ?? 0, color: SEV_HEX.LOW      ?? "#65a30d", label: "Low"      },
+    { value: d.sevCounts.LOW      ?? 0, color: SEV_HEX.LOW      ?? "#0369a1", label: "Low"      },
     { value: d.sevCounts.INFO     ?? 0, color: SEV_HEX.INFO     ?? "#6b7280", label: "Info"     },
   ];
   const donutSvg = svgDonut(pieSlices);
@@ -250,23 +258,38 @@ function buildHtml(d: ReportData): string {
   const fixPct   = Math.round((FIXED        / statusTotal) * 100);
 
   // ── Severity summary cards ─────────────────────────────────────────────────
+  // Calmer styling: white card body, a single coloured top-border accent, and
+  // colour applied only to the count number (not the whole card).
   const sevCards = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"].map((sev) => `
-    <div class="sev-card" style="border-color:${SEV_HEX[sev]};background:${SEV_BG[sev]}">
+    <div class="sev-card" style="border-top:3px solid ${SEV_HEX[sev]}">
       <div class="sev-count" style="color:${SEV_HEX[sev]}">${d.sevCounts[sev] ?? 0}</div>
-      <div class="sev-label" style="color:${SEV_HEX[sev]}">${SEV_LABEL[sev]}</div>
+      <div class="sev-label">${SEV_LABEL[sev]}</div>
     </div>`).join("");
 
   // ── Findings rows ──────────────────────────────────────────────────────────
   const findingRows = d.findings.slice(0, 50).map((f, idx) => {
     const sevColor = SEV_HEX[f.severity] ?? "#6366f1";
     const typeColor = TYPE_HEX[f.scanType] ?? "#6366f1";
-    const statusCls = f.status === "OPEN" ? "#dc2626" : f.status === "ACKNOWLEDGED" ? "#d97706" : "#16a34a";
-    const loc = f.filePath
-      ? `<span class="mono">${esc(f.filePath)}${f.lineStart ? `:${f.lineStart}` : ""}</span>`
-      : f.cveId ? `<span class="cve">${esc(f.cveId)}</span>` : "—";
+    const statusCls = f.status === "OPEN" ? "#b91c1c" : f.status === "ACKNOWLEDGED" ? "#a16207" : "#0d9488";
+    // Build location cell: stack CVE, package, and file path so every finding
+    // shows whatever identifying info is available (not just one of them).
+    const locParts: string[] = [];
+    if (f.cveId) {
+      locParts.push(`<span class="cve">${esc(f.cveId)}</span>`);
+    }
+    if (f.packageName) {
+      const fix = f.fixVersion ? ` → <span class="fix">${esc(f.fixVersion)}</span>` : "";
+      locParts.push(`<span class="pkg">${esc(f.packageName)}${fix}</span>`);
+    }
+    if (f.filePath) {
+      locParts.push(`<span class="mono">${esc(f.filePath)}${f.lineStart ? `:${f.lineStart}` : ""}</span>`);
+    }
+    const loc = locParts.length > 0
+      ? locParts.map((p) => `<div>${p}</div>`).join("")
+      : "—";
     return `<tr class="${idx % 2 === 0 ? "row-even" : "row-odd"}">
-      <td><span class="badge" style="background:${sevColor}10;color:${sevColor};border:1px solid ${sevColor}40">${SEV_LABEL[f.severity] ?? f.severity}</span></td>
-      <td><span class="badge" style="background:${typeColor}10;color:${typeColor};border:1px solid ${typeColor}40">${f.scanType.replace("_FULL", "")}</span></td>
+      <td><span class="badge" style="background:#f8fafc;color:#334155;border:1px solid #e2e8f0"><span class="bdot" style="background:${sevColor}"></span>${SEV_LABEL[f.severity] ?? f.severity}</span></td>
+      <td><span class="badge" style="background:#f8fafc;color:#334155;border:1px solid #e2e8f0"><span class="bdot" style="background:${typeColor}"></span>${f.scanType.replace("_FULL", "")}</span></td>
       <td class="finding-title">${esc(f.title)}${f.aiSummary ? `<div class="ai-excerpt">${esc(f.aiSummary.slice(0, 120))}…</div>` : ""}</td>
       <td class="loc-cell">${loc}</td>
       <td><span class="status-dot" style="color:${statusCls}">●</span> ${f.status.charAt(0) + f.status.slice(1).toLowerCase()}</td>
@@ -277,17 +300,19 @@ function buildHtml(d: ReportData): string {
   // ── Scan history rows ──────────────────────────────────────────────────────
   const historyRows = d.scanHistory.map((s) => {
     const total = s.criticalCount + s.highCount + s.mediumCount + s.lowCount + s.infoCount;
+    const miniPill = (count: number, letter: string, hex: string) =>
+      `<span class="mini-badge"><span class="bdot" style="background:${hex}"></span>${count}<span class="mini-letter">${letter}</span></span>`;
     const pills = [
-      s.criticalCount ? `<span class="mini-badge" style="background:#fef2f2;color:#dc2626">${s.criticalCount}C</span>` : "",
-      s.highCount     ? `<span class="mini-badge" style="background:#fff7ed;color:#ea580c">${s.highCount}H</span>` : "",
-      s.mediumCount   ? `<span class="mini-badge" style="background:#fffbeb;color:#d97706">${s.mediumCount}M</span>` : "",
-      s.lowCount      ? `<span class="mini-badge" style="background:#f7fee7;color:#65a30d">${s.lowCount}L</span>` : "",
+      s.criticalCount ? miniPill(s.criticalCount, "C", SEV_HEX.CRITICAL!) : "",
+      s.highCount     ? miniPill(s.highCount,     "H", SEV_HEX.HIGH!)     : "",
+      s.mediumCount   ? miniPill(s.mediumCount,   "M", SEV_HEX.MEDIUM!)   : "",
+      s.lowCount      ? miniPill(s.lowCount,      "L", SEV_HEX.LOW!)      : "",
     ].filter(Boolean).join(" ");
     return `<tr>
       <td>${fmtFull(s.completedAt)}</td>
       <td>${s.scanTypes.map((t) => t.replace("_FULL", "")).join(", ")}</td>
       <td>${total}</td>
-      <td>${pills || '<span style="color:#16a34a">Clean</span>'}</td>
+      <td>${pills || '<span style="color:#0d9488">Clean</span>'}</td>
     </tr>`;
   }).join("");
 
@@ -321,7 +346,7 @@ function buildHtml(d: ReportData): string {
 
   /* ── Report header ── */
   .report-header {
-    background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #0f172a 100%);
+    background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
     color: #fff; padding: 36px 40px 32px; margin-bottom: 0;
   }
   .header-top    { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
@@ -344,9 +369,9 @@ function buildHtml(d: ReportData): string {
 
   /* ── Severity cards ── */
   .sev-cards { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; padding: 20px 16px; }
-  .sev-card  { border: 1.5px solid; border-radius: 10px; padding: 16px 12px; text-align: center; }
+  .sev-card  { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 16px 12px; text-align: center; }
   .sev-count { font-size: 32px; font-weight: 800; line-height: 1; }
-  .sev-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; margin-top: 4px; }
+  .sev-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; margin-top: 4px; color: #64748b; }
 
   /* ── Charts row ── */
   .charts-row { display: grid; grid-template-columns: 220px 1fr; gap: 0; }
@@ -371,12 +396,12 @@ function buildHtml(d: ReportData): string {
   /* ── AI risk box ── */
   .risk-box { display: flex; align-items: center; gap: 20px; padding: 18px 24px; background: #f8fafc; border-top: 1px solid #e2e8f0; }
   .risk-score-wrap{ display: flex; flex-direction: column; align-items: center; flex-shrink: 0; }
-  .risk-score-num { font-size: 40px; font-weight: 900; line-height: 1; color: #4f46e5; }
+  .risk-score-num { font-size: 40px; font-weight: 900; line-height: 1; color: #334155; }
   .risk-score-sub { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: #94a3b8; margin-top: 2px; }
   .risk-reason    { font-size: 13px; color: #475569; line-height: 1.6; font-style: italic; }
 
   /* ── Summary bubble ── */
-  .ai-summary-box { background: #faf5ff; border: 1px solid #e9d5ff; border-radius: 10px; padding: 14px 18px; margin: 16px 24px; font-size: 13px; color: #4c1d95; line-height: 1.65; }
+  .ai-summary-box { background: #f8fafc; border: 1px solid #e2e8f0; border-left: 3px solid #6366f1; border-radius: 6px; padding: 14px 18px; margin: 16px 24px; font-size: 13px; color: #334155; line-height: 1.65; }
 
   /* ── Tables ── */
   table  { width: 100%; border-collapse: collapse; font-size: 12.5px; }
@@ -387,13 +412,18 @@ function buildHtml(d: ReportData): string {
   .row-odd  { background: #fafafa; }
   tr:hover  { background: #f0f9ff !important; }
 
-  .badge     { display: inline-block; padding: 2px 8px; border-radius: 9999px; font-size: 11px; font-weight: 600; white-space: nowrap; }
-  .mini-badge{ display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 700; margin-right: 2px; }
-  .mono      { font-family: monospace; font-size: 11px; color: #4f46e5; word-break: break-all; }
-  .cve       { font-family: monospace; font-size: 11px; color: #dc2626; }
+  .badge     { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 9999px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+  .bdot      { display: inline-block; width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+  .mini-badge{ display: inline-flex; align-items: center; gap: 4px; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 700; margin-right: 2px; background: #f1f5f9; color: #334155; }
+  .mini-letter { color: #94a3b8; font-weight: 600; }
+  .mono      { font-family: monospace; font-size: 11px; color: #475569; word-break: break-all; }
+  .cve       { font-family: monospace; font-size: 11px; color: #b91c1c; font-weight: 600; }
+  .pkg       { font-family: monospace; font-size: 11px; color: #334155; word-break: break-all; }
+  .fix       { color: #0d9488; font-weight: 600; }
+  .loc-cell > div + div { margin-top: 3px; }
   .finding-title { max-width: 360px; font-weight: 500; color: #0f172a; }
   .ai-excerpt{ margin-top: 4px; font-size: 11px; color: #64748b; font-style: italic; line-height: 1.5; font-weight: 400; }
-  .loc-cell  { max-width: 200px; word-break: break-all; }
+  .loc-cell  { max-width: 260px; word-break: break-all; }
   .date-cell { white-space: nowrap; color: #64748b; font-size: 11px; }
   .status-dot{ font-size: 10px; }
 
@@ -479,21 +509,21 @@ function buildHtml(d: ReportData): string {
     <div class="section-header"><span class="section-title">Remediation Status</span></div>
     <div class="status-section">
       <div class="status-bar-wrap">
-        <div class="status-seg" style="width:${openPct}%;background:#dc2626" title="Open: ${OPEN}"></div>
-        <div class="status-seg" style="width:${ackPct}%;background:#d97706"  title="Acknowledged: ${ACKNOWLEDGED}"></div>
-        <div class="status-seg" style="width:${fixPct}%;background:#16a34a"  title="Fixed: ${FIXED}"></div>
+        <div class="status-seg" style="width:${openPct}%;background:#b91c1c" title="Open: ${OPEN}"></div>
+        <div class="status-seg" style="width:${ackPct}%;background:#a16207"  title="Acknowledged: ${ACKNOWLEDGED}"></div>
+        <div class="status-seg" style="width:${fixPct}%;background:#0d9488"  title="Fixed: ${FIXED}"></div>
       </div>
       <div class="status-legend">
         <div class="status-item">
-          <div class="status-dot-sq" style="background:#dc2626"></div>
+          <div class="status-dot-sq" style="background:#b91c1c"></div>
           <span>Open <strong>${OPEN}</strong> (${openPct}%)</span>
         </div>
         <div class="status-item">
-          <div class="status-dot-sq" style="background:#d97706"></div>
+          <div class="status-dot-sq" style="background:#a16207"></div>
           <span>Acknowledged <strong>${ACKNOWLEDGED}</strong> (${ackPct}%)</span>
         </div>
         <div class="status-item">
-          <div class="status-dot-sq" style="background:#16a34a"></div>
+          <div class="status-dot-sq" style="background:#0d9488"></div>
           <span>Fixed <strong>${FIXED}</strong> (${fixPct}%)</span>
         </div>
       </div>
@@ -536,7 +566,7 @@ function buildHtml(d: ReportData): string {
     </div>
     <div class="section-body" style="padding:0">
       ${d.findings.length === 0
-        ? `<div style="padding:32px;text-align:center;color:#16a34a;font-size:15px;font-weight:600">✓ No active findings — clean scan!</div>`
+        ? `<div style="padding:32px;text-align:center;color:#0d9488;font-size:15px;font-weight:600">✓ No active findings — clean scan!</div>`
         : `<table>
           <thead><tr>
             <th style="width:90px">Severity</th>

@@ -12,12 +12,14 @@ import { SEVERITY_TEXT } from "../lib/colors";
 // ── Severity colours — canonical from colors.ts ───────────────────────────────
 const SEV_COLOR = SEVERITY_TEXT;
 
+// Calmer grade palette — desaturated, only A and F carry real colour weight;
+// B/C/D use neutral tones so the page doesn't look like a traffic-light.
 const GRADE_STYLE: Record<string, string> = {
-  A: "bg-green-900/40  text-green-300  border border-green-700/50",
-  B: "bg-lime-900/40   text-lime-300   border border-lime-700/50",
-  C: "bg-amber-900/40  text-amber-300  border border-amber-700/50",
-  D: "bg-orange-900/40 text-orange-300 border border-orange-700/50",
-  F: "bg-red-900/40    text-red-300    border border-red-700/50",
+  A: "bg-teal-900/25    text-teal-300    border border-teal-800/40",
+  B: "bg-gray-800       text-gray-200    border border-gray-700",
+  C: "bg-gray-800       text-amber-200/90 border border-gray-700",
+  D: "bg-gray-800       text-orange-300/90 border border-gray-700",
+  F: "bg-red-900/30     text-red-300     border border-red-800/40",
 };
 
 const TARGET_ICON: Record<string, React.ElementType> = {
@@ -30,33 +32,40 @@ const TARGET_ICON: Record<string, React.ElementType> = {
 
 function SevBar({ meta }: { meta: ReportMeta["metadata"] }) {
   const total = meta.totalFindings || 1;
+  // Colour lives only in the progress bar + a single small dot per chip.
+  // The chip body itself is neutral gray — easier on the eyes at a glance.
   const segs = [
-    { sev: "CRITICAL", count: meta.CRITICAL, color: "bg-red-500"    },
-    { sev: "HIGH",     count: meta.HIGH,     color: "bg-orange-500" },
-    { sev: "MEDIUM",   count: meta.MEDIUM,   color: "bg-amber-500"  },
-    { sev: "LOW",      count: meta.LOW,      color: "bg-green-500"  },
-    { sev: "INFO",     count: meta.INFO,     color: "bg-gray-500"   },
+    { sev: "CRITICAL", label: "Critical", short: "C", count: meta.CRITICAL, bar: "bg-red-500/80",    dot: "bg-red-400"     },
+    { sev: "HIGH",     label: "High",     short: "H", count: meta.HIGH,     bar: "bg-orange-500/80", dot: "bg-orange-400"  },
+    { sev: "MEDIUM",   label: "Medium",   short: "M", count: meta.MEDIUM,   bar: "bg-amber-500/80",  dot: "bg-amber-400"   },
+    { sev: "LOW",      label: "Low",      short: "L", count: meta.LOW,      bar: "bg-sky-600/70",    dot: "bg-sky-400"     },
+    { sev: "INFO",     label: "Info",     short: "I", count: meta.INFO,     bar: "bg-gray-500/70",   dot: "bg-gray-400"    },
   ].filter((s) => s.count > 0);
 
-  if (segs.length === 0) return <span className="text-xs text-green-400">✓ Clean</span>;
+  if (segs.length === 0) return <span className="text-xs text-teal-400/90">✓ Clean</span>;
 
   return (
-    <div className="flex items-center gap-2">
-      <div className="flex h-1.5 w-24 overflow-hidden rounded-full bg-gray-800">
+    <div className="flex items-center gap-3 flex-wrap">
+      <div className="flex h-1.5 w-28 overflow-hidden rounded-full bg-gray-800" title={`${total} findings`}>
         {segs.map((s) => (
           <div
             key={s.sev}
-            className={`h-full ${s.color}`}
+            className={`h-full ${s.bar}`}
             style={{ width: `${(s.count / total) * 100}%` }}
-            title={`${s.sev}: ${s.count}`}
+            title={`${s.label}: ${s.count}`}
           />
         ))}
       </div>
-      <div className="flex gap-1.5">
+      <div className="flex flex-wrap gap-1">
         {segs.map((s) => (
-          <span key={s.sev} className={`text-[10px] font-bold ${SEV_COLOR[s.sev]}`}>
-            {s.count}
-            <span className="font-normal opacity-60">{s.sev[0]}</span>
+          <span
+            key={s.sev}
+            title={`${s.count} ${s.label}`}
+            className="inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 text-[11px] font-medium text-gray-300 bg-gray-800/70"
+          >
+            <span className={`h-1.5 w-1.5 rounded-full ${s.dot}`} />
+            <span className="tabular-nums">{s.count}</span>
+            <span className="text-gray-500">{s.short}</span>
           </span>
         ))}
       </div>
@@ -250,7 +259,7 @@ function AiReportTab() {
             <>
               <button onClick={handleCopy}
                 className="flex items-center gap-1.5 rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-700 transition-colors">
-                {copied ? <Check className="h-3.5 w-3.5 text-green-400" /> : <Copy className="h-3.5 w-3.5" />}
+                {copied ? <Check className="h-3.5 w-3.5 text-teal-400" /> : <Copy className="h-3.5 w-3.5" />}
                 {copied ? "Copied!" : "Copy"}
               </button>
               <button onClick={handleDownload}
@@ -278,7 +287,7 @@ function AiReportTab() {
             <p className="mt-1 text-sm text-gray-400 max-w-sm">Org-wide markdown report covering executive summary, top risks, and remediation roadmap.</p>
           </div>
           <button onClick={generate}
-            className="flex items-center gap-2 rounded-xl bg-indigo-600 px-6 py-3 text-sm font-semibold text-white hover:bg-indigo-500 transition-colors">
+            className="flex items-center gap-2 rounded-xl bg-indigo-700 px-6 py-3 text-sm font-semibold text-white hover:bg-indigo-600 transition-colors">
             <Sparkles className="h-4 w-4" /> Generate AI Summary
           </button>
         </div>
@@ -292,9 +301,9 @@ function AiReportTab() {
             </div>
           )}
           {done && (
-            <div className="mb-4 flex items-center gap-2 rounded-lg border border-green-900/40 bg-green-950/20 px-4 py-2">
-              <Check className="h-3.5 w-3.5 text-green-400" />
-              <span className="text-xs text-green-300">Report complete</span>
+            <div className="mb-4 flex items-center gap-2 rounded-lg border border-teal-900/40 bg-teal-950/20 px-4 py-2">
+              <Check className="h-3.5 w-3.5 text-teal-400" />
+              <span className="text-xs text-teal-300">Report complete</span>
             </div>
           )}
           <div className="rounded-xl border border-gray-800 bg-gray-900 px-6 py-5 space-y-1">
@@ -357,6 +366,29 @@ function ScanReportsTab() {
           </span>
         ))}
         <span className="ml-1 text-[10px] text-gray-600">Hover a grade for details</span>
+      </div>
+
+      {/* Severity legend — neutral chips with a single coloured dot */}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-2 rounded-lg border border-gray-800 bg-gray-900/60 px-4 py-2.5">
+        <span className="text-xs text-gray-500 mr-1">Severity:</span>
+        {[
+          { short: "C", label: "Critical", desc: "Exploitable now, high business impact — patch or mitigate within 24–48 h",            dot: "bg-red-400"    },
+          { short: "H", label: "High",     desc: "Serious risk with known attack paths — remediate within ~7 days",                     dot: "bg-orange-400" },
+          { short: "M", label: "Medium",   desc: "Real risk but harder to exploit or limited blast radius — schedule within the sprint", dot: "bg-amber-400"  },
+          { short: "L", label: "Low",      desc: "Minor issue, defence-in-depth — fix opportunistically",                               dot: "bg-sky-400"    },
+          { short: "I", label: "Info",     desc: "Informational / hardening hint — no direct risk",                                      dot: "bg-gray-400"   },
+        ].map(({ short, label, desc, dot }) => (
+          <span
+            key={short}
+            title={`${label} — ${desc}`}
+            className="inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-[11px] font-medium cursor-default text-gray-300 bg-gray-800/70"
+          >
+            <span className={`h-1.5 w-1.5 rounded-full ${dot}`} />
+            <span className="text-gray-500">{short}</span>
+            <span>{label}</span>
+          </span>
+        ))}
+        <span className="ml-auto text-[10px] text-gray-600">Hover for remediation guidance</span>
       </div>
 
       {isLoading && (

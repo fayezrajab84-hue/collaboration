@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
-import { ShieldAlert, Search, Globe, Layers, Sparkles, ChevronDown, ChevronRight, KeyRound, Bot, Wrench, X } from "lucide-react";
-import { findingsApi, reposApi, containersApi, domainsApi } from "../lib/api";
+import { ShieldAlert, Search, Globe, Layers, Sparkles, ChevronDown, ChevronRight, KeyRound, Bot, Wrench, X, EyeOff } from "lucide-react";
+import { findingsApi, reposApi, containersApi, domainsApi, suppressionsApi } from "../lib/api";
 import type { Finding, FindingGroup } from "@devsecops/types";
 import SeverityBadge from "../components/SeverityBadge";
 import ConfidenceBadge from "../components/ConfidenceBadge";
@@ -60,18 +60,19 @@ function FindingGroupCard({ group }: { group: FindingGroup }) {
             </span>
           </div>
           <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
-            {group.criticalCount > 0 && (
-              <span className={`rounded px-1.5 py-0.5 text-xs font-semibold ${SEV_COLOR.CRITICAL}`}>{group.criticalCount} critical</span>
-            )}
-            {group.highCount > 0 && (
-              <span className={`rounded px-1.5 py-0.5 text-xs font-semibold ${SEV_COLOR.HIGH}`}>{group.highCount} high</span>
-            )}
-            {group.mediumCount > 0 && (
-              <span className={`rounded px-1.5 py-0.5 text-xs font-semibold ${SEV_COLOR.MEDIUM}`}>{group.mediumCount} medium</span>
-            )}
-            {group.lowCount > 0 && (
-              <span className={`rounded px-1.5 py-0.5 text-xs font-semibold ${SEV_COLOR.LOW}`}>{group.lowCount} low</span>
-            )}
+            {/* Neutral chips with a single coloured dot — less noisy than 4 full-colour pills */}
+            {([
+              ["CRITICAL", group.criticalCount, "critical", "bg-red-400"],
+              ["HIGH",     group.highCount,     "high",     "bg-orange-400"],
+              ["MEDIUM",   group.mediumCount,   "medium",   "bg-amber-400"],
+              ["LOW",      group.lowCount,      "low",      "bg-sky-400"],
+            ] as const).filter(([, c]) => c > 0).map(([sev, c, label, dot]) => (
+              <span key={sev} className="inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 text-xs font-medium text-gray-300 bg-gray-800/70">
+                <span className={`h-1.5 w-1.5 rounded-full ${dot}`} />
+                <span className="tabular-nums">{c}</span>
+                <span className="text-gray-500">{label}</span>
+              </span>
+            ))}
             <span className="text-xs text-gray-500">
               across {group.affectedTargets.length} target{group.affectedTargets.length !== 1 ? "s" : ""}:
               {" "}{group.affectedTargets.slice(0, 3).join(", ")}
@@ -179,6 +180,7 @@ export default function FindingsPage() {
   const confidence = searchParams.get("confidence") ?? "";
   const search     = searchParams.get("search")     ?? "";
   const target     = searchParams.get("target")     ?? "";
+  const includeSuppressed = searchParams.get("includeSuppressed") === "true";
   const page       = parseInt(searchParams.get("page") ?? "1", 10);
 
   const setFilter = (key: string, value: string) => {
@@ -214,13 +216,21 @@ export default function FindingsPage() {
   const { data: containers } = useQuery({ queryKey: ["containers"], queryFn: containersApi.list });
   const { data: domains } = useQuery({ queryKey: ["domains"], queryFn: domainsApi.list });
 
+  // Active suppressions — used to mark suppressed findings when "Show suppressed" is on
+  const { data: activeSuppressions } = useQuery({
+    queryKey: ["suppressions", "active"],
+    queryFn:  () => suppressionsApi.list(true),
+    staleTime: 30_000,
+  });
+  const suppressedFingerprints = new Set((activeSuppressions ?? []).map((s) => s.fingerprint));
+
   const targetFilter = parseTarget(target);
 
   // Check whether any filters are active (to distinguish "no results" from "nothing scanned yet")
   const hasActiveFilters = !!(severity || scanType || status || confidence || search || target);
 
   const { data, isLoading } = useQuery({
-    queryKey: ["findings", { severity, scanType, status, confidence, search, target, page }],
+    queryKey: ["findings", { severity, scanType, status, confidence, search, target, page, includeSuppressed }],
     queryFn: () =>
       findingsApi.list({
         severity: severity || undefined,
@@ -231,7 +241,8 @@ export default function FindingsPage() {
         ...targetFilter,
         page,
         limit: 25,
-      }),
+        ...(includeSuppressed ? { includeSuppressed: "true" as never } : {}),
+      } as never),
   });
 
   return (
@@ -244,7 +255,7 @@ export default function FindingsPage() {
             onClick={() => setTab("list")}
             className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
               tab === "list"
-                ? "bg-indigo-600 text-white"
+                ? "bg-indigo-700 text-white"
                 : "text-gray-400 hover:text-white"
             }`}
           >
@@ -255,7 +266,7 @@ export default function FindingsPage() {
             onClick={() => setTab("groups")}
             className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
               tab === "groups"
-                ? "bg-indigo-600 text-white"
+                ? "bg-indigo-700 text-white"
                 : "text-gray-400 hover:text-white"
             }`}
           >
@@ -336,6 +347,36 @@ export default function FindingsPage() {
           {CONFIDENCES.map((c) => <option key={c}>{c}</option>)}
         </select>
 
+        {/* Show suppressed toggle */}
+        <label
+          className={`flex items-center gap-1.5 rounded px-2.5 py-1.5 text-xs cursor-pointer transition-colors ${
+            includeSuppressed
+              ? "bg-amber-900/30 border border-amber-800/60 text-amber-300 hover:bg-amber-900/40"
+              : "bg-gray-800 text-gray-300 hover:bg-gray-700"
+          }`}
+          title={
+            suppressedFingerprints.size > 0
+              ? `${suppressedFingerprints.size} active suppression${suppressedFingerprints.size !== 1 ? "s" : ""} — toggle to reveal accepted-risk findings`
+              : "No active suppressions"
+          }
+        >
+          <input
+            type="checkbox"
+            checked={includeSuppressed}
+            onChange={(e) => setFilter("includeSuppressed", e.target.checked ? "true" : "")}
+            className="h-3 w-3 accent-amber-500"
+          />
+          <EyeOff className="h-3 w-3" />
+          Show suppressed
+          {suppressedFingerprints.size > 0 && (
+            <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
+              includeSuppressed ? "bg-amber-800 text-amber-100" : "bg-gray-700 text-gray-400"
+            }`}>
+              {suppressedFingerprints.size}
+            </span>
+          )}
+        </label>
+
         {/* Clear all filters */}
         {hasActiveFilters && (
           <button
@@ -399,43 +440,53 @@ export default function FindingsPage() {
                 </td>
               </tr>
             ) : (
-              data?.data.map((f) => (
-                <tr key={f.id} className={`cursor-pointer hover:bg-gray-800/40 ${selectedId === f.id ? "bg-indigo-950/20" : ""}`} onClick={() => openFinding(f)}>
+              data?.data.map((f) => {
+                const isSuppressed = suppressedFingerprints.has(f.fingerprint);
+                return (
+                <tr key={f.id} className={`cursor-pointer hover:bg-gray-800/40 ${selectedId === f.id ? "bg-indigo-950/20" : ""} ${isSuppressed ? "opacity-60" : ""}`} onClick={() => openFinding(f)}>
                   <td className="px-4 py-3"><SeverityBadge severity={f.severity} /></td>
                   <td className="px-4 py-3 max-w-sm">
                     <div className="flex items-center gap-2 min-w-0">
-                      <p className="truncate font-medium text-gray-200">{f.title}</p>
+                      <p className={`truncate font-medium ${isSuppressed ? "text-gray-400 line-through decoration-amber-600/50" : "text-gray-200"}`}>{f.title}</p>
+                      {isSuppressed && (
+                        <span className="shrink-0 inline-flex items-center gap-1 rounded-full border border-amber-800/60 bg-amber-900/30 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300" title="Suppressed — accepted risk">
+                          <EyeOff className="h-2.5 w-2.5" /> Suppressed
+                        </span>
+                      )}
                       {(() => {
+                        // Unified "merged occurrences" chip — neutral gray body, colour
+                        // lives only in the icon so multiple rows don't create visual noise.
                         const raw = f.rawOutput as Record<string, unknown> | null;
                         if (!raw || raw["merged"] !== true) return null;
                         const occs = raw["occurrences"] as unknown[] | undefined;
                         const cves = raw["cves"] as unknown[] | undefined;
                         const locs = raw["locations"] as unknown[] | undefined;
                         const ress = raw["resources"] as unknown[] | undefined;
+                        const chip = "shrink-0 inline-flex items-center gap-1 rounded-full bg-gray-800/80 px-1.5 py-0.5 text-[10px] text-gray-400 border border-gray-700/50";
                         if (ress?.length) return (
-                          <span className="shrink-0 inline-flex items-center gap-1 rounded-full bg-violet-900/40 px-1.5 py-0.5 text-[10px] text-violet-400">
-                            <Layers className="h-2.5 w-2.5" />{ress.length} resource{ress.length !== 1 ? "s" : ""}
+                          <span className={chip}>
+                            <Layers className="h-2.5 w-2.5 text-indigo-400/80" />{ress.length} resource{ress.length !== 1 ? "s" : ""}
                           </span>
                         );
                         if (occs?.length) {
                           if (f.scanType === "SECRET") return (
-                            <span className="shrink-0 inline-flex items-center gap-1 rounded-full bg-amber-900/40 px-1.5 py-0.5 text-[10px] text-amber-400">
-                              <KeyRound className="h-2.5 w-2.5" />{occs.length} file{occs.length !== 1 ? "s" : ""}
+                            <span className={chip}>
+                              <KeyRound className="h-2.5 w-2.5 text-amber-400/80" />{occs.length} file{occs.length !== 1 ? "s" : ""}
                             </span>
                           );
                           return (
-                            <span className="shrink-0 inline-flex items-center gap-1 rounded-full bg-emerald-900/40 px-1.5 py-0.5 text-[10px] text-emerald-400">
-                              <Globe className="h-2.5 w-2.5" />{occs.length} URL{occs.length !== 1 ? "s" : ""}
+                            <span className={chip}>
+                              <Globe className="h-2.5 w-2.5 text-sky-400/80" />{occs.length} URL{occs.length !== 1 ? "s" : ""}
                             </span>
                           );
                         }
                         if (cves?.length) return (
-                          <span className="shrink-0 inline-flex items-center gap-1 rounded-full bg-gray-800 px-1.5 py-0.5 text-[10px] text-gray-400">
+                          <span className={chip}>
                             <Layers className="h-2.5 w-2.5" />{cves.length} CVE{cves.length !== 1 ? "s" : ""}
                           </span>
                         );
                         if (locs?.length) return (
-                          <span className="shrink-0 inline-flex items-center gap-1 rounded-full bg-gray-800 px-1.5 py-0.5 text-[10px] text-gray-400">
+                          <span className={chip}>
                             <Layers className="h-2.5 w-2.5" />{locs.length} loc{locs.length !== 1 ? "s" : ""}
                           </span>
                         );
@@ -449,24 +500,25 @@ export default function FindingsPage() {
                   <td className="px-4 py-3">
                     <ConfidenceBadge confidence={f.confidence} />
                   </td>
-                  {/* AI triage status: both done / analysis only / fix only / pending */}
+                  {/* AI triage status — unified neutral chip; colour only in the icon */}
                   <td className="px-4 py-3">
                     {(() => {
                       const hasAnalysis = !!(f as Record<string, unknown>)["aiAnalysedAt"];
                       const hasFix      = !!(f as Record<string, unknown>)["aiFixSuggestedAt"];
+                      const chip = "inline-flex items-center gap-1 rounded-full bg-gray-800/80 px-1.5 py-0.5 text-[10px] font-semibold text-gray-300 border border-gray-700/60";
                       if (hasAnalysis && hasFix) return (
-                        <span title="AI analysis + fix suggestion ready" className="inline-flex items-center gap-1 rounded-full bg-emerald-900/40 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-400 border border-emerald-800/50">
-                          <Sparkles className="h-2.5 w-2.5" /> Triaged
+                        <span title="AI analysis + fix suggestion ready" className={chip}>
+                          <Sparkles className="h-2.5 w-2.5 text-indigo-400" /> Triaged
                         </span>
                       );
                       if (hasAnalysis) return (
-                        <span title="AI analysis ready" className="inline-flex items-center gap-1 rounded-full bg-blue-900/40 px-1.5 py-0.5 text-[10px] font-semibold text-blue-400 border border-blue-800/50">
-                          <Bot className="h-2.5 w-2.5" /> Analysed
+                        <span title="AI analysis ready" className={chip}>
+                          <Bot className="h-2.5 w-2.5 text-indigo-400" /> Analysed
                         </span>
                       );
                       if (hasFix) return (
-                        <span title="Fix suggestion ready" className="inline-flex items-center gap-1 rounded-full bg-violet-900/40 px-1.5 py-0.5 text-[10px] font-semibold text-violet-400 border border-violet-800/50">
-                          <Wrench className="h-2.5 w-2.5" /> Fix ready
+                        <span title="Fix suggestion ready" className={chip}>
+                          <Wrench className="h-2.5 w-2.5 text-indigo-400" /> Fix ready
                         </span>
                       );
                       return <span className="text-[10px] text-gray-700">—</span>;
@@ -477,7 +529,8 @@ export default function FindingsPage() {
                   </td>
                   <td className="px-4 py-3 text-xs text-gray-500">{formatRelative(f.firstSeen)}</td>
                 </tr>
-              ))
+                );
+              })
             )}
           </tbody>
         </table>

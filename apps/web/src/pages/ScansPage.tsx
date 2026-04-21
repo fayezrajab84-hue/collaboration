@@ -6,17 +6,15 @@ import ScanStatusBadge from "../components/ScanStatusBadge";
 import { formatRelative } from "../lib/utils";
 import type { ScanJob } from "@devsecops/types";
 
+// Unified target-type tag — matches TargetTag component. Neutral chip,
+// colour lives only in the icon (slate / blue / teal — harmonious cool family).
 const TYPE_ICONS: Record<string, React.ReactNode> = {
-  REPOSITORY: <GitBranch className="h-3.5 w-3.5" />,
-  CONTAINER:  <Box className="h-3.5 w-3.5" />,
-  DOMAIN:     <Globe className="h-3.5 w-3.5" />,
+  REPOSITORY: <GitBranch className="h-3.5 w-3.5 text-slate-400" />,
+  CONTAINER:  <Box        className="h-3.5 w-3.5 text-blue-400"  />,
+  DOMAIN:     <Globe      className="h-3.5 w-3.5 text-teal-400"  />,
 };
 
-const TYPE_COLORS: Record<string, string> = {
-  REPOSITORY: "bg-indigo-900/50 text-indigo-300",
-  CONTAINER:  "bg-cyan-900/50 text-cyan-300",
-  DOMAIN:     "bg-emerald-900/50 text-emerald-300",
-};
+const TYPE_CHIP = "bg-gray-800/80 text-gray-300 border border-gray-700/60";
 
 function SeverityPill({ count, color }: { count: number; color: string }) {
   if (!count) return null;
@@ -37,14 +35,29 @@ function duration(scan: ScanJob): string {
   return rem > 0 ? `${m}m ${rem}s` : `${m}m`;
 }
 
-/** Subscribe to SSE for a scan job and return the latest phase progress (0-99).
- *  Returns null when not connected / no PHASE_PROGRESS received yet. */
-function usePhaseProgress(scanId: string, active: boolean): number | null {
-  const [pct, setPct] = useState<number | null>(null);
+/** Live crawl stats emitted by the Playwright crawler sidecar during the
+ *  pre-scan discovery phase. */
+type CrawlerProgress = {
+  pagesVisited: number;
+  pagesQueued:  number;
+  xhrObserved:  number;
+  formsFound:   number;
+  currentUrl:   string | null;
+  elapsedSecs:  number;
+};
+
+/** Subscribe to SSE for a scan job. Returns the latest phase progress (0-99)
+ *  and the latest crawler progress snapshot (null until the first event). */
+function usePhaseProgress(
+  scanId: string,
+  active: boolean
+): { phasePct: number | null; crawler: CrawlerProgress | null } {
+  const [phasePct, setPct] = useState<number | null>(null);
+  const [crawler, setCrawler] = useState<CrawlerProgress | null>(null);
   const esRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
-    if (!active) { setPct(null); return; }
+    if (!active) { setPct(null); setCrawler(null); return; }
     if (esRef.current) return; // already connected
 
     const es = new EventSource(`/api/scans/${scanId}/events`);
@@ -55,6 +68,16 @@ function usePhaseProgress(scanId: string, active: boolean): number | null {
         const data = JSON.parse(ev.data);
         if (data.type === "PHASE_PROGRESS" && typeof data.pct === "number") {
           setPct(data.pct);
+        }
+        if (data.type === "CRAWLER_PROGRESS") {
+          setCrawler({
+            pagesVisited: data.pagesVisited ?? 0,
+            pagesQueued:  data.pagesQueued  ?? 0,
+            xhrObserved:  data.xhrObserved  ?? 0,
+            formsFound:   data.formsFound   ?? 0,
+            currentUrl:   data.currentUrl   ?? null,
+            elapsedSecs:  data.elapsedSecs  ?? 0,
+          });
         }
         if (data.type === "STATUS_CHANGE" &&
             (data.status === "COMPLETED" || data.status === "FAILED" || data.status === "CANCELLED")) {
@@ -70,13 +93,24 @@ function usePhaseProgress(scanId: string, active: boolean): number | null {
     };
   }, [scanId, active]);
 
-  return pct;
+  return { phasePct, crawler };
+}
+
+/** Truncate a URL to its path (host elided) for compact progress display. */
+function shortUrl(u: string): string {
+  try {
+    const url = new URL(u);
+    const p = url.pathname + (url.search || "");
+    return p.length > 44 ? p.slice(0, 41) + "…" : p;
+  } catch {
+    return u.length > 44 ? u.slice(0, 41) + "…" : u;
+  }
 }
 
 /** Thin animated progress bar for PENDING / RUNNING scans */
 function ScanProgressBar({ scan }: { scan: ScanJob }) {
   const isActive = scan.status === "PENDING" || scan.status === "RUNNING";
-  const phasePct = usePhaseProgress(scan.id, isActive);
+  const { phasePct, crawler } = usePhaseProgress(scan.id, isActive);
 
   if (!isActive) return null;
 
@@ -115,6 +149,30 @@ function ScanProgressBar({ scan }: { scan: ScanJob }) {
           <div className="h-full w-1/3 animate-pulse rounded-full bg-indigo-600/60" />
         )}
       </div>
+      {crawler && (
+        <div className="flex items-center justify-between gap-2 pt-0.5 text-[10px] text-gray-500">
+          <span className="font-mono">
+            crawler: <span className="text-gray-400">{crawler.pagesVisited}</span> pages
+            {crawler.xhrObserved > 0 && (
+              <> · <span className="text-gray-400">{crawler.xhrObserved}</span> XHR</>
+            )}
+            {crawler.formsFound > 0 && (
+              <> · <span className="text-gray-400">{crawler.formsFound}</span> forms</>
+            )}
+            {crawler.pagesQueued > 0 && (
+              <> · <span className="text-gray-400">{crawler.pagesQueued}</span> queued</>
+            )}
+          </span>
+          {crawler.currentUrl && (
+            <span
+              className="truncate font-mono text-gray-600"
+              title={crawler.currentUrl}
+            >
+              {shortUrl(crawler.currentUrl)}
+            </span>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -279,7 +337,7 @@ export default function ScansPage() {
                       {/* Target */}
                       <td className="px-4 py-3">
                         <div className="flex flex-col gap-1">
-                          <span className={`inline-flex items-center gap-1.5 rounded px-2 py-0.5 text-xs font-medium w-fit ${TYPE_COLORS[scan.targetType] ?? "bg-gray-800 text-gray-400"}`}>
+                          <span className={`inline-flex items-center gap-1.5 rounded px-2 py-0.5 text-xs font-medium w-fit ${TYPE_CHIP}`}>
                             {TYPE_ICONS[scan.targetType]}
                             {scan.targetType}
                           </span>
@@ -325,7 +383,7 @@ export default function ScansPage() {
                             <SeverityPill count={scan.criticalCount ?? 0} color="bg-red-950/70    text-red-300"    />
                             <SeverityPill count={scan.highCount ?? 0}     color="bg-orange-950/70 text-orange-300" />
                             <SeverityPill count={scan.mediumCount ?? 0}   color="bg-amber-950/70  text-amber-300"  />
-                            <SeverityPill count={scan.lowCount ?? 0}      color="bg-green-950/70  text-green-300"  />
+                            <SeverityPill count={scan.lowCount ?? 0}      color="bg-sky-950/70    text-sky-300"    />
                             {!scan.criticalCount && !scan.highCount && !scan.mediumCount && !scan.lowCount && (
                               <span className="text-xs text-gray-600">No findings</span>
                             )}
@@ -368,11 +426,11 @@ export default function ScansPage() {
                                 expandedSummary === scan.id ? null : scan.id
                               )}
                               title="AI Summary"
-                              className="inline-flex items-center gap-1 rounded border border-indigo-900/50 bg-indigo-950/30 px-2 py-1 text-xs text-indigo-400 hover:border-indigo-700 hover:text-indigo-300 transition-colors"
+                              className="inline-flex items-center gap-1 rounded border border-gray-700/60 bg-gray-800/70 px-2 py-1 text-xs text-gray-300 hover:border-gray-600 hover:bg-gray-800 transition-colors"
                             >
-                              <Sparkles className="h-3 w-3" />
+                              <Sparkles className="h-3 w-3 text-indigo-400/80" />
                               AI
-                              <ChevronDown className={`h-3 w-3 transition-transform ${expandedSummary === scan.id ? "rotate-180" : ""}`} />
+                              <ChevronDown className={`h-3 w-3 text-gray-500 transition-transform ${expandedSummary === scan.id ? "rotate-180" : ""}`} />
                             </button>
                           )}
                           {(scan.status === "FAILED" || scan.status === "CANCELLED") && (

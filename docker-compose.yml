@@ -209,6 +209,63 @@ services:
   #   interactsh-server -d your-domain -i <public-ip> -sa
   # The scanner containers are on the `public` network and have outbound internet access.
 
+  # ── Playwright crawler sidecar (Phase 1) ──────────────────────────────────
+  # Chromium-based SPA crawler invoked by the scanner during DAST scans.
+  # Routes every browser request through ZAP so the active-scan phase has
+  # full visibility into dynamically-loaded pages + XHR endpoints that
+  # ZAP's built-in spider can't see on modern React/Vue/Angular apps.
+  crawler:
+    build:
+      context: .
+      dockerfile: docker/crawler.Dockerfile
+    restart: unless-stopped
+    environment:
+      # Empty string disables the proxy — handy for unit tests against a
+      # stand-alone crawl. Production wiring points at the ZAP daemon.
+      ZAP_PROXY_URL: ${CRAWLER_ZAP_PROXY_URL:-http://zap:8080}
+      LOG_LEVEL: ${CRAWLER_LOG_LEVEL:-info}
+      CRAWLER_HARD_MAX_PAGES: ${CRAWLER_HARD_MAX_PAGES:-500}
+      CRAWLER_HARD_MAX_DURATION_SECS: ${CRAWLER_HARD_MAX_DURATION_SECS:-900}
+    # Chromium + shared-memory heavy pages need more /dev/shm than Docker's
+    # 64 MB default or they OOM-crash mid-crawl.
+    shm_size: 1gb
+    networks:
+      - internal
+      - public    # Chromium fetches target pages + remote assets
+    depends_on:
+      zap:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8001/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    mem_limit: 2g
+    cpus: '1.5'
+
+  # ── VulnSPA — deterministic crawler integration-test fixture ──────────────
+  # Static nginx serving apps/crawler/tests/fixtures/vulnspa. Only started
+  # under `--profile test` so production compose-up doesn't spin it.
+  # The crawler integration tests hit http://vulnspa:80 over the internal
+  # network (offline, reproducible, <50 ms per page).
+  vulnspa:
+    image: nginx:1.27-alpine
+    profiles: ["test"]
+    restart: "no"
+    volumes:
+      - ./apps/crawler/tests/fixtures/vulnspa:/usr/share/nginx/html:ro
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost/ || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    mem_limit: 64m
+    cpus: '0.25'
+
   # ── Scanner microservice ────────────────────────────────────────────────────
   scanner:
     image: devsecops-scanner:latest   # fixed name so scanner-pentest can use FROM devsecops-scanner:latest
@@ -220,6 +277,8 @@ services:
       SCAN_WORKSPACE_DIR: /tmp/scan_workspace
       ZAP_BASE_URL: ${ZAP_BASE_URL:-http://zap:8080}
       ZAP_API_KEY: ${ZAP_API_KEY:-}
+      # Crawler sidecar — scanner invokes /crawl before active scan.
+      CRAWLER_URL: ${CRAWLER_URL:-http://crawler:8001}
       INTERACTSH_URL: ${INTERACTSH_URL:-}
     volumes:
       - nuclei_templates:/home/scanner/nuclei-templates    # nuclei v3 stores templates here
@@ -228,6 +287,8 @@ services:
       - public    # needs outbound: git clone, trivy db, nuclei templates
     depends_on:
       zap:
+        condition: service_healthy
+      crawler:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]

@@ -389,7 +389,149 @@ class DASTScanner(BaseScanner):
             print(f"[dast] Katana error: {exc}")
             return []
 
-    # ── Playwright SPA crawl ──────────────────────────────────────────────────
+    # ── Crawler sidecar ───────────────────────────────────────────────────────
+
+    def _crawler_sidecar(self, target_url: str, request: ScanRequest) -> list[str]:
+        """
+        Delegate the SPA crawl to the Playwright crawler sidecar (apps/crawler).
+
+        Benefits over the in-process ``_playwright_crawl``:
+          - Chromium stays out of the scanner container (smaller image, no
+            Playwright install on the scanner, no shm_size headaches)
+          - Crawler service has richer heuristics: form walks with safety
+            rails, SPA router (data-* / hash) extraction, OpenAPI pre-seeding,
+            typed auth (form / header / cookie / oauth2)
+          - Traffic flows through ZAP from the crawler container, so passive
+            scan coverage is identical
+
+        Returns [] on any error so the caller can fall back gracefully to
+        the in-process crawler.
+        """
+        if not settings.crawler_url:
+            return []
+
+        payload: dict = {
+            "target_url": target_url,
+            "max_pages": 300,
+            "max_depth": 4,
+            "max_duration_secs": min(settings.crawler_timeout_secs, 600),
+            "use_zap_proxy": True,
+            "run_id": request.scan_job_id,
+            # Phase 3 uplift — opt into form walks + any known OpenAPI spec.
+            "interact_with_forms": True,
+        }
+
+        # Phase 5 — live progress callback. Crawler POSTs throttled stats to
+        # the API, which forwards them to the frontend via SSE.
+        if request.api_url:
+            payload["progress_callback_url"] = (
+                f"{request.api_url}/api/scans/{request.scan_job_id}/crawler-progress"
+            )
+
+        # Best-effort OpenAPI hint. ScanRequest currently ships pre-extracted
+        # URLs in `api_spec_urls`; when the raw spec URL is also available
+        # (older imports) the crawler expands it server-side.
+        raw_spec_url = getattr(request, "api_spec_url", None)
+        if raw_spec_url:
+            payload["openapi_spec_url"] = raw_spec_url
+
+        auth_payload = self._map_auth_for_crawler(request)
+        if auth_payload is not None:
+            payload["auth"] = auth_payload
+
+        try:
+            with httpx.Client(timeout=settings.crawler_timeout_secs) as client:
+                resp = client.post(f"{settings.crawler_url}/crawl", json=payload)
+                resp.raise_for_status()
+                body = resp.json()
+        except Exception as exc:
+            print(f"[dast] Crawler sidecar unavailable, falling back: {exc}")
+            return []
+
+        discovered = body.get("discovered_urls") or []
+        api_endpoints = body.get("api_endpoints") or []
+        stats = body.get("stats") or {}
+        auth_evidence = body.get("auth_evidence")
+
+        # De-dupe and cap — same shape as other crawl helpers.
+        urls: set[str] = set()
+        for d in discovered:
+            u = (d.get("url") or "").split("#", 1)[0]
+            if u:
+                urls.add(u)
+        for a in api_endpoints:
+            u = (a.get("url") or "").split("#", 1)[0]
+            if u:
+                urls.add(u)
+
+        print(
+            f"[dast] Crawler sidecar: {stats.get('pages_visited', 0)} pages, "
+            f"{stats.get('xhr_observed', 0)} XHR, "
+            f"{stats.get('forms_found', 0)} forms, "
+            f"{stats.get('duration_secs', 0)}s "
+            f"(reason={stats.get('stopped_reason', '?')})"
+            + (f" | auth: {auth_evidence}" if auth_evidence else "")
+        )
+        return list(urls)[:500]
+
+    def _map_auth_for_crawler(self, request: ScanRequest) -> dict | None:
+        """Translate scanner ``AuthConfig`` → crawler sidecar auth payload."""
+        from models import AuthType  # local import to avoid a module-load cycle
+
+        auth = request.auth_config
+        if not auth:
+            return None
+
+        try:
+            if auth.auth_type == AuthType.HEADER:
+                if not auth.header_name or not auth.header_value:
+                    return None
+                return {
+                    "type": "header",
+                    "headers": {auth.header_name: auth.header_value},
+                }
+
+            if auth.auth_type == AuthType.COOKIE:
+                # Scanner stores Cookie auth as "Cookie: name=value; name2=value2"
+                # in header_value. Rather than try to parse domain/path out of
+                # that string (which the crawler's typed CookieAuth requires),
+                # we forward it as a plain Cookie header — same effect.
+                if not auth.header_value:
+                    return None
+                return {
+                    "type": "header",
+                    "headers": {"Cookie": auth.header_value},
+                }
+
+            if auth.auth_type == AuthType.OAUTH2:
+                if not (auth.oauth2_token_url and auth.oauth2_client_id and auth.oauth2_client_secret):
+                    return None
+                return {
+                    "type": "oauth2",
+                    "token_url": auth.oauth2_token_url,
+                    "client_id": auth.oauth2_client_id,
+                    "client_secret": auth.oauth2_client_secret,
+                    "scope": auth.oauth2_scope,
+                }
+
+            # FORM — translate the scanner's form-field names into CSS selectors.
+            if not (auth.login_url and auth.username and auth.password):
+                return None
+            return {
+                "type": "form",
+                "login_url": auth.login_url,
+                "username_selector": f"[name='{auth.username_field}']",
+                "password_selector": f"[name='{auth.password_field}']",
+                "submit_selector": "button[type=submit], input[type=submit]",
+                "username": auth.username,
+                "password": auth.password,
+                "success_text": auth.logged_in_pattern,
+            }
+        except Exception as exc:
+            print(f"[dast] Auth mapping failed — crawling unauthenticated: {exc}")
+            return None
+
+    # ── Playwright SPA crawl (legacy in-process fallback) ─────────────────────
 
     def _playwright_crawl(self, target_url: str, request: ScanRequest, workspace: str) -> list[str]:
         """
@@ -628,8 +770,12 @@ class DASTScanner(BaseScanner):
         # Build auth headers for external tools (ffuf, SQLMap, Dalfox)
         auth_headers_for_tools = self.auth_header_dict(request.auth_config, None)
 
-        # Playwright: intercepts real XHR/fetch calls from JS frameworks — best for SPAs
-        playwright_urls = self._playwright_crawl(target_url, request, crawl_workspace)
+        # Prefer the crawler sidecar (apps/crawler) when configured — richer
+        # heuristics + Chromium outside the scanner container. Falls back to
+        # the in-process Playwright crawl if the sidecar is unavailable.
+        playwright_urls = self._crawler_sidecar(target_url, request)
+        if not playwright_urls:
+            playwright_urls = self._playwright_crawl(target_url, request, crawl_workspace)
         self._report_progress(request, 8, "playwright_crawl_done")
 
         # Katana: fast link-follower for traditional and semi-JS sites

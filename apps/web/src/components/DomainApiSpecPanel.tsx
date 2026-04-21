@@ -99,7 +99,7 @@ export default function DomainApiSpecPanel({ domainId }: Props) {
             <p className="text-xs text-violet-400 animate-pulse">Uploading…</p>
           )}
           {save.isSuccess && (
-            <p className="text-xs text-emerald-400 flex items-center gap-1">
+            <p className="text-xs text-teal-400 flex items-center gap-1">
               <CheckCircle2 className="h-3 w-3" /> Spec saved — {existing?.endpoints ?? "?"} endpoints extracted. Next scan will target all API paths.
             </p>
           )}

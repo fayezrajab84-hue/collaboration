@@ -21,7 +21,10 @@ enum OrgType {
 enum Role {
   OWNER
   ADMIN
-  MEMBER
+  SECURITY
+  DEVELOPER
+  VIEWER
+  MEMBER     // legacy — treated as DEVELOPER by RBAC layer
 }
 
 enum ScanType {
@@ -146,7 +149,7 @@ model Organization {
 model OrganizationMember {
   userId String
   orgId  String
-  role   Role     @default(MEMBER)
+  role   Role     @default(DEVELOPER)
 
   user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
@@ -412,6 +415,40 @@ model Report {
 
   @@index([orgId, generatedAt])
   @@index([orgId, targetType, targetId])
+}
+
+// ── Suppressions (exception / accepted-risk workflow) ─────────────────────────
+// When a finding's fingerprint matches an active (non-expired) suppression,
+// it is hidden from default finding queries. Toggle with ?includeSuppressed=true.
+model Suppression {
+  id           String    @id @default(cuid())
+  orgId        String
+  fingerprint  String    // matches Finding.fingerprint; so dedups across re-scans
+  reason       String    @db.Text
+  expiresAt    DateTime?
+  approvedById String
+  createdAt    DateTime  @default(now())
+  revokedAt    DateTime?
+  revokedById  String?
+
+  @@index([orgId, fingerprint])
+  @@index([orgId, revokedAt])
+}
+
+// ── Audit log ─────────────────────────────────────────────────────────────────
+// Free-form record of mutation events. Written by services; read via settings UI.
+model AuditEvent {
+  id           String   @id @default(cuid())
+  orgId        String
+  userId       String
+  action       String   // e.g. "suppression.create", "finding.status_change", "repo.delete"
+  resourceType String   // e.g. "Finding", "Repository", "Suppression"
+  resourceId   String?
+  metadata     Json     @default("{}")
+  createdAt    DateTime @default(now())
+
+  @@index([orgId, createdAt])
+  @@index([orgId, resourceType, resourceId])
 }
 
 model Integration {

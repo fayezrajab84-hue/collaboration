@@ -1,9 +1,12 @@
 import { Router } from "express";
 import { z } from "zod";
 import { requireAuth } from "../../middleware/requireAuth.js";
+import { requireRole } from "../../middleware/requireRole.js";
 import prisma from "../../db.js";
 import { triggerScan } from "../../services/scanService.js";
+import { generateContainerSbom } from "../../services/sbomService.js";
 import { scoreTarget } from "../../services/riskScoringService.js";
+import * as audit from "../../services/auditService.js";
 import type { ScanType } from "@devsecops/types";
 
 const router = Router();
@@ -105,16 +108,23 @@ router.patch("/:id", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// Delete container
-router.delete("/:id", async (req, res, next) => {
+// Delete container — ADMIN+
+router.delete("/:id", requireRole("ADMIN"), async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
     const container = await prisma.container.findFirst({
-      where: { id: req.params["id"], orgId: member?.orgId },
+      where: { id: req.params["id"], orgId: req.orgId! },
     });
     if (!container) { res.status(404).json({ error: "Container not found" }); return; }
     await prisma.container.delete({ where: { id: container.id } });
+    await audit.log({
+      orgId:        req.orgId!,
+      userId:       user.id,
+      action:       "container.delete",
+      resourceType: "Container",
+      resourceId:   container.id,
+      metadata:     { imageRef: container.imageRef },
+    });
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
@@ -151,6 +161,24 @@ router.post("/:id/risk-score", async (req, res, next) => {
     await scoreTarget("CONTAINER", target.id);
     const updated = await prisma.container.findUniqueOrThrow({ where: { id: target.id } });
     res.json({ aiRiskScore: updated.aiRiskScore, aiRiskReason: updated.aiRiskReason, aiRiskScoredAt: updated.aiRiskScoredAt });
+  } catch (err) { next(err); }
+});
+
+// GET /api/containers/:id/sbom — CycloneDX SBOM download
+router.get("/:id/sbom", async (req, res, next) => {
+  try {
+    const user      = req.user as { id: string };
+    const member    = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const container = await prisma.container.findFirst({
+      where: { id: req.params["id"], orgId: member?.orgId },
+    });
+    if (!container) { res.status(404).json({ error: "Container not found" }); return; }
+
+    const sbom     = await generateContainerSbom(container.imageRef);
+    const safeName = container.imageRef.replace(/[^a-zA-Z0-9._-]/g, "_");
+    res.setHeader("Content-Type", "application/vnd.cyclonedx+json");
+    res.setHeader("Content-Disposition", `attachment; filename="${safeName}-sbom.cdx.json"`);
+    res.send(JSON.stringify(sbom, null, 2));
   } catch (err) { next(err); }
 });
 

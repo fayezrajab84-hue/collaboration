@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>VulnSPA — crawler fixture</title>
+</head>
+<body>
+  <h1>VulnSPA home</h1>
+
+  <!-- Regular link the Phase 1 extractor should see. -->
+  <nav>
+    <a href="/about.html">About</a>
+    <a href="/users.html">Users</a>
+    <!-- Hash-routed SPA link (Phase 3 spa.py target). -->
+    <a href="#/dashboard">Dashboard (hash route)</a>
+    <!-- Skipped by crawler: javascript: and mailto:. -->
+    <a href="javascript:void(0)">Do nothing</a>
+    <a href="mailto:noone@example.test">Mail</a>
+    <!-- Cross-origin link — filtered by scope. -->
+    <a href="https://example.com/off-site">Off-site</a>
+  </nav>
+
+  <!-- data-* routing (Phase 3 spa.py target). -->
+  <button data-href="/settings.html">Settings (data-href)</button>
+  <div data-route="/profile.html">Profile (data-route)</div>
+
+  <!-- Triggers an XHR the observer should record. -->
+  <script>
+    fetch("/api/ping", { method: "GET" }).catch(() => {});
+    fetch("/api/stats", { method: "POST", body: "{}" }).catch(() => {});
+  </script>
+
+  <hr />
+
+  <!-- Safe form — should be submitted (method GET, "Search" button). -->
+  <form action="/search" method="get">
+    <input type="text" name="q" />
+    <input type="text" name="category" />
+    <button type="submit">Search</button>
+  </form>
+
+  <!-- Form with password field — MUST be skipped. -->
+  <form action="/login" method="post">
+    <input type="text" name="username" />
+    <input type="password" name="password" />
+    <button type="submit">Log in</button>
+  </form>
+
+  <!-- Destructive submit text — MUST be skipped. -->
+  <form action="/accounts/delete" method="post">
+    <input type="text" name="confirm" />
+    <button type="submit">Delete account</button>
+  </form>
+
+  <!-- Forbidden field name (card) — MUST be skipped. -->
+  <form action="/pay" method="post">
+    <input type="text" name="card_number" />
+    <button type="submit">Go</button>
+  </form>
+</body>
+</html>

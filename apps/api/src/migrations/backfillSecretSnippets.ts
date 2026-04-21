@@ -1,12 +1,12 @@
 /**
- * One-time migration: backfill codeSnippet for SECRET findings that have a
- * filePath + lineStart but no codeSnippet stored.
+ * One-time migration: fetch code snippets from GitHub for SECRET finding
+ * occurrences that have null snippets, and strip legacy "N: code" line-number
+ * prefixes left by an earlier version of the scanner.
  *
- * TruffleHog does not embed code in its JSON output; Semgrep-sourced SECRET
- * findings had "requires login" placeholders that were cleared to null.
- * This migration fetches the real code from GitHub raw API and writes it back.
+ * Applies to rawOutput.occurrences[] inside merged SECRET findings.
  *
- * Safe to re-run — only updates findings where codeSnippet IS NULL.
+ * Safe to re-run — only touches occurrences whose snippet is null or has
+ * legacy "N: " prefixes.
  *
  * Run:
  *   docker exec admiring-hertz-api-1 sh -c \
@@ -18,11 +18,51 @@ import prisma from "../db.js";
 import { logger } from "../logger.js";
 import { decrypt } from "../services/encryptionService.js";
 
+interface SecretOccurrence {
+  filePath:  string | null;
+  lineStart: number | null;
+  snippet:   string | null;
+  verified:  boolean;
+  severity:  string;
+  scanner:   string;
+}
+
+interface SecretMergedRawOutput {
+  merged:      boolean;
+  count:       number;
+  ruleId:      string;
+  scanner:     string;
+  occurrences: SecretOccurrence[];
+  [key: string]: unknown;
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+const WORKSPACE_RE = /^\/tmp\/scan_workspace\/[^/]+\/repo\//;
+
+function cleanPath(p: string): string {
+  return p.replace(WORKSPACE_RE, "").replace(/^\/+/, "");
+}
+
+/** Strip legacy "42: code" line-number prefixes from a snippet. */
+function stripLinePrefixes(snippet: string): string {
+  const lines = snippet.split("\n");
+  const allHavePrefix = lines.every((l) => l.trim() === "" || /^\s*\d+:\s?/.test(l));
+  if (!allHavePrefix) return snippet;
+  return lines.map((l) => l.replace(/^\s*\d+:\s?/, "")).join("\n");
+}
+
+/** True when an occurrence needs a fresh snippet (null) or has legacy "N: " prefixes. */
+function needsSnippet(occ: SecretOccurrence): boolean {
+  if (!occ.snippet) return true;
+  const lines = occ.snippet.split("\n");
+  return lines.every((l) => l.trim() === "" || /^\s*\d+:\s/.test(l));
+}
+
 async function fetchLines(
-  rawUrl: string,
-  token: string | null,
+  rawUrl:    string,
+  token:     string | null,
   lineStart: number,
-  lineEnd: number,
 ): Promise<string | null> {
   try {
     const resp = await axios.get<string>(rawUrl, {
@@ -33,49 +73,42 @@ async function fetchLines(
       timeout: 10_000,
     });
     const allLines = resp.data.split("\n");
-    // ±2 lines of context around the finding line
+    // ±2 lines of context — clean code, no line-number prefixes
     const ctxStart = Math.max(0, lineStart - 3);
-    const ctxEnd   = Math.min(allLines.length, lineEnd + 2);
-    const slice    = allLines.slice(ctxStart, ctxEnd);
-    return slice
-      .map((line, i) => `${ctxStart + i + 1}: ${line}`)
-      .join("\n")
-      .slice(0, 1000);
+    const ctxEnd   = Math.min(allLines.length, lineStart + 2);
+    return allLines.slice(ctxStart, ctxEnd).join("\n").slice(0, 1000) || null;
   } catch {
     return null;
   }
 }
 
-async function run() {
-  logger.info("[backfill-secret-snippets] starting SECRET finding snippet backfill");
+// ── Main ──────────────────────────────────────────────────────────────────────
 
-  // SECRET findings that have a file + line but no snippet yet
+async function run() {
+  logger.info("[backfill-secret-snippets] starting");
+
   const findings = await prisma.finding.findMany({
-    where: {
-      scanType:     "SECRET",
-      repositoryId: { not: null },
-      filePath:     { not: null },
-      lineStart:    { not: null },
-      codeSnippet:  null,
-    },
-    select: {
-      id:           true,
-      repositoryId: true,
-      filePath:     true,
-      lineStart:    true,
-      lineEnd:      true,
-    },
+    where: { scanType: "SECRET", repositoryId: { not: null } },
+    select: { id: true, repositoryId: true, rawOutput: true },
   });
 
-  logger.info(`[backfill-secret-snippets] ${findings.length} SECRET findings need snippet backfill`);
+  // Only merged findings that have occurrences needing work
+  const candidates = findings.filter((f) => {
+    const raw = f.rawOutput as SecretMergedRawOutput | null;
+    if (!raw?.merged || !Array.isArray(raw.occurrences)) return false;
+    return (raw.occurrences as SecretOccurrence[]).some(needsSnippet);
+  });
+
+  logger.info(`[backfill-secret-snippets] ${candidates.length} merged SECRET findings need work`);
 
   // Repo cache: repoId → { fullName, branch, token }
   const repoCache = new Map<string, { fullName: string; branch: string; token: string | null }>();
 
-  let updated = 0;
-  let skipped = 0;
+  let updatedFindings = 0;
+  let updatedOccs     = 0;
+  let skippedOccs     = 0;
 
-  for (const f of findings) {
+  for (const f of candidates) {
     const repoId = f.repositoryId!;
 
     if (!repoCache.has(repoId)) {
@@ -99,25 +132,50 @@ async function run() {
     }
 
     const { fullName, branch, token } = repoCache.get(repoId)!;
-    if (!fullName) { skipped++; continue; }
+    if (!fullName) continue;
 
-    const cleanPath = (f.filePath as string).replace(/^\/+/, "");
-    const lineStart = f.lineStart as number;
-    const lineEnd   = (f.lineEnd as number | null) ?? lineStart;
-    const rawUrl    = `https://raw.githubusercontent.com/${fullName}/${branch}/${cleanPath}`;
+    const raw  = f.rawOutput as SecretMergedRawOutput;
+    const occs = [...(raw.occurrences as SecretOccurrence[])];
+    let   changed = false;
 
-    const snippet = await fetchLines(rawUrl, token, lineStart, lineEnd);
-    if (!snippet) { skipped++; continue; }
+    for (let i = 0; i < occs.length; i++) {
+      const occ = occs[i]!;
+      if (!needsSnippet(occ)) continue;
+
+      // Has snippet with legacy N: prefixes — strip them in-place
+      if (occ.snippet) {
+        occs[i] = { ...occ, snippet: stripLinePrefixes(occ.snippet) };
+        updatedOccs++;
+        changed = true;
+        continue;
+      }
+
+      // Null snippet — fetch from GitHub
+      if (!occ.filePath || occ.lineStart == null) { skippedOccs++; continue; }
+
+      const path   = cleanPath(occ.filePath);
+      const rawUrl = `https://raw.githubusercontent.com/${fullName}/${branch}/${path}`;
+      const snippet = await fetchLines(rawUrl, token, occ.lineStart);
+
+      if (!snippet) { skippedOccs++; continue; }
+
+      occs[i] = { ...occ, snippet };
+      updatedOccs++;
+      changed = true;
+    }
+
+    if (!changed) continue;
 
     await prisma.finding.update({
       where: { id: f.id },
-      data:  { codeSnippet: snippet },
+      data:  { rawOutput: { ...raw, occurrences: occs } as object },
     });
-    updated++;
+    updatedFindings++;
   }
 
   logger.info(
-    `[backfill-secret-snippets] done — ${updated} findings updated, ${skipped} skipped`,
+    `[backfill-secret-snippets] done — ${updatedFindings} findings updated, ` +
+    `${updatedOccs} occurrences fixed, ${skippedOccs} skipped`,
   );
 }
 

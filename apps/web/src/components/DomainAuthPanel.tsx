@@ -108,7 +108,7 @@ export default function DomainAuthPanel({ domainId }: Props) {
           <Lock className="h-3.5 w-3.5 text-indigo-400" />
           <span className="text-xs font-medium text-gray-300">Scan Credentials</span>
           {hasConfig && (
-            <span className="flex items-center gap-1 rounded-full bg-emerald-900/50 px-2 py-0.5 text-[10px] font-medium text-emerald-400">
+            <span className="flex items-center gap-1 rounded-full bg-teal-900/40 border border-teal-800/40 px-2 py-0.5 text-[10px] font-medium text-teal-300">
               <ShieldCheck className="h-3 w-3" />
               {existing.authType === "OAUTH2" ? "OAuth2" : "Configured"}
             </span>
@@ -294,7 +294,7 @@ export default function DomainAuthPanel({ domainId }: Props) {
                 <button
                   onClick={() => save.mutate()}
                   disabled={save.isPending}
-                  className="flex items-center gap-1.5 rounded bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+                  className="flex items-center gap-1.5 rounded bg-indigo-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-600 disabled:opacity-50"
                 >
                   <Save className="h-3 w-3" />
                   {save.isPending
@@ -314,7 +314,7 @@ export default function DomainAuthPanel({ domainId }: Props) {
                 )}
 
                 {save.isSuccess && (
-                  <span className="text-[11px] text-emerald-400">
+                  <span className="text-[11px] text-teal-400">
                     Saved — next scan will use these credentials
                   </span>
                 )}

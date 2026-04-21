@@ -18,4 +18,18 @@ export type IntegrationType = "JIRA" | "SLACK" | "MICROSOFT_TEAMS";
 
 export type OrgType = "PERSONAL" | "TEAM";
 
-export type Role = "OWNER" | "ADMIN" | "MEMBER";
+export type Role = "OWNER" | "ADMIN" | "SECURITY" | "DEVELOPER" | "VIEWER" | "MEMBER";
+
+// Role hierarchy — higher number = more permissions. MEMBER is legacy = DEVELOPER.
+export const ROLE_RANK: Record<Role, number> = {
+  OWNER:     5,
+  ADMIN:     4,
+  SECURITY:  3,
+  DEVELOPER: 2,
+  MEMBER:    2,
+  VIEWER:    1,
+};
+
+export function roleAtLeast(role: Role, min: Role): boolean {
+  return ROLE_RANK[role] >= ROLE_RANK[min];
+}

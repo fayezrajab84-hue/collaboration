@@ -37,7 +37,7 @@ const LINE_STYLES: Record<DiffLine["type"], { row: string; gutter: string; code:
   "file-b":  { row: "bg-gray-800",               gutter: "bg-gray-800 text-gray-500 select-none",   code: "text-gray-400 font-semibold" },
   "hunk":    { row: "bg-blue-950/50",             gutter: "bg-blue-950/70 text-blue-500 select-none", code: "text-blue-400" },
   "removed": { row: "bg-red-950/50 hover:bg-red-950/70",   gutter: "bg-red-950/80 text-red-500 select-none",   code: "text-red-300" },
-  "added":   { row: "bg-green-950/50 hover:bg-green-950/70", gutter: "bg-green-950/80 text-green-500 select-none", code: "text-green-300" },
+  "added":   { row: "bg-teal-950/50 hover:bg-teal-950/70",  gutter: "bg-teal-950/80 text-teal-500 select-none",  code: "text-teal-300"  },
   "context": { row: "hover:bg-gray-800/40",       gutter: "bg-gray-900 text-gray-600 select-none",   code: "text-gray-400" },
   "empty":   { row: "",                           gutter: "bg-gray-900 select-none",                 code: "" },
 };

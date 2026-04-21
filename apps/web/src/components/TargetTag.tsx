@@ -10,6 +10,10 @@ import type { Finding } from "@devsecops/types";
  * `maxWidth` controls the max-width of the truncated label so different
  * densities (wide Findings table vs compact Dashboard card) look right.
  */
+// Unified target-type tag — neutral gray body, type distinguished by a small
+// icon tinted from a harmonious cool-family palette (slate / blue / teal).
+// Previously indigo/cyan/emerald all competed with each other and with the
+// primary indigo action accent elsewhere.
 export default function TargetTag({
   finding,
   maxWidth = "max-w-[160px]",
@@ -17,26 +21,28 @@ export default function TargetTag({
   finding: Finding;
   maxWidth?: string;
 }) {
+  const chip = `inline-flex items-center gap-1 rounded bg-gray-800/80 border border-gray-700/60 px-2 py-0.5 text-xs text-gray-300 ${maxWidth} truncate`;
+
   if (finding.repository) {
     return (
-      <span className={`inline-flex items-center gap-1 rounded bg-indigo-900/50 px-2 py-0.5 text-xs text-indigo-300 ${maxWidth} truncate`}>
-        <GitBranch className="h-3 w-3 shrink-0" />
+      <span className={chip}>
+        <GitBranch className="h-3 w-3 shrink-0 text-slate-400" />
         <span className="truncate">{finding.repository.fullName}</span>
       </span>
     );
   }
   if (finding.container) {
     return (
-      <span className={`inline-flex items-center gap-1 rounded bg-cyan-900/50 px-2 py-0.5 text-xs text-cyan-300 ${maxWidth} truncate`}>
-        <Box className="h-3 w-3 shrink-0" />
+      <span className={chip}>
+        <Box className="h-3 w-3 shrink-0 text-blue-400" />
         <span className="truncate">{finding.container.imageRef}</span>
       </span>
     );
   }
   if (finding.domain) {
     return (
-      <span className={`inline-flex items-center gap-1 rounded bg-emerald-900/50 px-2 py-0.5 text-xs text-emerald-300 ${maxWidth} truncate`}>
-        <Globe className="h-3 w-3 shrink-0" />
+      <span className={chip}>
+        <Globe className="h-3 w-3 shrink-0 text-teal-400" />
         <span className="truncate">{finding.domain.domain}</span>
       </span>
     );

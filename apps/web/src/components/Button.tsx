@@ -25,8 +25,10 @@ type Variant = "primary" | "secondary" | "danger" | "ghost";
 type Size    = "sm" | "md" | "lg";
 
 const VARIANT_CLASSES: Record<Variant, string> = {
+  // Primary indigo deepened from -600/-500 to -700/-600 so the CTA reads as a
+  // calm accent instead of a neon pop against muted teal/slate status chips.
   primary:
-    "bg-indigo-600 text-white hover:bg-indigo-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:opacity-50 disabled:hover:bg-indigo-600",
+    "bg-indigo-700 text-white hover:bg-indigo-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:opacity-50 disabled:hover:bg-indigo-700",
   secondary:
     "border border-gray-700 bg-gray-800 text-gray-300 hover:border-gray-600 hover:bg-gray-700 hover:text-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:opacity-50",
   danger:

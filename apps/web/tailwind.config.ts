@@ -5,12 +5,14 @@ export default {
   theme: {
     extend: {
       colors: {
+        // Kept in sync with apps/web/src/lib/colors.ts (SEVERITY_CHART)
+        // and apps/api/src/services/reportHtmlService.ts (SEV_HEX).
         severity: {
-          critical: "#dc2626",
-          high: "#ea580c",
-          medium: "#d97706",
-          low: "#65a30d",
-          info: "#6b7280",
+          critical: "#b91c1c",
+          high:     "#c2410c",
+          medium:   "#a16207",
+          low:      "#0369a1",
+          info:     "#64748b",
         },
       },
     },

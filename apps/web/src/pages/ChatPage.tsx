@@ -114,7 +114,7 @@ function MessageBubble({ message }: { message: Message }) {
     return (
       <div className="flex justify-end">
         <div className="flex items-start gap-2.5 max-w-[80%]">
-          <div className="rounded-2xl rounded-tr-sm bg-indigo-600 px-4 py-2.5">
+          <div className="rounded-2xl rounded-tr-sm bg-indigo-700 px-4 py-2.5">
             <p className="text-sm text-white">{message.content}</p>
           </div>
           <div className="flex-shrink-0 mt-0.5 flex h-7 w-7 items-center justify-center rounded-full bg-indigo-700">
@@ -429,7 +429,7 @@ export default function ChatPage() {
             <button
               onClick={() => sendMessage(input)}
               disabled={isLoading || !input.trim()}
-              className="flex-shrink-0 rounded-lg bg-indigo-600 p-1.5 text-white hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              className="flex-shrink-0 rounded-lg bg-indigo-700 p-1.5 text-white hover:bg-indigo-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               <Send className="h-4 w-4" />
             </button>

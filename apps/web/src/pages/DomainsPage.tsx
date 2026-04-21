@@ -35,7 +35,7 @@ function ScanButton({ domainId }: { domainId: string }) {
     <div className="flex items-center gap-2">
       {displayStatus && <ScanStatusBadge status={displayStatus} />}
       <button onClick={() => scan.mutate()} disabled={scan.isPending || isActive}
-        className="flex items-center gap-1.5 rounded bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50">
+        className="flex items-center gap-1.5 rounded bg-indigo-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-600 disabled:opacity-50">
         <Play className="h-3 w-3" /> Scan (DAST)
       </button>
     </div>
@@ -67,7 +67,7 @@ function AddDomainModal({ onClose }: { onClose: () => void }) {
         <div className="mt-4 flex justify-end gap-2">
           <button onClick={onClose} className="rounded px-3 py-1.5 text-sm text-gray-400 hover:text-gray-200">Cancel</button>
           <button onClick={() => add.mutate()} disabled={!domain || add.isPending}
-            className="rounded bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50">
+            className="rounded bg-indigo-700 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-600 disabled:opacity-50">
             {add.isPending ? "Adding…" : "Add Domain"}
           </button>
         </div>
@@ -109,7 +109,7 @@ function EditDomainModal({ domain, onClose }: { domain: Domain; onClose: () => v
           <button
             onClick={() => update.mutate()}
             disabled={!value || update.isPending}
-            className="rounded bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+            className="rounded bg-indigo-700 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-600 disabled:opacity-50"
           >
             {update.isPending ? "Saving…" : "Save Changes"}
           </button>
@@ -135,7 +135,7 @@ export default function DomainsPage() {
       <div className="mb-4 flex items-center justify-between">
         <h1 className="text-3xl font-bold text-white">Domains</h1>
         {tab === "domains" && (
-          <button onClick={() => setShowAdd(true)} className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500">
+          <button onClick={() => setShowAdd(true)} className="flex items-center gap-2 rounded-lg bg-indigo-700 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-600">
             <Plus className="h-4 w-4" /> Add Domain
           </button>
         )}
@@ -200,7 +200,7 @@ export default function DomainsPage() {
                         <ScanButton domainId={d.id} />
                         <button
                           onClick={() => setPentestDomain(d)}
-                          className="flex items-center gap-1.5 rounded bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500"
+                          className="flex items-center gap-1.5 rounded bg-indigo-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-600"
                           title="Full Pentest"
                         >
                           <ShieldAlert className="h-3 w-3" /> Full Pentest

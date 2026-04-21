@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Play, Trash2, Pencil, Box, X } from "lucide-react";
-import { containersApi } from "../lib/api";
+import { Plus, Play, Trash2, Pencil, Box, X, FileDown } from "lucide-react";
+import { containersApi, sbomApi } from "../lib/api";
+import Can from "../components/Can";
 import type { Container } from "@devsecops/types";
 import RiskScoreBadge from "../components/RiskScoreBadge";
 import ScanStatusBadge from "../components/ScanStatusBadge";
@@ -34,7 +35,7 @@ function ScanButton({ containerId }: { containerId: string }) {
       <button
         onClick={() => scan.mutate()}
         disabled={scan.isPending || isActive}
-        className="flex items-center gap-1.5 rounded bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+        className="flex items-center gap-1.5 rounded bg-indigo-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-600 disabled:opacity-50"
       >
         <Play className="h-3 w-3" /> Scan
       </button>
@@ -66,7 +67,7 @@ function AddContainerModal({ onClose }: { onClose: () => void }) {
         <div className="mt-4 flex justify-end gap-2">
           <button onClick={onClose} className="rounded px-3 py-1.5 text-sm text-gray-400 hover:text-gray-200">Cancel</button>
           <button onClick={() => add.mutate()} disabled={!imageRef || add.isPending}
-            className="rounded bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50">
+            className="rounded bg-indigo-700 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-600 disabled:opacity-50">
             {add.isPending ? "Adding…" : "Add Image"}
           </button>
         </div>
@@ -123,7 +124,7 @@ function EditContainerModal({ container, onClose }: { container: Container; onCl
           <button
             onClick={() => update.mutate()}
             disabled={!imageRef || update.isPending}
-            className="rounded bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+            className="rounded bg-indigo-700 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-600 disabled:opacity-50"
           >
             {update.isPending ? "Saving…" : "Save Changes"}
           </button>
@@ -146,7 +147,7 @@ export default function ContainersPage() {
       <div className="mb-4 flex items-center justify-between">
         <h1 className="text-3xl font-bold text-white">Containers</h1>
         {tab === "containers" && (
-          <button onClick={() => setShowAdd(true)} className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500">
+          <button onClick={() => setShowAdd(true)} className="flex items-center gap-2 rounded-lg bg-indigo-700 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-600">
             <Plus className="h-4 w-4" /> Add Image
           </button>
         )}
@@ -202,12 +203,25 @@ export default function ContainersPage() {
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
                       <ScanButton containerId={c.id} />
-                      <button onClick={() => setEditContainer(c)} className="text-gray-600 hover:text-indigo-400" title="Edit container">
-                        <Pencil className="h-4 w-4" />
-                      </button>
-                      <button onClick={() => del.mutate(c.id)} className="text-gray-600 hover:text-red-400" title="Remove container">
-                        <Trash2 className="h-4 w-4" />
-                      </button>
+                      <a
+                        href={sbomApi.containerUrl(c.id)}
+                        className="flex items-center gap-1 rounded border border-gray-700 bg-gray-800 px-2 py-1 text-xs text-gray-300 hover:border-indigo-600 hover:bg-indigo-900/30 hover:text-indigo-300"
+                        title="Download CycloneDX SBOM (software bill of materials)"
+                        download
+                      >
+                        <FileDown className="h-3 w-3" />
+                        SBOM
+                      </a>
+                      <Can role="DEVELOPER">
+                        <button onClick={() => setEditContainer(c)} className="text-gray-600 hover:text-indigo-400" title="Edit container">
+                          <Pencil className="h-4 w-4" />
+                        </button>
+                      </Can>
+                      <Can role="ADMIN">
+                        <button onClick={() => del.mutate(c.id)} className="text-gray-600 hover:text-red-400" title="Remove container">
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </Can>
                     </div>
                   </td>
                 </tr>

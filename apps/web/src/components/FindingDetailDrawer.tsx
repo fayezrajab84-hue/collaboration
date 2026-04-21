@@ -7,7 +7,8 @@ import {
 } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Finding, FpAnalysis } from "@devsecops/types";
-import { findingsApi, ticketsApi } from "../lib/api";
+import { findingsApi, ticketsApi, suppressionsApi } from "../lib/api";
+import Can from "./Can";
 import SeverityBadge from "./SeverityBadge";
 import ConfidenceBadge from "./ConfidenceBadge";
 import DiffViewer from "./DiffViewer";
@@ -122,9 +123,9 @@ function normalizeScaCve(raw: ScaCve): StructuredScaCve {
 // ── DAST / Pentest Subissues Panel ────────────────────────────────────────────
 
 const CONF_LABEL: Record<string, { label: string; cls: string }> = {
-  CONFIRMED: { label: "Confirmed",  cls: "bg-emerald-900/60 text-emerald-300 border border-emerald-700/50" },
-  LIKELY:    { label: "Likely",     cls: "bg-blue-900/60 text-blue-300 border border-blue-700/50" },
-  POSSIBLE:  { label: "Possible",   cls: "bg-gray-800 text-gray-400 border border-gray-700" },
+  CONFIRMED: { label: "Confirmed",  cls: "bg-gray-800/60 text-red-300/90   border border-gray-700/50" },
+  LIKELY:    { label: "Likely",     cls: "bg-gray-800/60 text-amber-300/90 border border-gray-700/50" },
+  POSSIBLE:  { label: "Possible",   cls: "bg-gray-800/40 text-gray-400     border border-gray-700/50" },
 };
 
 interface DastSubissuesPanelProps {
@@ -194,7 +195,7 @@ function DastSubissuesPanel({ rawOut, onViewCode }: DastSubissuesPanelProps) {
               <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
                 {occ.param && (
                   <span className="rounded bg-gray-800 px-1.5 py-0.5 font-mono text-gray-300">
-                    param: <span className="text-yellow-300">{occ.param}</span>
+                    param: <span className="text-amber-300">{occ.param}</span>
                   </span>
                 )}
                 <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${confMeta.cls}`}>
@@ -683,7 +684,7 @@ function CodeEvidencePanel({ snippet, filePath, lineStart, lineEnd, githubUrl, o
             title="Copy snippet"
             className="ml-1 flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-gray-500 hover:bg-gray-700 hover:text-gray-200 transition-colors"
           >
-            {copied ? <Check className="h-3 w-3 text-green-400" /> : <Copy className="h-3 w-3" />}
+            {copied ? <Check className="h-3 w-3 text-teal-400" /> : <Copy className="h-3 w-3" />}
           </button>
         )}
         {/* GitHub link — opens file at the vulnerable line in a popup */}
@@ -717,18 +718,18 @@ function CodeEvidencePanel({ snippet, filePath, lineStart, lineEnd, githubUrl, o
                 return (
                   <tr
                     key={i}
-                    className={vuln ? "bg-yellow-500/10 border-l-2 border-yellow-400" : ""}
+                    className={vuln ? "bg-amber-500/10 border-l-2 border-amber-400" : ""}
                   >
                     {/* Line number gutter */}
                     <td
                       className={`select-none pr-3 pl-3 text-right align-top w-[3rem] ${
-                        vuln ? "text-yellow-400/80" : "text-gray-600"
+                        vuln ? "text-amber-400/80" : "text-gray-600"
                       }`}
                     >
                       {row.no ?? ""}
                     </td>
                     {/* Code */}
-                    <td className={`pr-4 py-0.5 whitespace-pre ${vuln ? "text-yellow-100" : "text-gray-300"}`}>
+                    <td className={`pr-4 py-0.5 whitespace-pre ${vuln ? "text-amber-100" : "text-gray-300"}`}>
                       {row.code}
                     </td>
                   </tr>
@@ -790,8 +791,8 @@ function ScaSubissuesPanel({
       {fixVer && (
         <div className="border-b border-gray-700 bg-gray-800/40 px-4 py-3">
           <div className="mb-1.5 flex items-center gap-2">
-            <Wrench className="h-3.5 w-3.5 text-green-400" />
-            <span className="text-xs font-semibold uppercase tracking-wider text-green-300">
+            <Wrench className="h-3.5 w-3.5 text-teal-400" />
+            <span className="text-xs font-semibold uppercase tracking-wider text-teal-300">
               How do I fix it?
             </span>
           </div>
@@ -803,7 +804,7 @@ function ScaSubissuesPanel({
             from{" "}
             <code className="font-mono text-gray-400">{ver}</code>
             {" "}to{" "}
-            <code className="font-mono text-green-400">{fixVer}</code>
+            <code className="font-mono text-teal-400">{fixVer}</code>
             {" "}to resolve all {allCves.length} {allCves.length === 1 ? "vulnerability" : "vulnerabilities"}.
           </p>
         </div>
@@ -876,7 +877,7 @@ function ScaSubissuesPanel({
               <div className="shrink-0 flex items-center gap-1.5 pt-0.5 text-xs">
                 <span className="font-mono text-gray-500">{ver}</span>
                 <span className="text-gray-600">→</span>
-                <span className={`font-mono font-semibold ${rowFix ? "text-green-400" : "text-gray-600"}`}>
+                <span className={`font-mono font-semibold ${rowFix ? "text-teal-400" : "text-gray-600"}`}>
                   {rowFix ?? "no fix"}
                 </span>
               </div>
@@ -1141,7 +1142,7 @@ function CodeAnalysisModal({ finding, snippet, githubUrl, repoInfo, locationOver
               </span>
               {/* Auto-triage badge — shown when pre-populated by the background worker */}
               {!analyse.isPending && shownAnalysis && (finding as Record<string, unknown>)["aiAnalysedAt"] && !localAnalysis && (
-                <span title="Pre-analysed automatically after scan" className="inline-flex items-center gap-1 rounded-full bg-emerald-900/50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-400 border border-emerald-800/50">
+                <span title="Pre-analysed automatically after scan" className="inline-flex items-center gap-1 rounded-full bg-indigo-900/50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-300 border border-indigo-800/50">
                   <Sparkles className="h-2.5 w-2.5" /> Auto
                 </span>
               )}
@@ -1162,11 +1163,11 @@ function CodeAnalysisModal({ finding, snippet, githubUrl, repoInfo, locationOver
                   </div>
                   {shownAnalysis.remediation?.length > 0 && (
                     <div>
-                      <p className="mb-1.5 font-semibold text-green-400">How to fix</p>
+                      <p className="mb-1.5 font-semibold text-teal-400">How to fix</p>
                       <ol className="space-y-1.5">
                         {shownAnalysis.remediation.map((step, i) => (
                           <li key={i} className="flex gap-2 text-gray-400">
-                            <span className="shrink-0 font-bold text-green-500">{i + 1}.</span>
+                            <span className="shrink-0 font-bold text-teal-500">{i + 1}.</span>
                             {step}
                           </li>
                         ))}
@@ -1210,7 +1211,7 @@ function CodeAnalysisModal({ finding, snippet, githubUrl, repoInfo, locationOver
             )}
             {/* Generating AutoFix pill */}
             {suggestFix.isPending && (
-              <span className="flex items-center gap-1.5 rounded-full border border-green-700/40 bg-green-900/40 px-2.5 py-1 text-[11px] font-medium text-green-300">
+              <span className="flex items-center gap-1.5 rounded-full border border-teal-800/40 bg-teal-950/40 px-2.5 py-1 text-[11px] font-medium text-teal-300">
                 <Loader2 className="h-3 w-3 animate-spin" />
                 Generating AutoFix…
               </span>
@@ -1244,25 +1245,25 @@ function CodeAnalysisModal({ finding, snippet, githubUrl, repoInfo, locationOver
                 {/* ── Inline AutoFix ──────────────────────────────── */}
                 {shownFix && (
                   <div className="px-4 py-4">
-                    <div className="overflow-hidden rounded-xl border border-green-800/50">
+                    <div className="overflow-hidden rounded-xl border border-teal-800/50">
                       {/* AutoFix header */}
-                      <div className="flex items-center gap-3 bg-green-950/50 px-4 py-2.5 border-b border-green-800/40">
-                        <span className="rounded bg-green-800/60 px-2 py-0.5 text-[11px] font-bold text-green-300">
+                      <div className="flex items-center gap-3 bg-teal-950/50 px-4 py-2.5 border-b border-teal-800/40">
+                        <span className="rounded bg-teal-900/60 px-2 py-0.5 text-[11px] font-bold text-teal-300">
                           AutoFix
                         </span>
-                        <span className="text-[11px] text-green-400/80 truncate">
+                        <span className="text-[11px] text-teal-400/80 truncate">
                           AI-generated patch for {(finding.title as string).toLowerCase()}
                         </span>
                         {/* Auto badge when pre-generated by background triage worker */}
                         {!localFix && (finding as Record<string, unknown>)["aiFixSuggestedAt"] && (
-                          <span title="Pre-generated automatically after scan" className="shrink-0 inline-flex items-center gap-1 rounded-full bg-emerald-900/50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-400 border border-emerald-800/50">
+                          <span title="Pre-generated automatically after scan" className="shrink-0 inline-flex items-center gap-1 rounded-full bg-indigo-900/50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-300 border border-indigo-800/50">
                             <Sparkles className="h-2.5 w-2.5" /> Auto
                           </span>
                         )}
                         <button
                           onClick={() => suggestFix.mutate(true)}
                           disabled={suggestFix.isPending}
-                          className="ml-auto flex items-center gap-1 rounded px-2 py-0.5 text-[11px] text-green-500 hover:text-green-300 transition-colors disabled:opacity-40"
+                          className="ml-auto flex items-center gap-1 rounded px-2 py-0.5 text-[11px] text-teal-500 hover:text-teal-300 transition-colors disabled:opacity-40"
                         >
                           <RefreshCw className={`h-3 w-3 ${suggestFix.isPending ? "animate-spin" : ""}`} />
                           Regenerate
@@ -1276,9 +1277,9 @@ function CodeAnalysisModal({ finding, snippet, githubUrl, repoInfo, locationOver
                 {/* Placeholder while fix is generating */}
                 {suggestFix.isPending && !shownFix && (
                   <div className="px-4 py-4">
-                    <div className="flex items-center gap-3 rounded-xl border border-green-800/30 bg-green-950/20 px-4 py-4">
-                      <Loader2 className="h-4 w-4 animate-spin text-green-400" />
-                      <span className="text-sm text-green-400">Generating AutoFix patch…</span>
+                    <div className="flex items-center gap-3 rounded-xl border border-teal-800/30 bg-teal-950/20 px-4 py-4">
+                      <Loader2 className="h-4 w-4 animate-spin text-teal-400" />
+                      <span className="text-sm text-teal-400">Generating AutoFix patch…</span>
                     </div>
                   </div>
                 )}
@@ -1359,13 +1360,13 @@ function AIAnalysisPanel({
         {/* Remediation steps */}
         <div>
           <div className="mb-2 flex items-center gap-1.5">
-            <Wrench className="h-3.5 w-3.5 text-green-400" />
-            <span className="text-xs font-semibold text-green-300">How to fix it</span>
+            <Wrench className="h-3.5 w-3.5 text-teal-400" />
+            <span className="text-xs font-semibold text-teal-300">How to fix it</span>
           </div>
           <ol className="space-y-1.5">
             {analysis.remediation.map((step, i) => (
               <li key={i} className="flex gap-2.5 text-sm text-gray-300">
-                <span className="mt-0.5 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full bg-green-900/50 text-[10px] font-bold text-green-400">
+                <span className="mt-0.5 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full bg-teal-900/50 text-[10px] font-bold text-teal-400">
                   {i + 1}
                 </span>
                 <span className="leading-relaxed">{step}</span>
@@ -1422,9 +1423,9 @@ const VERDICT_CFG = {
   LIKELY_FP: {
     icon: CheckCircle2,
     label: "Likely False Positive",
-    color: "text-green-400",
-    bg:    "border-green-800/40 bg-green-950/20",
-    headerBg: "border-b border-green-800/30",
+    color: "text-teal-400",
+    bg:    "border-teal-800/40 bg-teal-950/20",
+    headerBg: "border-b border-teal-800/30",
   },
   LIKELY_REAL: {
     icon: XCircle,
@@ -1436,9 +1437,9 @@ const VERDICT_CFG = {
   UNCERTAIN: {
     icon: HelpCircle,
     label: "Uncertain — Needs Review",
-    color: "text-yellow-400",
-    bg:    "border-yellow-800/40 bg-yellow-950/20",
-    headerBg: "border-b border-yellow-800/30",
+    color: "text-amber-400",
+    bg:    "border-amber-800/40 bg-amber-950/20",
+    headerBg: "border-b border-amber-800/30",
   },
 } as const;
 
@@ -1521,7 +1522,7 @@ function FpPanel({
           <button
             onClick={onMarkFp}
             disabled={isMarkingFp}
-            className="flex w-full items-center justify-center gap-2 rounded-lg bg-green-900/40 border border-green-800/50 px-3 py-2 text-xs font-semibold text-green-300 hover:bg-green-900/60 disabled:opacity-50 transition-colors"
+            className="flex w-full items-center justify-center gap-2 rounded-lg bg-teal-900/40 border border-teal-800/50 px-3 py-2 text-xs font-semibold text-teal-300 hover:bg-teal-900/60 disabled:opacity-50 transition-colors"
           >
             <CheckCircle2 className="h-3.5 w-3.5" />
             {isMarkingFp ? "Ignoring…" : "Accept AI verdict — Ignore this finding"}
@@ -1540,6 +1541,24 @@ export default function FindingDetailDrawer({ finding, onClose }: Props) {
   const [codeModalOverride, setCodeModalOverride] = useState<LocationOverride | null>(null);
   const [showEvidence, setShowEvidence]   = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
+  const [showSuppress, setShowSuppress] = useState(false);
+  const [suppressReason, setSuppressReason] = useState("");
+  const [suppressExpiry, setSuppressExpiry] = useState(""); // YYYY-MM-DD
+  const suppress = useMutation({
+    mutationFn: () => suppressionsApi.create({
+      fingerprint: finding!.fingerprint,
+      reason:      suppressReason,
+      expiresAt:   suppressExpiry ? new Date(suppressExpiry).toISOString() : null,
+    }),
+    onSuccess: () => {
+      setShowSuppress(false);
+      setSuppressReason("");
+      setSuppressExpiry("");
+      qc.invalidateQueries({ queryKey: ["findings"] });
+      qc.invalidateQueries({ queryKey: ["suppressions"] });
+      onClose();
+    },
+  });
   const [verifyResult, setVerifyResult] = useState<{
     confirmed: boolean;
     confidence: string;
@@ -1713,7 +1732,7 @@ export default function FindingDetailDrawer({ finding, onClose }: Props) {
                 title="Copy link to this finding"
               >
                 {linkCopied
-                  ? <><Check className="h-3 w-3 text-green-400" /><span className="text-green-400">Copied!</span></>
+                  ? <><Check className="h-3 w-3 text-teal-400" /><span className="text-teal-400">Copied!</span></>
                   : <><Link className="h-3 w-3" /><span>Copy link</span></>
                 }
               </button>
@@ -1757,7 +1776,7 @@ export default function FindingDetailDrawer({ finding, onClose }: Props) {
             <div className={`rounded-lg border p-3 ${
               verifyResult.confirmed
                 ? "border-red-700/50 bg-red-900/20 text-red-300"
-                : "border-green-700/50 bg-green-900/20 text-green-300"
+                : "border-teal-700/50 bg-teal-900/20 text-teal-300"
             }`}>
               <p className="text-sm font-medium">
                 {verifyResult.confirmed
@@ -1993,7 +2012,7 @@ export default function FindingDetailDrawer({ finding, onClose }: Props) {
                   </dd></>
                 )}
                 {finding.fixVersion && (
-                  <><dt className="text-gray-500">Fix version</dt><dd className="font-mono text-green-400">{finding.fixVersion}</dd></>
+                  <><dt className="text-gray-500">Fix version</dt><dd className="font-mono text-teal-400">{finding.fixVersion}</dd></>
                 )}
               </dl>
             </div>
@@ -2089,11 +2108,63 @@ export default function FindingDetailDrawer({ finding, onClose }: Props) {
             <button
               onClick={() => createTicket.mutate()}
               disabled={createTicket.isPending || !!finding.ticket}
-              className="rounded bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+              className="rounded bg-indigo-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-600 disabled:opacity-50"
             >
               {finding.ticket ? "Ticket exists" : "Create Ticket"}
             </button>
           </div>
+
+          {/* Suppress (accept-risk) — SECURITY+ only */}
+          <Can role="SECURITY">
+            <button
+              onClick={() => setShowSuppress(true)}
+              className="rounded border border-gray-700 bg-gray-800 px-3 py-1.5 text-sm font-medium text-gray-300 hover:bg-gray-700 hover:text-white"
+            >
+              Suppress finding (accept risk)
+            </button>
+          </Can>
+
+          {showSuppress && (
+            <div className="rounded border border-amber-700/50 bg-amber-900/20 p-3 space-y-2">
+              <p className="text-xs font-semibold text-amber-300">
+                Suppress this finding (and any future re-scans of the same issue)
+              </p>
+              <textarea
+                placeholder="Reason — required (e.g. 'False positive: dev-only test fixture')"
+                value={suppressReason}
+                onChange={(e) => setSuppressReason(e.target.value)}
+                rows={2}
+                className="w-full rounded bg-gray-900 px-2 py-1.5 text-xs text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-amber-500"
+              />
+              <div className="flex items-center gap-2 text-xs text-gray-400">
+                <span>Expires (optional):</span>
+                <input
+                  type="date"
+                  value={suppressExpiry}
+                  onChange={(e) => setSuppressExpiry(e.target.value)}
+                  className="rounded bg-gray-900 px-2 py-1 text-gray-200 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                />
+              </div>
+              <div className="flex justify-end gap-2">
+                <button
+                  onClick={() => { setShowSuppress(false); setSuppressReason(""); setSuppressExpiry(""); }}
+                  className="rounded px-3 py-1 text-xs text-gray-400 hover:text-gray-200"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => suppress.mutate()}
+                  disabled={suppress.isPending || suppressReason.trim().length < 3}
+                  className="rounded bg-amber-700 px-3 py-1 text-xs font-medium text-white hover:bg-amber-600 disabled:opacity-50"
+                >
+                  {suppress.isPending ? "Suppressing…" : "Confirm Suppress"}
+                </button>
+              </div>
+              {suppress.error && (
+                <p className="text-xs text-red-400">{(suppress.error as Error).message}</p>
+              )}
+            </div>
+          )}
 
           {/* Re-verify (DAST / PENTEST_FULL only) */}
           {canVerify && (

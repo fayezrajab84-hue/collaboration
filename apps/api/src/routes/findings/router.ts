@@ -2,12 +2,15 @@ import { Router } from "express";
 import axios from "axios";
 import { z } from "zod";
 import { requireAuth } from "../../middleware/requireAuth.js";
+import { requireRole } from "../../middleware/requireRole.js";
 import prisma from "../../db.js";
 import { config } from "../../config.js";
 import { analyseFinding } from "../../services/aiService.js";
 import { getOrgFindingGroups, generateGroupInsight } from "../../services/findingGroupService.js";
 import { checkFalsePositive } from "../../services/falsePositiveService.js";
 import { generateFixSuggestion } from "../../services/fixSuggestionService.js";
+import { activeSuppressedFingerprints } from "../../services/suppressionService.js";
+import * as audit from "../../services/auditService.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -42,6 +45,15 @@ router.get("/", async (req, res, next) => {
         { description: { contains: q["search"] as string, mode: "insensitive" } },
         { cveId:       { contains: q["search"] as string, mode: "insensitive" } },
       ];
+    }
+
+    // Suppression filter — hide suppressed findings unless ?includeSuppressed=true
+    const includeSuppressed = q["includeSuppressed"] === "true";
+    if (!includeSuppressed) {
+      const suppressed = await activeSuppressedFingerprints(member.orgId);
+      if (suppressed.size > 0) {
+        where["fingerprint"] = { notIn: Array.from(suppressed) };
+      }
     }
 
     const [data, total] = await Promise.all([
@@ -140,14 +152,13 @@ router.get("/:id", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// Update finding status / confidence
-router.patch("/:id", async (req, res, next) => {
+// Update finding status / confidence — SECURITY+
+router.patch("/:id", requireRole("SECURITY"), async (req, res, next) => {
   try {
     const body = updateFindingSchema.parse(req.body);
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
     const finding = await prisma.finding.findFirst({
-      where: { id: req.params["id"], orgId: member?.orgId },
+      where: { id: req.params["id"], orgId: req.orgId! },
     });
     if (!finding) { res.status(404).json({ error: "Finding not found" }); return; }
 
@@ -160,6 +171,18 @@ router.patch("/:id", async (req, res, next) => {
         }),
       },
     });
+
+    if (body.status && body.status !== finding.status) {
+      await audit.log({
+        orgId:        req.orgId!,
+        userId:       user.id,
+        action:       "finding.status_change",
+        resourceType: "Finding",
+        resourceId:   finding.id,
+        metadata:     { from: finding.status, to: body.status, title: finding.title },
+      });
+    }
+
     res.json(updated);
   } catch (err) { next(err); }
 });

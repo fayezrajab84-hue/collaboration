@@ -138,7 +138,7 @@ export default function SyntaxHighlight({
                     key={i}
                     className={
                       vuln
-                        ? "bg-yellow-500/10 border-l-2 border-yellow-400"
+                        ? "bg-amber-500/10 border-l-2 border-amber-400"
                         : ""
                     }
                   >
@@ -146,7 +146,7 @@ export default function SyntaxHighlight({
                     <td
                       className={[
                         "select-none w-12 pr-3 pl-4 py-0 text-right align-top font-mono leading-5",
-                        vuln ? "text-yellow-400/80" : "text-gray-600",
+                        vuln ? "text-amber-400/80" : "text-gray-600",
                       ].join(" ")}
                     >
                       {no ?? ""}

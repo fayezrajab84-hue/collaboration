@@ -33,6 +33,27 @@ const QUEUE_OPTS = {
   },
 };
 
+// ── AI Triage queue ───────────────────────────────────────────────────────────
+// Processes new findings immediately after a scan: runs AI analysis +
+// fix-suggestion generation so the drawer is pre-populated for the developer.
+// Concurrency = 1 because Ollama can only handle one inference at a time.
+
+export interface AiTriageJobPayload {
+  findingId: string;
+  scanType:  string;
+  severity:  string;
+}
+
+export const aiTriageQueue = new Queue<AiTriageJobPayload>("ai-triage", {
+  connection: bullRedis,
+  defaultJobOptions: {
+    attempts:         3,
+    backoff:          { type: "exponential" as const, delay: 15_000 },
+    removeOnComplete: 500,
+    removeOnFail:     200,
+  },
+});
+
 // ── FP Sweep queue ────────────────────────────────────────────────────────────
 // Runs a repeatable job every 10 minutes to auto-ignore high-confidence FPs.
 export const fpSweepQueue = new Queue("fp-sweep", {

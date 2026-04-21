@@ -67,12 +67,48 @@ function extractSnippet(finding: Record<string, unknown>): string | null {
   }
 
   if (finding["scanType"] === "IAC") {
-    const codeBlock = raw["code_block"];
+    // Merged IAC: use the first resource's snippet (clean, stored at scan time)
+    if (raw["merged"] === true) {
+      const resources = raw["resources"] as Array<{ snippet?: string | null }> | undefined;
+      if (Array.isArray(resources)) {
+        const rs = resources.find((r) => r.snippet);
+        if (rs?.snippet) return (rs.snippet as string).slice(0, 600);
+      }
+      // Fall through to primary.code_block
+    }
+    // Non-merged or primary code_block fallback
+    const src = (raw["merged"] === true ? raw["primary"] : raw) as Record<string, unknown> | undefined ?? raw;
+    const codeBlock = src["code_block"];
     if (Array.isArray(codeBlock)) {
       return (codeBlock as Array<[number, string]>)
         .map(([no, content]) => `${no}: ${content.replace(/\n$/, "")}`)
         .join("\n")
         .slice(0, 600);
+    }
+  }
+
+  if (finding["scanType"] === "SECRET") {
+    // Show context lines from the first occurrence but redact the secret value —
+    // the LLM needs file context to give concrete advice, but must never see the raw credential.
+    const occs = raw["occurrences"] as Array<{ snippet?: string | null; lineStart?: number | null }> | undefined;
+    const firstWithSnippet = Array.isArray(occs) ? occs.find((o) => o.snippet) : null;
+    if (firstWithSnippet?.snippet) {
+      const snippet   = firstWithSnippet.snippet;
+      const lineStart = firstWithSnippet.lineStart ?? null;
+      // Redact the secret line (same logic as the UI)
+      const lines     = snippet.split("\n");
+      const secretIdx = lineStart != null ? Math.min(2, lineStart - 1) : 2;
+      const redacted  = lines
+        .map((line, idx) => {
+          if (idx !== secretIdx) return line;
+          return line
+            .replace(/eyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]{10,}){1,2}/g, "eyJ[REDACTED]")
+            .replace(/AKIA[A-Z0-9]{16}/g, "AKIA[REDACTED]")
+            .replace(/([:=]\s*["'`]?)([A-Za-z0-9+/=_\-]{20,})(["'`]?)/g, "$1[REDACTED]$3")
+            .replace(/\b([A-Za-z0-9+/=_\-]{30,})\b/g, "[REDACTED]");
+        })
+        .join("\n");
+      return redacted.slice(0, 600);
     }
   }
 
