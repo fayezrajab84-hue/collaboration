@@ -224,11 +224,11 @@ function buildHtml(d: ReportData): string {
 
   // ── Charts ─────────────────────────────────────────────────────────────────
   const pieSlices: Slice[] = [
-    { value: d.sevCounts.CRITICAL ?? 0, color: SEV_HEX.CRITICAL, label: "Critical" },
-    { value: d.sevCounts.HIGH     ?? 0, color: SEV_HEX.HIGH,     label: "High" },
-    { value: d.sevCounts.MEDIUM   ?? 0, color: SEV_HEX.MEDIUM,   label: "Medium" },
-    { value: d.sevCounts.LOW      ?? 0, color: SEV_HEX.LOW,      label: "Low" },
-    { value: d.sevCounts.INFO     ?? 0, color: SEV_HEX.INFO,     label: "Info" },
+    { value: d.sevCounts.CRITICAL ?? 0, color: SEV_HEX.CRITICAL ?? "#dc2626", label: "Critical" },
+    { value: d.sevCounts.HIGH     ?? 0, color: SEV_HEX.HIGH     ?? "#ea580c", label: "High"     },
+    { value: d.sevCounts.MEDIUM   ?? 0, color: SEV_HEX.MEDIUM   ?? "#d97706", label: "Medium"   },
+    { value: d.sevCounts.LOW      ?? 0, color: SEV_HEX.LOW      ?? "#65a30d", label: "Low"      },
+    { value: d.sevCounts.INFO     ?? 0, color: SEV_HEX.INFO     ?? "#6b7280", label: "Info"     },
   ];
   const donutSvg = svgDonut(pieSlices);
 
