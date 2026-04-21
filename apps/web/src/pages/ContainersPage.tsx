@@ -189,7 +189,7 @@ export default function ContainersPage() {
             </thead>
             <tbody className="divide-y divide-gray-800 bg-gray-900/50">
               {containers?.map((c) => (
-                <tr key={c.id} className="hover:bg-gray-800/30">
+                <tr key={c.id} className="hover:bg-gray-800/40">
                   <td className="px-4 py-3 font-mono text-sm text-gray-200">{c.imageRef}</td>
                   <td className="px-4 py-3 text-gray-400">{c.registry ?? "Docker Hub"}</td>
                   <td className="px-4 py-3"><FindingCountBadges counts={c.findingCounts} targetType="container" targetId={c.id} /></td>

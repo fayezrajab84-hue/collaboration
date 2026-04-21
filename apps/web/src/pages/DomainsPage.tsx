@@ -186,7 +186,7 @@ export default function DomainsPage() {
             <tbody className="divide-y divide-gray-800 bg-gray-900/50">
               {domains?.map((d) => (
                 <>
-                  <tr key={d.id} className="hover:bg-gray-800/30">
+                  <tr key={d.id} className="hover:bg-gray-800/40">
                     <td className="px-4 py-3 font-medium text-gray-200">{d.domain}</td>
                     <td className="px-4 py-3"><FindingCountBadges counts={d.findingCounts} targetType="domain" targetId={d.id} /></td>
                     <td className="px-4 py-3"><RiskScoreBadge score={d.aiRiskScore} reason={d.aiRiskReason} /></td>

@@ -6,8 +6,10 @@ import { findingsApi, reposApi, containersApi, domainsApi } from "../lib/api";
 import type { Finding, FindingGroup } from "@devsecops/types";
 import SeverityBadge from "../components/SeverityBadge";
 import ConfidenceBadge from "../components/ConfidenceBadge";
+import FindingStatusBadge from "../components/FindingStatusBadge";
 import FindingDetailDrawer from "../components/FindingDetailDrawer";
 import { formatRelative } from "../lib/utils";
+import { SEVERITY_BADGE } from "../lib/colors";
 
 function TargetTag({ finding }: { finding: Finding }) {
   if (finding.repository) {
@@ -52,14 +54,8 @@ function parseTarget(val: string) {
   return {};
 }
 
-// ── Severity helpers ──────────────────────────────────────────────────────────
-
-const SEV_COLOR: Record<string, string> = {
-  CRITICAL: "bg-red-950 text-red-400",
-  HIGH:     "bg-orange-950 text-orange-400",
-  MEDIUM:   "bg-yellow-950 text-yellow-400",
-  LOW:      "bg-green-950 text-green-400",
-};
+// SEV_COLOR alias — uses canonical SEVERITY_BADGE from colors.ts
+const SEV_COLOR = SEVERITY_BADGE;
 
 // ── Finding Groups View (Phase 6) ─────────────────────────────────────────────
 
@@ -504,14 +500,7 @@ export default function FindingsPage() {
                     })()}
                   </td>
                   <td className="px-4 py-3">
-                    <span className={`text-xs ${
-                      f.status === "FIXED"          ? "text-green-400"  :
-                      f.status === "FALSE_POSITIVE" ? "text-gray-500"   :
-                      f.status === "IGNORED"        ? "inline-flex items-center gap-1 rounded bg-gray-800 px-1.5 py-0.5 text-gray-500" :
-                      "text-gray-300"
-                    }`}>
-                      {f.status === "IGNORED" ? "🤖 Ignored" : f.status}
-                    </span>
+                    <FindingStatusBadge status={f.status} />
                   </td>
                   <td className="px-4 py-3 text-xs text-gray-500">{formatRelative(f.firstSeen)}</td>
                 </tr>

@@ -13,6 +13,7 @@ import ConfidenceBadge from "./ConfidenceBadge";
 import DiffViewer from "./DiffViewer";
 import SyntaxHighlight from "./SyntaxHighlight";
 import { formatDate } from "../lib/utils";
+import { SEVERITY_BADGE } from "../lib/colors";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -761,13 +762,8 @@ interface AIAnalysis {
 
 // ── SCA Subissues Panel ───────────────────────────────────────────────────────
 
-const SEV_BADGE: Record<string, string> = {
-  CRITICAL: "bg-red-900/60 text-red-300 border border-red-700/50",
-  HIGH:     "bg-orange-900/60 text-orange-300 border border-orange-700/50",
-  MEDIUM:   "bg-yellow-900/60 text-yellow-300 border border-yellow-700/50",
-  LOW:      "bg-blue-900/60 text-blue-300 border border-blue-700/50",
-  INFO:     "bg-gray-800 text-gray-400 border border-gray-700",
-};
+// Canonical severity badge — imported from colors.ts
+const SEV_BADGE = SEVERITY_BADGE;
 
 function ScaSubissuesPanel({
   rawOut,
@@ -833,7 +829,7 @@ function ScaSubissuesPanel({
           return (
             <div
               key={i}
-              className="flex items-start gap-3 px-4 py-2.5 hover:bg-gray-800/30 transition-colors"
+              className="flex items-start gap-3 px-4 py-2.5 hover:bg-gray-800/40 transition-colors"
             >
               {/* Left — CVE info */}
               <div className="min-w-0 flex-1">
@@ -905,13 +901,8 @@ function ScaSubissuesPanel({
 
 // ── Subissues Panel (merged SAST findings) ────────────────────────────────────
 
-const SEV_PILL_SAST: Record<string, string> = {
-  CRITICAL: "bg-red-900/70 text-red-300 border border-red-700/60",
-  HIGH:     "bg-orange-900/70 text-orange-300 border border-orange-700/60",
-  MEDIUM:   "bg-yellow-900/70 text-yellow-300 border border-yellow-700/60",
-  LOW:      "bg-blue-900/70 text-blue-300 border border-blue-700/60",
-  INFO:     "bg-gray-800 text-gray-400 border border-gray-700",
-};
+// Canonical severity badge (SAST subissues reuse the same token)
+const SEV_PILL_SAST = SEVERITY_BADGE;
 
 function SubissuesPanel({
   locations,

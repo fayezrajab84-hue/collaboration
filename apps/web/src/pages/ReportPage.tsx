@@ -7,23 +7,17 @@ import {
 } from "lucide-react";
 import { reportsApi, type ReportMeta } from "../lib/api";
 import { formatDate } from "../lib/utils";
+import { SEVERITY_TEXT } from "../lib/colors";
 
-// ── Severity colours (match platform palette) ─────────────────────────────────
-
-const SEV_COLOR: Record<string, string> = {
-  CRITICAL: "text-red-400",
-  HIGH:     "text-orange-400",
-  MEDIUM:   "text-amber-400",
-  LOW:      "text-green-400",
-  INFO:     "text-blue-400",
-};
+// ── Severity colours — canonical from colors.ts ───────────────────────────────
+const SEV_COLOR = SEVERITY_TEXT;
 
 const GRADE_STYLE: Record<string, string> = {
-  A: "bg-green-900/40 text-green-300 border-green-700",
-  B: "bg-lime-900/40  text-lime-300  border-lime-700",
-  C: "bg-amber-900/40 text-amber-300 border-amber-700",
-  D: "bg-orange-900/40 text-orange-300 border-orange-700",
-  F: "bg-red-900/40   text-red-300   border-red-700",
+  A: "bg-green-900/40  text-green-300  border border-green-700/50",
+  B: "bg-lime-900/40   text-lime-300   border border-lime-700/50",
+  C: "bg-amber-900/40  text-amber-300  border border-amber-700/50",
+  D: "bg-orange-900/40 text-orange-300 border border-orange-700/50",
+  F: "bg-red-900/40    text-red-300    border border-red-700/50",
 };
 
 const TARGET_ICON: Record<string, React.ElementType> = {
@@ -37,11 +31,11 @@ const TARGET_ICON: Record<string, React.ElementType> = {
 function SevBar({ meta }: { meta: ReportMeta["metadata"] }) {
   const total = meta.totalFindings || 1;
   const segs = [
-    { sev: "CRITICAL", count: meta.CRITICAL, color: "bg-red-500" },
+    { sev: "CRITICAL", count: meta.CRITICAL, color: "bg-red-500"    },
     { sev: "HIGH",     count: meta.HIGH,     color: "bg-orange-500" },
-    { sev: "MEDIUM",   count: meta.MEDIUM,   color: "bg-amber-400" },
-    { sev: "LOW",      count: meta.LOW,      color: "bg-green-500" },
-    { sev: "INFO",     count: meta.INFO,     color: "bg-blue-500" },
+    { sev: "MEDIUM",   count: meta.MEDIUM,   color: "bg-amber-500"  },
+    { sev: "LOW",      count: meta.LOW,      color: "bg-green-500"  },
+    { sev: "INFO",     count: meta.INFO,     color: "bg-gray-500"   },
   ].filter((s) => s.count > 0);
 
   if (segs.length === 0) return <span className="text-xs text-green-400">✓ Clean</span>;

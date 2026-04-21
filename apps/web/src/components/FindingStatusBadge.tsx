@@ -1,15 +1,14 @@
-import type { Confidence } from "@devsecops/types";
 import { cn } from "../lib/utils";
-import { CONFIDENCE_BADGE } from "../lib/colors";
+import { FINDING_STATUS_BADGE } from "../lib/colors";
 
-export default function ConfidenceBadge({
-  confidence,
+export default function FindingStatusBadge({
+  status,
   className,
 }: {
-  confidence: Confidence;
+  status: string;
   className?: string;
 }) {
-  const cfg = CONFIDENCE_BADGE[confidence] ?? CONFIDENCE_BADGE.POSSIBLE;
+  const cfg = FINDING_STATUS_BADGE[status] ?? FINDING_STATUS_BADGE["OPEN"];
   return (
     <span
       className={cn(

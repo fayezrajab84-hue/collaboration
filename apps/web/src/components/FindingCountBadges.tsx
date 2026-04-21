@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import type { FindingCounts } from "@devsecops/types";
+import { SEVERITY_PILL } from "../lib/colors";
 
 interface Props {
   counts?: FindingCounts;
@@ -8,11 +9,11 @@ interface Props {
   targetId?: string;
 }
 
-const BADGES: Array<{ key: keyof FindingCounts; bg: string; text: string; title: string }> = [
-  { key: "CRITICAL", bg: "bg-red-950/70",    text: "text-red-400",    title: "Critical" },
-  { key: "HIGH",     bg: "bg-orange-950/70", text: "text-orange-400", title: "High" },
-  { key: "MEDIUM",   bg: "bg-amber-950/70",  text: "text-amber-400",  title: "Medium" },
-  { key: "LOW",      bg: "bg-green-950/70",  text: "text-green-500",  title: "Low" },
+const BADGES: Array<{ key: keyof FindingCounts; title: string }> = [
+  { key: "CRITICAL", title: "Critical" },
+  { key: "HIGH",     title: "High"     },
+  { key: "MEDIUM",   title: "Medium"   },
+  { key: "LOW",      title: "Low"      },
 ];
 
 export default function FindingCountBadges({ counts, targetType, targetId }: Props) {
@@ -27,11 +28,11 @@ export default function FindingCountBadges({ counts, targetType, targetId }: Pro
 
   return (
     <div className="flex items-center gap-1.5">
-      {BADGES.map(({ key, bg, text, title }) => {
+      {BADGES.map(({ key, title }) => {
         const count = counts[key] ?? 0;
         if (count === 0) return null;
 
-        const cls = `inline-flex h-6 min-w-[1.5rem] items-center justify-center rounded-full px-1.5 text-xs font-semibold transition-opacity hover:opacity-80 ${bg} ${text}`;
+        const cls = `inline-flex h-6 min-w-[1.5rem] items-center justify-center rounded-full px-1.5 text-xs font-semibold transition-opacity hover:opacity-80 ${SEVERITY_PILL[key]}`;
         const label = `${title}: ${count} — click to view`;
 
         if (targetType && targetId) {

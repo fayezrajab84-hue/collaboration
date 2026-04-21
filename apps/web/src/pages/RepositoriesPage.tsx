@@ -197,7 +197,7 @@ export default function RepositoriesPage() {
             </thead>
             <tbody className="divide-y divide-gray-800 bg-gray-900/50">
               {repos?.map((repo) => (
-                <tr key={repo.id} className="hover:bg-gray-800/30">
+                <tr key={repo.id} className="hover:bg-gray-800/40">
                   <td className="px-4 py-3">
                     <div className="font-medium text-gray-200">{repo.fullName}</div>
                     <div className="text-xs text-gray-500">

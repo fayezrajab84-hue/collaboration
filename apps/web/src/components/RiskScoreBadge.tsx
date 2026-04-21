@@ -1,4 +1,5 @@
 import { Sparkles } from "lucide-react";
+import { riskScoreStyle } from "../lib/colors";
 
 interface Props {
   score:   number | null | undefined;
@@ -6,17 +7,10 @@ interface Props {
   size?:   "sm" | "md";
 }
 
-function riskLabel(score: number) {
-  if (score >= 80) return { label: "CRITICAL", ring: "border-red-700/60",    bg: "bg-red-950/60",    text: "text-red-300",    bar: "bg-red-500" };
-  if (score >= 60) return { label: "HIGH",     ring: "border-orange-700/60", bg: "bg-orange-950/60", text: "text-orange-300", bar: "bg-orange-500" };
-  if (score >= 35) return { label: "MEDIUM",   ring: "border-yellow-700/60", bg: "bg-yellow-950/60", text: "text-yellow-300", bar: "bg-yellow-500" };
-  return               { label: "LOW",      ring: "border-green-700/60",  bg: "bg-green-950/60",  text: "text-green-300",  bar: "bg-green-500" };
-}
-
 export default function RiskScoreBadge({ score, reason, size = "sm" }: Props) {
   if (score == null) return null;
 
-  const { label, ring, bg, text, bar } = riskLabel(score);
+  const { label, ring, bg, text, bar } = riskScoreStyle(score);
   const isMd = size === "md";
 
   return (

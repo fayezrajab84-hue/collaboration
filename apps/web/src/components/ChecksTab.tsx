@@ -1,16 +1,9 @@
 import { Lock } from "lucide-react";
 import type { CheckDefinition, CheckSeverity } from "../data/checks";
-
-const SEVERITY_STYLES: Record<CheckSeverity, { dot: string; badge: string; label: string }> = {
-  CRITICAL: { dot: "bg-red-500",    badge: "bg-red-950/60 text-red-400 ring-red-800/50",    label: "Critical" },
-  HIGH:     { dot: "bg-orange-500", badge: "bg-orange-950/60 text-orange-400 ring-orange-800/50", label: "High" },
-  MEDIUM:   { dot: "bg-yellow-500", badge: "bg-yellow-950/60 text-yellow-400 ring-yellow-800/50", label: "Medium" },
-  LOW:      { dot: "bg-blue-500",   badge: "bg-blue-950/60 text-blue-400 ring-blue-800/50",   label: "Low" },
-  INFO:     { dot: "bg-gray-500",   badge: "bg-gray-800 text-gray-400 ring-gray-700",          label: "Info" },
-};
+import { SEVERITY_RING, ROW_HOVER } from "../lib/colors";
 
 function SeverityDot({ severity }: { severity: CheckSeverity }) {
-  const s = SEVERITY_STYLES[severity];
+  const s = SEVERITY_RING[severity] ?? SEVERITY_RING["INFO"];
   return (
     <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ring-1 ${s.badge}`}>
       <span className={`h-1.5 w-1.5 rounded-full ${s.dot}`} />
@@ -45,7 +38,7 @@ export default function ChecksTab({ checks, emptyMessage }: Props) {
         </thead>
         <tbody className="divide-y divide-gray-800 bg-gray-900/50">
           {checks.map((check) => (
-            <tr key={check.id} className="hover:bg-gray-800/30">
+            <tr key={check.id} className={ROW_HOVER}>
               {/* Severity */}
               <td className="px-4 py-4 align-top">
                 <SeverityDot severity={check.severity} />

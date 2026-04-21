@@ -3,6 +3,7 @@ import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from "recha
 import { ShieldAlert, GitBranch, Box, Globe, ArrowRight } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import { findingsApi, reposApi, containersApi, domainsApi, scansApi } from "../lib/api";
+import { SEVERITY_CHART } from "../lib/colors";
 
 import StatsCard from "../components/StatsCard";
 import SeverityBadge from "../components/SeverityBadge";
@@ -48,9 +49,8 @@ function TargetTag({ finding }: { finding: Finding }) {
   return <span className="text-gray-600">—</span>;
 }
 
-const SEVERITY_COLORS: Record<string, string> = {
-  CRITICAL: "#dc2626", HIGH: "#ea580c", MEDIUM: "#d97706", LOW: "#65a30d", INFO: "#6b7280",
-};
+// Chart hex colors — imported from canonical colors.ts
+const SEVERITY_COLORS = SEVERITY_CHART;
 
 export default function DashboardPage() {
   const navigate = useNavigate();

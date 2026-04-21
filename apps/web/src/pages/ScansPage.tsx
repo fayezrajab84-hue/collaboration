@@ -275,7 +275,7 @@ export default function ScansPage() {
 
                   return (
                     <React.Fragment key={scan.id}>
-                    <tr className="hover:bg-gray-800/30">
+                    <tr className="hover:bg-gray-800/40">
                       {/* Target */}
                       <td className="px-4 py-3">
                         <div className="flex flex-col gap-1">
@@ -322,10 +322,10 @@ export default function ScansPage() {
                       <td className="px-4 py-3">
                         {scan.status === "COMPLETED" ? (
                           <div className="flex items-center gap-1">
-                            <SeverityPill count={scan.criticalCount ?? 0} color="bg-red-950 text-red-400" />
-                            <SeverityPill count={scan.highCount ?? 0} color="bg-orange-950 text-orange-400" />
-                            <SeverityPill count={scan.mediumCount ?? 0} color="bg-yellow-950 text-yellow-400" />
-                            <SeverityPill count={scan.lowCount ?? 0} color="bg-green-950 text-green-400" />
+                            <SeverityPill count={scan.criticalCount ?? 0} color="bg-red-950/70    text-red-300"    />
+                            <SeverityPill count={scan.highCount ?? 0}     color="bg-orange-950/70 text-orange-300" />
+                            <SeverityPill count={scan.mediumCount ?? 0}   color="bg-amber-950/70  text-amber-300"  />
+                            <SeverityPill count={scan.lowCount ?? 0}      color="bg-green-950/70  text-green-300"  />
                             {!scan.criticalCount && !scan.highCount && !scan.mediumCount && !scan.lowCount && (
                               <span className="text-xs text-gray-600">No findings</span>
                             )}
