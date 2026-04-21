@@ -9,6 +9,7 @@ const COLUMNS = [
   { status: "OPEN",        label: "Open",        color: "border-red-800" },
   { status: "IN_PROGRESS", label: "In Progress",  color: "border-amber-700" },
   { status: "RESOLVED",    label: "Resolved",     color: "border-green-800" },
+  { status: "CLOSED",      label: "Closed",       color: "border-gray-700" },
 ];
 
 function TicketCard({ ticket }: { ticket: Ticket }) {
@@ -87,7 +88,7 @@ export default function TicketsPage() {
       <h1 className="mb-6 text-3xl font-bold text-white">Tickets</h1>
 
       {/* Kanban board */}
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
         {COLUMNS.map(({ status, label, color }) => {
           const col = tickets.filter((t) => t.status === status);
           return (

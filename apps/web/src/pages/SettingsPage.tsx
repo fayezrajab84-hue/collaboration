@@ -352,6 +352,19 @@ const TABS: { id: Tab; label: string }[] = [
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<Tab>("github");
 
+  // Fetch all integration statuses at the page level so tab nav can show
+  // connected indicators without the user having to open each tab first.
+  const { data: jiraData }  = useQuery({ queryKey: ["integrations", "jira"],  queryFn: integrationsApi.getJira,  retry: false });
+  const { data: slackData } = useQuery({ queryKey: ["integrations", "slack"], queryFn: integrationsApi.getSlack, retry: false });
+  const { data: teamsData } = useQuery({ queryKey: ["integrations", "teams"], queryFn: integrationsApi.getTeams, retry: false });
+
+  const connected: Record<Tab, boolean> = {
+    github: true,   // GitHub is always connected (OAuth session)
+    jira:   !!jiraData,
+    slack:  !!slackData,
+    teams:  !!teamsData,
+  };
+
   return (
     <div className="p-6">
       <div className="mb-6 flex items-center gap-3">
@@ -366,13 +379,19 @@ export default function SettingsPage() {
             <button
               key={id}
               onClick={() => setActiveTab(id)}
-              className={`w-full rounded-lg px-3 py-2 text-left text-sm font-medium transition-colors ${
+              className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm font-medium transition-colors ${
                 activeTab === id
                   ? "bg-indigo-600/20 text-indigo-300"
                   : "text-gray-400 hover:bg-gray-800 hover:text-gray-200"
               }`}
             >
-              {label}
+              <span>{label}</span>
+              {connected[id] && (
+                <span
+                  className="h-2 w-2 rounded-full bg-green-500 shrink-0"
+                  title="Connected"
+                />
+              )}
             </button>
           ))}
         </nav>

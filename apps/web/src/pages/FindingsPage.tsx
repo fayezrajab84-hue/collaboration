@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
-import { ShieldAlert, Search, GitBranch, Box, Globe, Layers, Sparkles, ChevronDown, ChevronRight } from "lucide-react";
+import { ShieldAlert, Search, GitBranch, Box, Globe, Layers, Sparkles, ChevronDown, ChevronRight, KeyRound, Bot, Wrench, X } from "lucide-react";
 import { findingsApi, reposApi, containersApi, domainsApi } from "../lib/api";
 import type { Finding, FindingGroup } from "@devsecops/types";
 import SeverityBadge from "../components/SeverityBadge";
@@ -199,21 +199,33 @@ function FindingGroupsView() {
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function FindingsPage() {
-  const [tab, setTab] = useState<"list" | "groups">("list");
-  const [severity, setSeverity] = useState("");
-  const [scanType, setScanType] = useState("");
-  const [status, setStatus] = useState("OPEN");
-  const [confidence, setConfidence] = useState("");
-  const [search, setSearch] = useState("");
-  const [target, setTarget] = useState("");
-  const [page, setPage] = useState(1);
+  // All filter state lives in the URL so links from other pages work and
+  // browser back/forward preserves the filter context.
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const tab        = (searchParams.get("tab") as "list" | "groups") ?? "list";
+  const severity   = searchParams.get("severity")   ?? "";
+  const scanType   = searchParams.get("scanType")   ?? "";
+  const status     = searchParams.get("status")     ?? "";
+  const confidence = searchParams.get("confidence") ?? "";
+  const search     = searchParams.get("search")     ?? "";
+  const target     = searchParams.get("target")     ?? "";
+  const page       = parseInt(searchParams.get("page") ?? "1", 10);
+
+  const setFilter = (key: string, value: string) => {
+    setSearchParams((prev) => {
+      if (value) prev.set(key, value); else prev.delete(key);
+      if (key !== "page") prev.delete("page");   // reset to page 1 on filter change
+      return prev;
+    });
+  };
+
+  const setTab = (t: "list" | "groups") => setFilter("tab", t === "list" ? "" : t);
+  const setPage = (p: number) => setFilter("page", p > 1 ? String(p) : "");
 
   // URL-driven finding selection — ?id=<findingId> makes the link shareable
-  const [searchParams, setSearchParams] = useSearchParams();
   const selectedId = searchParams.get("id");
 
-  // Fetch the selected finding individually so direct URLs work (e.g. shared link).
-  // staleTime: 0 ensures we always get fresh data (code snippets, AI results, etc.)
   const { data: selectedFinding = null } = useQuery({
     queryKey: ["finding", selectedId],
     queryFn:  () => findingsApi.get(selectedId!),
@@ -234,6 +246,9 @@ export default function FindingsPage() {
   const { data: domains } = useQuery({ queryKey: ["domains"], queryFn: domainsApi.list });
 
   const targetFilter = parseTarget(target);
+
+  // Check whether any filters are active (to distinguish "no results" from "nothing scanned yet")
+  const hasActiveFilters = !!(severity || scanType || status || confidence || search || target);
 
   const { data, isLoading } = useQuery({
     queryKey: ["findings", { severity, scanType, status, confidence, search, target, page }],
@@ -294,14 +309,14 @@ export default function FindingsPage() {
             className="rounded bg-gray-800 pl-8 pr-3 py-1.5 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 w-48"
             placeholder="Search findings…"
             value={search}
-            onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+            onChange={(e) => setFilter("search", e.target.value)}
           />
         </div>
 
         {/* Target filter */}
         <select
           value={target}
-          onChange={(e) => { setTarget(e.target.value); setPage(1); }}
+          onChange={(e) => setFilter("target", e.target.value)}
           className="rounded bg-gray-800 px-3 py-1.5 text-sm text-gray-300 focus:outline-none focus:ring-1 focus:ring-indigo-500"
         >
           <option value="">All targets</option>
@@ -328,32 +343,47 @@ export default function FindingsPage() {
           )}
         </select>
 
-        <select value={severity} onChange={(e) => { setSeverity(e.target.value); setPage(1); }}
+        <select value={severity} onChange={(e) => setFilter("severity", e.target.value)}
           className="rounded bg-gray-800 px-3 py-1.5 text-sm text-gray-300 focus:outline-none focus:ring-1 focus:ring-indigo-500">
           <option value="">All severities</option>
           {SEVERITIES.map((s) => <option key={s}>{s}</option>)}
         </select>
 
-        <select value={scanType} onChange={(e) => { setScanType(e.target.value); setPage(1); }}
+        <select value={scanType} onChange={(e) => setFilter("scanType", e.target.value)}
           className="rounded bg-gray-800 px-3 py-1.5 text-sm text-gray-300 focus:outline-none focus:ring-1 focus:ring-indigo-500">
           <option value="">All types</option>
           {SCAN_TYPES.map((t) => <option key={t}>{t}</option>)}
         </select>
 
-        <select value={status} onChange={(e) => { setStatus(e.target.value); setPage(1); }}
+        <select value={status} onChange={(e) => setFilter("status", e.target.value)}
           className="rounded bg-gray-800 px-3 py-1.5 text-sm text-gray-300 focus:outline-none focus:ring-1 focus:ring-indigo-500">
           <option value="">All statuses</option>
           {STATUSES.map((s) => <option key={s}>{s}</option>)}
         </select>
 
-        <select value={confidence} onChange={(e) => { setConfidence(e.target.value); setPage(1); }}
+        <select value={confidence} onChange={(e) => setFilter("confidence", e.target.value)}
           className="rounded bg-gray-800 px-3 py-1.5 text-sm text-gray-300 focus:outline-none focus:ring-1 focus:ring-indigo-500">
           <option value="">All confidence</option>
           {CONFIDENCES.map((c) => <option key={c}>{c}</option>)}
         </select>
 
+        {/* Clear all filters */}
+        {hasActiveFilters && (
+          <button
+            onClick={() => setSearchParams((prev) => {
+              const id = prev.get("id");
+              const next = new URLSearchParams();
+              if (id) next.set("id", id);
+              return next;
+            })}
+            className="flex items-center gap-1 rounded bg-gray-800 px-2.5 py-1.5 text-xs text-gray-400 hover:text-gray-200 hover:bg-gray-700"
+          >
+            <X className="h-3 w-3" /> Clear filters
+          </button>
+        )}
+
         {data && (
-          <span className="ml-auto text-xs text-gray-500">{data.total} findings</span>
+          <span className="ml-auto text-xs text-gray-500">{data.total.toLocaleString()} finding{data.total !== 1 ? "s" : ""}</span>
         )}
       </div>
 
@@ -367,6 +397,7 @@ export default function FindingsPage() {
               <th className="px-4 py-3 font-medium">Target</th>
               <th className="px-4 py-3 font-medium">Type</th>
               <th className="px-4 py-3 font-medium">Confidence</th>
+              <th className="px-4 py-3 font-medium">AI</th>
               <th className="px-4 py-3 font-medium">Status</th>
               <th className="px-4 py-3 font-medium">First Seen</th>
             </tr>
@@ -376,9 +407,26 @@ export default function FindingsPage() {
               <tr><td colSpan={7} className="py-12 text-center text-gray-500">Loading…</td></tr>
             ) : data?.data.length === 0 ? (
               <tr>
-                <td colSpan={7} className="py-12 text-center">
+                <td colSpan={8} className="py-12 text-center">
                   <ShieldAlert className="mx-auto mb-2 h-8 w-8 text-gray-700" />
-                  <p className="text-gray-500">No findings match your filters.</p>
+                  {hasActiveFilters ? (
+                    <>
+                      <p className="text-gray-500">No findings match your filters.</p>
+                      <button
+                        onClick={() => setSearchParams((prev) => {
+                          const id = prev.get("id");
+                          const next = new URLSearchParams();
+                          if (id) next.set("id", id);
+                          return next;
+                        })}
+                        className="mt-2 text-xs text-indigo-400 hover:text-indigo-300 underline underline-offset-2"
+                      >
+                        Clear filters
+                      </button>
+                    </>
+                  ) : (
+                    <p className="text-gray-500">No findings yet — run a scan to get started.</p>
+                  )}
                 </td>
               </tr>
             ) : (
@@ -394,11 +442,24 @@ export default function FindingsPage() {
                         const occs = raw["occurrences"] as unknown[] | undefined;
                         const cves = raw["cves"] as unknown[] | undefined;
                         const locs = raw["locations"] as unknown[] | undefined;
-                        if (occs?.length) return (
-                          <span className="shrink-0 inline-flex items-center gap-1 rounded-full bg-emerald-900/40 px-1.5 py-0.5 text-[10px] text-emerald-400">
-                            <Globe className="h-2.5 w-2.5" />{occs.length} URL{occs.length !== 1 ? "s" : ""}
+                        const ress = raw["resources"] as unknown[] | undefined;
+                        if (ress?.length) return (
+                          <span className="shrink-0 inline-flex items-center gap-1 rounded-full bg-violet-900/40 px-1.5 py-0.5 text-[10px] text-violet-400">
+                            <Layers className="h-2.5 w-2.5" />{ress.length} resource{ress.length !== 1 ? "s" : ""}
                           </span>
                         );
+                        if (occs?.length) {
+                          if (f.scanType === "SECRET") return (
+                            <span className="shrink-0 inline-flex items-center gap-1 rounded-full bg-amber-900/40 px-1.5 py-0.5 text-[10px] text-amber-400">
+                              <KeyRound className="h-2.5 w-2.5" />{occs.length} file{occs.length !== 1 ? "s" : ""}
+                            </span>
+                          );
+                          return (
+                            <span className="shrink-0 inline-flex items-center gap-1 rounded-full bg-emerald-900/40 px-1.5 py-0.5 text-[10px] text-emerald-400">
+                              <Globe className="h-2.5 w-2.5" />{occs.length} URL{occs.length !== 1 ? "s" : ""}
+                            </span>
+                          );
+                        }
                         if (cves?.length) return (
                           <span className="shrink-0 inline-flex items-center gap-1 rounded-full bg-gray-800 px-1.5 py-0.5 text-[10px] text-gray-400">
                             <Layers className="h-2.5 w-2.5" />{cves.length} CVE{cves.length !== 1 ? "s" : ""}
@@ -418,6 +479,29 @@ export default function FindingsPage() {
                   <td className="px-4 py-3 text-xs text-gray-400">{f.scanType}</td>
                   <td className="px-4 py-3">
                     <ConfidenceBadge confidence={f.confidence} />
+                  </td>
+                  {/* AI triage status: both done / analysis only / fix only / pending */}
+                  <td className="px-4 py-3">
+                    {(() => {
+                      const hasAnalysis = !!(f as Record<string, unknown>)["aiAnalysedAt"];
+                      const hasFix      = !!(f as Record<string, unknown>)["aiFixSuggestedAt"];
+                      if (hasAnalysis && hasFix) return (
+                        <span title="AI analysis + fix suggestion ready" className="inline-flex items-center gap-1 rounded-full bg-emerald-900/40 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-400 border border-emerald-800/50">
+                          <Sparkles className="h-2.5 w-2.5" /> Triaged
+                        </span>
+                      );
+                      if (hasAnalysis) return (
+                        <span title="AI analysis ready" className="inline-flex items-center gap-1 rounded-full bg-blue-900/40 px-1.5 py-0.5 text-[10px] font-semibold text-blue-400 border border-blue-800/50">
+                          <Bot className="h-2.5 w-2.5" /> Analysed
+                        </span>
+                      );
+                      if (hasFix) return (
+                        <span title="Fix suggestion ready" className="inline-flex items-center gap-1 rounded-full bg-violet-900/40 px-1.5 py-0.5 text-[10px] font-semibold text-violet-400 border border-violet-800/50">
+                          <Wrench className="h-2.5 w-2.5" /> Fix ready
+                        </span>
+                      );
+                      return <span className="text-[10px] text-gray-700">—</span>;
+                    })()}
                   </td>
                   <td className="px-4 py-3">
                     <span className={`text-xs ${
@@ -440,12 +524,12 @@ export default function FindingsPage() {
       {/* Pagination */}
       {data && data.totalPages > 1 && (
         <div className="mt-4 flex items-center justify-end gap-2">
-          <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}
+          <button onClick={() => setPage(Math.max(1, page - 1))} disabled={page === 1}
             className="rounded bg-gray-800 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-700 disabled:opacity-40">
             Previous
           </button>
           <span className="text-xs text-gray-500">Page {page} of {data.totalPages}</span>
-          <button onClick={() => setPage((p) => Math.min(data.totalPages, p + 1))} disabled={page === data.totalPages}
+          <button onClick={() => setPage(Math.min(data.totalPages, page + 1))} disabled={page === data.totalPages}
             className="rounded bg-gray-800 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-700 disabled:opacity-40">
             Next
           </button>

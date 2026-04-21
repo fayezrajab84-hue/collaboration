@@ -192,7 +192,7 @@ export default function ContainersPage() {
                 <tr key={c.id} className="hover:bg-gray-800/30">
                   <td className="px-4 py-3 font-mono text-sm text-gray-200">{c.imageRef}</td>
                   <td className="px-4 py-3 text-gray-400">{c.registry ?? "Docker Hub"}</td>
-                  <td className="px-4 py-3"><FindingCountBadges counts={c.findingCounts} /></td>
+                  <td className="px-4 py-3"><FindingCountBadges counts={c.findingCounts} targetType="container" targetId={c.id} /></td>
                   <td className="px-4 py-3"><RiskScoreBadge score={c.aiRiskScore} reason={c.aiRiskReason} /></td>
                   <td className="px-4 py-3 text-gray-400">{c.lastScannedAt ? formatRelative(c.lastScannedAt) : "Never"}</td>
                   <td className="px-4 py-3">

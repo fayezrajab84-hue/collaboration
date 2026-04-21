@@ -188,7 +188,7 @@ export default function DomainsPage() {
                 <>
                   <tr key={d.id} className="hover:bg-gray-800/30">
                     <td className="px-4 py-3 font-medium text-gray-200">{d.domain}</td>
-                    <td className="px-4 py-3"><FindingCountBadges counts={d.findingCounts} /></td>
+                    <td className="px-4 py-3"><FindingCountBadges counts={d.findingCounts} targetType="domain" targetId={d.id} /></td>
                     <td className="px-4 py-3"><RiskScoreBadge score={d.aiRiskScore} reason={d.aiRiskReason} /></td>
                     <td className="px-4 py-3 text-gray-400">{d.lastScannedAt ? formatRelative(d.lastScannedAt) : "Never"}</td>
                     <td className="px-4 py-3">

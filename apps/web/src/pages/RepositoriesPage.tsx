@@ -205,7 +205,7 @@ export default function RepositoriesPage() {
                     </div>
                   </td>
                   <td className="px-4 py-3 text-gray-400">{repo.language ?? "—"}</td>
-                  <td className="px-4 py-3"><FindingCountBadges counts={repo.findingCounts} /></td>
+                  <td className="px-4 py-3"><FindingCountBadges counts={repo.findingCounts} targetType="repo" targetId={repo.id} /></td>
                   <td className="px-4 py-3">
                     <RiskScoreBadge score={repo.aiRiskScore} reason={repo.aiRiskReason} />
                     {repo.aiRiskScore == null && repo.lastScannedAt && (

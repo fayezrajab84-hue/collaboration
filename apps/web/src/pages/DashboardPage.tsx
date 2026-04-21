@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from "recharts";
-import { ShieldAlert, GitBranch, Box, Globe } from "lucide-react";
+import { ShieldAlert, GitBranch, Box, Globe, ArrowRight } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
 import { findingsApi, reposApi, containersApi, domainsApi, scansApi } from "../lib/api";
 
 import StatsCard from "../components/StatsCard";
@@ -52,6 +53,7 @@ const SEVERITY_COLORS: Record<string, string> = {
 };
 
 export default function DashboardPage() {
+  const navigate = useNavigate();
   const { data: stats } = useQuery({ queryKey: ["findings", "stats"], queryFn: findingsApi.stats });
   const { data: repos } = useQuery({ queryKey: ["repos"], queryFn: reposApi.list });
   const { data: containers } = useQuery({ queryKey: ["containers"], queryFn: containersApi.list });
@@ -146,7 +148,12 @@ export default function DashboardPage() {
 
         {/* Recent scans */}
         <div className="rounded-lg border border-gray-800 bg-gray-900 p-5">
-          <h2 className="mb-4 text-sm font-semibold text-white">Recent Scans</h2>
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-white">Recent Scans</h2>
+            <Link to="/scans" className="flex items-center gap-1 text-xs text-indigo-400 hover:text-indigo-300">
+              View all <ArrowRight className="h-3 w-3" />
+            </Link>
+          </div>
           {scans?.data.length ? (
             <div className="space-y-2">
               {scans.data.slice(0, 6).map((scan) => (
@@ -188,10 +195,15 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Recent critical findings */}
-      {(recentFindings?.data.length ?? 0) > 0 && (
-        <div className="rounded-lg border border-gray-800 bg-gray-900 p-5">
-          <h2 className="mb-4 text-sm font-semibold text-white">Recent Findings</h2>
+      {/* Recent findings — always visible */}
+      <div className="rounded-lg border border-gray-800 bg-gray-900 p-5">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-white">Recent Findings</h2>
+          <Link to="/findings" className="flex items-center gap-1 text-xs text-indigo-400 hover:text-indigo-300">
+            View all <ArrowRight className="h-3 w-3" />
+          </Link>
+        </div>
+        {(recentFindings?.data.length ?? 0) > 0 ? (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -205,7 +217,11 @@ export default function DashboardPage() {
               </thead>
               <tbody>
                 {recentFindings?.data.map((f) => (
-                  <tr key={f.id} className="border-b border-gray-800/50">
+                  <tr
+                    key={f.id}
+                    className="cursor-pointer border-b border-gray-800/50 hover:bg-gray-800/40 transition-colors"
+                    onClick={() => navigate(`/findings?id=${f.id}`)}
+                  >
                     <td className="py-2 pr-4"><SeverityBadge severity={f.severity} /></td>
                     <td className="py-2 pr-4 max-w-xs truncate text-gray-200">{f.title}</td>
                     <td className="py-2 pr-4"><TargetTag finding={f} /></td>
@@ -216,8 +232,12 @@ export default function DashboardPage() {
               </tbody>
             </table>
           </div>
-        </div>
-      )}
+        ) : (
+          <div className="flex h-24 items-center justify-center text-sm text-gray-500">
+            No findings yet — run a scan to get started.
+          </div>
+        )}
+      </div>
     </div>
   );
 }

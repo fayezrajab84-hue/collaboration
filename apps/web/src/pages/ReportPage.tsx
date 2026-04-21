@@ -344,6 +344,27 @@ function ScanReportsTab() {
         </button>
       </div>
 
+      {/* Grade legend */}
+      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-gray-800 bg-gray-900/60 px-4 py-2.5">
+        <span className="text-xs text-gray-500 mr-1">Risk grade:</span>
+        {[
+          { grade: "A", desc: "No critical/high — clean",           style: GRADE_STYLE["A"] },
+          { grade: "B", desc: "1–5 high, no critical",              style: GRADE_STYLE["B"] },
+          { grade: "C", desc: "1 critical or 6–15 high",            style: GRADE_STYLE["C"] },
+          { grade: "D", desc: "2–4 critical or 16–30 high",         style: GRADE_STYLE["D"] },
+          { grade: "F", desc: "5+ critical or 30+ high",            style: GRADE_STYLE["F"] },
+        ].map(({ grade, desc, style }) => (
+          <span
+            key={grade}
+            title={desc}
+            className={`inline-flex h-6 w-6 cursor-default items-center justify-center rounded border text-xs font-black ${style}`}
+          >
+            {grade}
+          </span>
+        ))}
+        <span className="ml-1 text-[10px] text-gray-600">Hover a grade for details</span>
+      </div>
+
       {isLoading && (
         <div className="flex items-center justify-center py-16">
           <div className="h-7 w-7 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent" />
