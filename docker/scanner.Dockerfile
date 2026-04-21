@@ -69,6 +69,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends perl && rm -rf 
     && chmod +x /opt/nikto/program/nikto.pl \
     && ln -s /opt/nikto/program/nikto.pl /usr/local/bin/nikto
 
+# Install SQLMap (Python-based SQL injection confirmation tool)
+# Cloned from source — no compilation needed, just requires Python 3
+RUN git clone --depth 1 https://github.com/sqlmapproject/sqlmap.git /opt/sqlmap \
+    && chmod +x /opt/sqlmap/sqlmap.py \
+    && ln -sf /opt/sqlmap/sqlmap.py /usr/local/bin/sqlmap
+
+# Install Dalfox (Go-based XSS confirmation tool)
+RUN DALFOX_VERSION=$(curl -s https://api.github.com/repos/hahwul/dalfox/releases/latest \
+        | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/') \
+    && echo "Dalfox version: ${DALFOX_VERSION}" \
+    && wget -q "https://github.com/hahwul/dalfox/releases/latest/download/dalfox_${DALFOX_VERSION}_linux_amd64.tar.gz" \
+         -O /tmp/dalfox.tar.gz \
+    && mkdir -p /tmp/dalfox_out \
+    && tar -xzf /tmp/dalfox.tar.gz -C /tmp/dalfox_out \
+    && find /tmp/dalfox_out -name "dalfox" -type f -exec mv {} /usr/local/bin/dalfox \; \
+    && chmod +x /usr/local/bin/dalfox \
+    && rm -rf /tmp/dalfox.tar.gz /tmp/dalfox_out
+
 # ── Python dependencies ──────────────────────────────────────────────────
 FROM base AS python-deps
 
@@ -133,6 +151,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openssl \
     dnsutils \
     ca-certificates \
+    dirb \
     # Chromium / Playwright runtime libraries (must match python-deps stage)
     libnss3 \
     libnspr4 \
@@ -173,6 +192,11 @@ COPY --from=tools /usr/local/bin/katana      /usr/local/bin/katana
 COPY --from=tools /usr/local/bin/testssl.sh  /usr/local/bin/testssl.sh
 COPY --from=tools /opt/nikto                 /opt/nikto
 RUN ln -s /opt/nikto/program/nikto.pl /usr/local/bin/nikto
+# SQLMap (Python — shipped as source, symlinked)
+COPY --from=tools /opt/sqlmap                /opt/sqlmap
+RUN ln -sf /opt/sqlmap/sqlmap.py /usr/local/bin/sqlmap
+# Dalfox (Go binary)
+COPY --from=tools /usr/local/bin/dalfox      /usr/local/bin/dalfox
 
 # Copy Python packages
 COPY --from=python-deps /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages

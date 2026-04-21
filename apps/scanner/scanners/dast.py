@@ -9,6 +9,8 @@ from config import settings
 from models import Confidence, NormalizedFinding, ScanRequest, ScanType, Severity
 from .base import BaseScanner
 from .dast_checks import run_all_checks
+from .confirm import is_sqli_candidate, is_xss_candidate, run_confirmations
+from .discovery import run_ffuf, run_nikto
 
 # ZAP confidence string → our Confidence enum
 ZAP_CONFIDENCE_MAP: dict[str, Confidence] = {
@@ -185,6 +187,52 @@ class DASTScanner(BaseScanner):
                 )
             except Exception as exc:
                 print(f"[dast] Warning: could not disable rule {rule_id}: {exc}")
+
+    def _tune_ascan_policy(self) -> None:
+        """
+        Set HIGH attack strength for high-value vulnerability classes.
+
+        ZAP's default strength is MEDIUM for all rules.  Upgrading SQLi and XSS
+        rules to HIGH makes ZAP try more payloads and edge-case variants,
+        increasing true-positive detection at the cost of slightly longer scan
+        time for those rule families.
+
+        Also ensures path traversal and SSTI rules run at HIGH — these have good
+        FP rates and are commonly missed at MEDIUM strength.
+        """
+        # (rule_id, strength) pairs
+        HIGH_STRENGTH_RULES = [
+            # SQL injection family — all backend types
+            "40018",  # SQL Injection (generic)
+            "40019",  # SQL Injection - MySQL
+            "40020",  # SQL Injection - Hypersonic SQL
+            "40021",  # SQL Injection - Oracle
+            "40022",  # SQL Injection - PostgreSQL
+            "40023",  # SQL Injection - SQLite
+            "40027",  # SQL Injection - MsSQL
+            # Cross-Site Scripting
+            "40012",  # Cross Site Scripting (Reflected)
+            "40014",  # Cross Site Scripting (Persistent)
+            "40016",  # Cross Site Scripting (Persistent) - Prime
+            "40017",  # Cross Site Scripting (Persistent) - Spider
+            # Path traversal / RFI — commonly missed at MEDIUM
+            "6",      # Path Traversal
+            "7",      # Remote File Inclusion
+            # Server-Side Template Injection
+            "90035",  # Server Side Template Injection
+        ]
+        upgraded = 0
+        for rule_id in HIGH_STRENGTH_RULES:
+            try:
+                self._zap(
+                    "/JSON/ascan/action/setScannerAttackStrength/",
+                    {"id": rule_id, "attackStrength": "HIGH"},
+                )
+                upgraded += 1
+            except Exception:
+                pass   # non-fatal — rule may not exist in this ZAP version
+        if upgraded:
+            print(f"[dast] Policy tuned: {upgraded} rules upgraded to HIGH attack strength")
 
     # ── Authentication setup ──────────────────────────────────────────────────
 
@@ -558,8 +606,10 @@ class DASTScanner(BaseScanner):
         except Exception:
             home_resp = None
 
-        # Configure active scanner before spidering
+        # Configure active scanner (disable known-hanging rules + cap duration)
         self._configure_ascan()
+        # Upgrade attack strength for high-signal rule families
+        self._tune_ascan_policy()
 
         # Configure authentication context (if credentials were provided)
         ctx_id, user_id = self._setup_auth_context(request, target_url)
@@ -570,10 +620,13 @@ class DASTScanner(BaseScanner):
         if authenticated:
             self._report_progress(request, 4, "auth_configured")
 
-        # 0.5. Pre-crawl with Playwright (SPA-aware) + Katana (link-crawler) to seed ZAP's scope
+        # 0.5. Pre-crawl with Playwright + Katana + ffuf to seed ZAP's scope
         import os as _os
         crawl_workspace = _os.path.join(workspace, "crawl")
         _os.makedirs(crawl_workspace, exist_ok=True)
+
+        # Build auth headers for external tools (ffuf, SQLMap, Dalfox)
+        auth_headers_for_tools = self.auth_header_dict(request.auth_config, None)
 
         # Playwright: intercepts real XHR/fetch calls from JS frameworks — best for SPAs
         playwright_urls = self._playwright_crawl(target_url, request, crawl_workspace)
@@ -583,8 +636,18 @@ class DASTScanner(BaseScanner):
         katana_urls = self._katana_crawl(target_url, crawl_workspace)
         self._report_progress(request, 12, "katana_crawl_done")
 
+        # ffuf: brute-force common paths to expose hidden endpoints & admin panels
+        ffuf_workspace = _os.path.join(workspace, "ffuf")
+        _os.makedirs(ffuf_workspace, exist_ok=True)
+        ffuf_urls = run_ffuf(target_url, auth_headers_for_tools, ffuf_workspace, timeout=90)
+        self._report_progress(request, 14, "ffuf_discovery_done")
+        if ffuf_urls:
+            print(f"[dast] ffuf surfaced {len(ffuf_urls)} additional paths for ZAP")
+
         # Merge all discovery sources; de-duplicate preserving order
-        seed_urls = list(dict.fromkeys(playwright_urls + katana_urls + list(request.api_spec_urls)))
+        seed_urls = list(dict.fromkeys(
+            playwright_urls + katana_urls + ffuf_urls + list(request.api_spec_urls)
+        ))
         if seed_urls:
             # Seed all discovered/spec URLs into ZAP so the active scanner covers them
             for su in seed_urls[:400]:
@@ -725,6 +788,24 @@ class DASTScanner(BaseScanner):
             print(f"[dast] FP filter: suppressed {suppressed_count}/{len(alerts)} ZAP alerts "
                   f"(low-confidence informational noise)")
 
+        # ── Proof-based confirmation for SQLi and XSS candidates ─────────────
+        # Extract candidates before running Nuclei/Nikto so confirmation tools
+        # run while those scans are executing (overlapping I/O).
+        sqli_candidates = [f for f in findings if is_sqli_candidate(f)
+                           and f.evidence and f.evidence.get("url")]
+        xss_candidates  = [f for f in findings if is_xss_candidate(f)
+                           and f.evidence and f.evidence.get("url")]
+
+        if sqli_candidates or xss_candidates:
+            print(f"[dast] Confirmation queue: {len(sqli_candidates)} SQLi, "
+                  f"{len(xss_candidates)} XSS candidates")
+            self._report_progress(request, 92, "confirming_findings")
+            run_confirmations(
+                sqli_candidates, xss_candidates,
+                auth_headers_for_tools, workspace,
+                max_sqli=2, max_xss=2,
+            )
+
         # Run Nuclei against OpenAPI spec endpoints for fast API-specific checks
         if request.api_spec_urls:
             self._report_progress(request, 94, "nuclei_api_scan")
@@ -736,7 +817,25 @@ class DASTScanner(BaseScanner):
         self._report_progress(request, 96, "targeted_checks")
         targeted = run_all_checks(self, request, target_url, home_resp)
         findings += targeted
-        print(f"[dast] ZAP findings: {len(findings) - len(targeted)}  targeted checks: {len(targeted)}")
+
+        # Run Nikto web server scanner — covers server-level misconfigs and
+        # dangerous default files that ZAP's active scan often misses
+        self._report_progress(request, 97, "nikto_scan")
+        nikto_workspace = _os.path.join(workspace, "nikto")
+        _os.makedirs(nikto_workspace, exist_ok=True)
+        nikto_findings = run_nikto(
+            self, request, target_url, auth_headers_for_tools,
+            nikto_workspace, timeout=180,
+        )
+        findings += nikto_findings
+
+        zap_count     = len(alerts) - suppressed_count
+        nuclei_count  = len(findings) - zap_count - len(targeted) - len(nikto_findings)
+        print(
+            f"[dast] Summary — ZAP: {zap_count}  Nuclei API: {nuclei_count}  "
+            f"Targeted: {len(targeted)}  Nikto: {len(nikto_findings)}  "
+            f"Confirmed: {sum(1 for f in findings if f.confidence == Confidence.CONFIRMED)}"
+        )
 
         self._report_progress(request, 99, "done")
         return findings
