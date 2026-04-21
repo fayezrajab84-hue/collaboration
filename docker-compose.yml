@@ -280,6 +280,8 @@ services:
       # Crawler sidecar — scanner invokes /crawl before active scan.
       CRAWLER_URL: ${CRAWLER_URL:-http://crawler:8001}
       INTERACTSH_URL: ${INTERACTSH_URL:-}
+      # Flush print() in real time so `docker logs` shows scan progress live
+      PYTHONUNBUFFERED: "1"
     volumes:
       - nuclei_templates:/home/scanner/nuclei-templates    # nuclei v3 stores templates here
     networks:
@@ -314,7 +316,12 @@ services:
       SCAN_WORKSPACE_DIR: /tmp/scan_workspace
       ZAP_BASE_URL: ${ZAP_BASE_URL:-http://zap:8080}
       ZAP_API_KEY: ${ZAP_API_KEY:-}
+      # Crawler sidecar — pentest scanner calls /crawl before Nuclei to
+      # enumerate URLs (SPA routes, XHR endpoints, form walks).
+      CRAWLER_URL: ${CRAWLER_URL:-http://crawler:8001}
       INTERACTSH_URL: ${INTERACTSH_URL:-}
+      # Flush print() in real time so `docker logs` shows scan progress live
+      PYTHONUNBUFFERED: "1"
     volumes:
       - nuclei_templates_pentest:/home/scanner/nuclei-templates    # nuclei v3 stores templates here
     networks:
