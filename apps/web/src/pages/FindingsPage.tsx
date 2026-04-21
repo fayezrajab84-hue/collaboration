@@ -1,43 +1,16 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
-import { ShieldAlert, Search, GitBranch, Box, Globe, Layers, Sparkles, ChevronDown, ChevronRight, KeyRound, Bot, Wrench, X } from "lucide-react";
+import { ShieldAlert, Search, Globe, Layers, Sparkles, ChevronDown, ChevronRight, KeyRound, Bot, Wrench, X } from "lucide-react";
 import { findingsApi, reposApi, containersApi, domainsApi } from "../lib/api";
 import type { Finding, FindingGroup } from "@devsecops/types";
 import SeverityBadge from "../components/SeverityBadge";
 import ConfidenceBadge from "../components/ConfidenceBadge";
 import FindingStatusBadge from "../components/FindingStatusBadge";
 import FindingDetailDrawer from "../components/FindingDetailDrawer";
+import TargetTag from "../components/TargetTag";
 import { formatRelative } from "../lib/utils";
 import { SEVERITY_BADGE } from "../lib/colors";
-
-function TargetTag({ finding }: { finding: Finding }) {
-  if (finding.repository) {
-    return (
-      <span className="inline-flex items-center gap-1 rounded bg-indigo-900/50 px-2 py-0.5 text-xs text-indigo-300 max-w-[160px] truncate">
-        <GitBranch className="h-3 w-3 shrink-0" />
-        <span className="truncate">{finding.repository.fullName}</span>
-      </span>
-    );
-  }
-  if (finding.container) {
-    return (
-      <span className="inline-flex items-center gap-1 rounded bg-cyan-900/50 px-2 py-0.5 text-xs text-cyan-300 max-w-[160px] truncate">
-        <Box className="h-3 w-3 shrink-0" />
-        <span className="truncate">{finding.container.imageRef}</span>
-      </span>
-    );
-  }
-  if (finding.domain) {
-    return (
-      <span className="inline-flex items-center gap-1 rounded bg-emerald-900/50 px-2 py-0.5 text-xs text-emerald-300 max-w-[160px] truncate">
-        <Globe className="h-3 w-3 shrink-0" />
-        <span className="truncate">{finding.domain.domain}</span>
-      </span>
-    );
-  }
-  return <span className="text-gray-600">—</span>;
-}
 
 const SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"];
 const SCAN_TYPES = ["SAST", "SCA", "SECRET", "IAC", "CONTAINER", "DAST", "PENTEST", "PENTEST_FULL"];

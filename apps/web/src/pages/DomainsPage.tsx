@@ -11,11 +11,13 @@ import FindingCountBadges from "../components/FindingCountBadges";
 import PentestWizard from "../components/PentestWizard";
 import ChecksTab from "../components/ChecksTab";
 import { useTargetScanStatus } from "../hooks/useTargetScanStatus";
+import { useToast } from "../hooks/useToast";
 import { formatRelative } from "../lib/utils";
 import { DOMAIN_CHECKS, PENTEST_CHECKS } from "../data/checks";
 
 function ScanButton({ domainId }: { domainId: string }) {
   const qc = useQueryClient();
+  const { toast } = useToast();
   const { status, isActive } = useTargetScanStatus(domainId);
 
   const scan = useMutation({
@@ -23,7 +25,9 @@ function ScanButton({ domainId }: { domainId: string }) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["scans"] });
       qc.invalidateQueries({ queryKey: ["scans", "active"] });
+      toast.success("Domain scan queued");
     },
+    onError: (err: Error) => toast.error(err.message || "Failed to queue scan"),
   });
 
   const displayStatus = status ?? (scan.isPending ? "PENDING" : null);

@@ -15,6 +15,12 @@ import SyntaxHighlight from "./SyntaxHighlight";
 import { formatDate } from "../lib/utils";
 import { SEVERITY_BADGE } from "../lib/colors";
 
+// Severity badge class-name map used by SCA, Secret, SAST, and DAST subissues.
+// Declared at module top so every helper below can reference it without
+// triggering ESLint `no-use-before-define`.
+const SEV_BADGE      = SEVERITY_BADGE;
+const SEV_PILL_SAST  = SEVERITY_BADGE;
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface SastLocation {
@@ -762,9 +768,6 @@ interface AIAnalysis {
 
 // ── SCA Subissues Panel ───────────────────────────────────────────────────────
 
-// Canonical severity badge — imported from colors.ts
-const SEV_BADGE = SEVERITY_BADGE;
-
 function ScaSubissuesPanel({
   rawOut,
   pkg,
@@ -900,9 +903,6 @@ function ScaSubissuesPanel({
 }
 
 // ── Subissues Panel (merged SAST findings) ────────────────────────────────────
-
-// Canonical severity badge (SAST subissues reuse the same token)
-const SEV_PILL_SAST = SEVERITY_BADGE;
 
 function SubissuesPanel({
   locations,

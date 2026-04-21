@@ -8,11 +8,13 @@ import ScanStatusBadge from "../components/ScanStatusBadge";
 import FindingCountBadges from "../components/FindingCountBadges";
 import ChecksTab from "../components/ChecksTab";
 import { useTargetScanStatus } from "../hooks/useTargetScanStatus";
+import { useToast } from "../hooks/useToast";
 import { formatRelative } from "../lib/utils";
 import { CONTAINER_CHECKS } from "../data/checks";
 
 function ScanButton({ containerId }: { containerId: string }) {
   const qc = useQueryClient();
+  const { toast } = useToast();
   const { status, isActive } = useTargetScanStatus(containerId);
 
   const scan = useMutation({
@@ -20,7 +22,9 @@ function ScanButton({ containerId }: { containerId: string }) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["scans"] });
       qc.invalidateQueries({ queryKey: ["scans", "active"] });
+      toast.success("Container scan queued");
     },
+    onError: (err: Error) => toast.error(err.message || "Failed to queue scan"),
   });
 
   const displayStatus = status ?? (scan.isPending ? "PENDING" : null);

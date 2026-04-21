@@ -3,15 +3,44 @@
 @tailwind utilities;
 
 @layer base {
+  /* Tailwind v3 default border color is currentColor; preserve the v2 behaviour
+     (a subtle gray border when you write `border` without a color) so existing
+     markup that relies on this default continues to render correctly. */
   * {
     @apply border-gray-700;
   }
+
   body {
-    @apply bg-gray-950 text-gray-100 antialiased;
+    /* Default body text — matches the platform-wide "primary text" token
+       used across pages (text-gray-200). */
+    @apply bg-gray-950 text-gray-200 antialiased;
+  }
+
+  /* Global thin dark-theme scrollbar for every scrollable element.
+     Individual components can still opt in to a different style by
+     overriding scrollbar-width / scrollbar-color. */
+  *::-webkit-scrollbar {
+    width:  8px;
+    height: 8px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background-color: theme(colors.gray.700);
+    border-radius:    4px;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: theme(colors.gray.600);
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: theme(colors.gray.700) transparent;
   }
 }
 
 @layer utilities {
+  /* Kept for explicit opt-in where an even thinner variant is wanted. */
   .scrollbar-thin {
     scrollbar-width: thin;
     scrollbar-color: theme(colors.gray.700) transparent;

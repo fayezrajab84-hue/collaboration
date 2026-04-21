@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Settings, Github, AlertTriangle } from "lucide-react";
 import { integrationsApi } from "../lib/api";
 import { useAuth } from "../hooks/useAuth";
+import { useToast } from "../hooks/useToast";
 
 type Tab = "github" | "jira" | "slack" | "teams";
 
@@ -67,6 +68,7 @@ function GitHubTab() {
 
 function JiraTab() {
   const qc = useQueryClient();
+  const { toast } = useToast();
   const [saved, setSaved] = useState(false);
 
   const { data: existing } = useQuery({
@@ -88,12 +90,18 @@ function JiraTab() {
       qc.invalidateQueries({ queryKey: ["integrations", "jira"] });
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
+      toast.success("Jira integration saved");
     },
+    onError: (err: Error) => toast.error(err.message || "Failed to save Jira integration"),
   });
 
   const remove = useMutation({
     mutationFn: integrationsApi.deleteJira,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["integrations", "jira"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["integrations", "jira"] });
+      toast.info("Jira integration removed");
+    },
+    onError: (err: Error) => toast.error(err.message || "Failed to remove integration"),
   });
 
   const field = (label: string, key: keyof typeof form, type = "text", placeholder = "") => (
@@ -172,6 +180,7 @@ function JiraTab() {
 
 function SlackTab() {
   const qc = useQueryClient();
+  const { toast } = useToast();
   const [saved, setSaved] = useState(false);
   const [webhookUrl, setWebhookUrl] = useState("");
   const [channel, setChannel] = useState("");
@@ -187,12 +196,18 @@ function SlackTab() {
       qc.invalidateQueries({ queryKey: ["integrations", "slack"] });
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
+      toast.success("Slack integration saved");
     },
+    onError: (err: Error) => toast.error(err.message || "Failed to save Slack integration"),
   });
 
   const remove = useMutation({
     mutationFn: integrationsApi.deleteSlack,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["integrations", "slack"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["integrations", "slack"] });
+      toast.info("Slack integration removed");
+    },
+    onError: (err: Error) => toast.error(err.message || "Failed to remove integration"),
   });
 
   return (
@@ -265,6 +280,7 @@ function SlackTab() {
 
 function TeamsTab() {
   const qc = useQueryClient();
+  const { toast } = useToast();
   const [saved, setSaved] = useState(false);
   const [webhookUrl, setWebhookUrl] = useState("");
 
@@ -279,12 +295,18 @@ function TeamsTab() {
       qc.invalidateQueries({ queryKey: ["integrations", "teams"] });
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
+      toast.success("Teams integration saved");
     },
+    onError: (err: Error) => toast.error(err.message || "Failed to save Teams integration"),
   });
 
   const remove = useMutation({
     mutationFn: integrationsApi.deleteTeams,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["integrations", "teams"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["integrations", "teams"] });
+      toast.info("Teams integration removed");
+    },
+    onError: (err: Error) => toast.error(err.message || "Failed to remove integration"),
   });
 
   return (

@@ -1,5 +1,6 @@
 import { Routes, Route, Navigate } from "react-router-dom";
 import { useAuth } from "./hooks/useAuth";
+import { ToastProvider } from "./hooks/useToast";
 import Layout from "./components/Layout";
 import LoginPage from "./pages/LoginPage";
 import DashboardPage from "./pages/DashboardPage";
@@ -32,6 +33,14 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
+  return (
+    <ToastProvider>
+      <AppRoutes />
+    </ToastProvider>
+  );
+}
+
+function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />

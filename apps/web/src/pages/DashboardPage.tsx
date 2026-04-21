@@ -8,8 +8,9 @@ import { SEVERITY_CHART } from "../lib/colors";
 import StatsCard from "../components/StatsCard";
 import SeverityBadge from "../components/SeverityBadge";
 import ScanStatusBadge from "../components/ScanStatusBadge";
+import TargetTag from "../components/TargetTag";
 import { formatRelative } from "../lib/utils";
-import type { Finding, ScanJob } from "@devsecops/types";
+import type { ScanJob } from "@devsecops/types";
 
 const SCAN_TYPE_ICONS: Record<string, React.ReactNode> = {
   REPOSITORY: <GitBranch className="h-3.5 w-3.5 shrink-0" />,
@@ -25,28 +26,6 @@ function ScanTargetName({ scan }: { scan: ScanJob }) {
       <span className="truncate">{name ?? scan.targetType}</span>
     </div>
   );
-}
-
-function TargetTag({ finding }: { finding: Finding }) {
-  if (finding.repository)
-    return (
-      <span className="inline-flex items-center gap-1 rounded bg-indigo-900/50 px-2 py-0.5 text-xs text-indigo-300 max-w-[140px] truncate">
-        <GitBranch className="h-3 w-3 shrink-0" /><span className="truncate">{finding.repository.fullName}</span>
-      </span>
-    );
-  if (finding.container)
-    return (
-      <span className="inline-flex items-center gap-1 rounded bg-cyan-900/50 px-2 py-0.5 text-xs text-cyan-300 max-w-[140px] truncate">
-        <Box className="h-3 w-3 shrink-0" /><span className="truncate">{finding.container.imageRef}</span>
-      </span>
-    );
-  if (finding.domain)
-    return (
-      <span className="inline-flex items-center gap-1 rounded bg-emerald-900/50 px-2 py-0.5 text-xs text-emerald-300 max-w-[140px] truncate">
-        <Globe className="h-3 w-3 shrink-0" /><span className="truncate">{finding.domain.domain}</span>
-      </span>
-    );
-  return <span className="text-gray-600">—</span>;
 }
 
 // Chart hex colors — imported from canonical colors.ts
@@ -224,7 +203,7 @@ export default function DashboardPage() {
                   >
                     <td className="py-2 pr-4"><SeverityBadge severity={f.severity} /></td>
                     <td className="py-2 pr-4 max-w-xs truncate text-gray-200">{f.title}</td>
-                    <td className="py-2 pr-4"><TargetTag finding={f} /></td>
+                    <td className="py-2 pr-4"><TargetTag finding={f} maxWidth="max-w-[140px]" /></td>
                     <td className="py-2 pr-4 text-xs text-gray-400">{f.scanType}</td>
                     <td className="py-2 text-xs text-gray-500">{formatRelative(f.firstSeen)}</td>
                   </tr>

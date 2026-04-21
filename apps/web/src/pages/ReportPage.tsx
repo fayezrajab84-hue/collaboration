@@ -78,7 +78,7 @@ function ReportCard({
   const dlUrl   = reportsApi.downloadUrl(report.id);
 
   return (
-    <div className="group flex items-center gap-4 rounded-xl border border-gray-800 bg-gray-900 px-5 py-4 hover:border-gray-700 transition-colors">
+    <div className="group flex items-center gap-4 rounded-xl border border-gray-800 bg-gray-900 px-5 py-4 hover:border-gray-700 hover:bg-gray-800/40 transition-colors">
 
       {/* Grade badge */}
       <div className={`flex h-12 w-12 flex-shrink-0 flex-col items-center justify-center rounded-xl border text-center font-black ${GRADE_STYLE[grade] ?? GRADE_STYLE["F"]}`}>
@@ -420,7 +420,7 @@ export default function ReportPage() {
       <div className="border-b border-gray-800 px-6 pt-6 pb-0">
         <div className="flex items-center gap-3 mb-5">
           <FileText className="h-5 w-5 text-indigo-400" />
-          <h1 className="text-2xl font-bold text-white">Reports</h1>
+          <h1 className="text-3xl font-bold text-white">Reports</h1>
         </div>
 
         {/* Tabs */}
