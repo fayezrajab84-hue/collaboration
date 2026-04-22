@@ -76,16 +76,15 @@ RUN git clone --depth 1 https://github.com/sqlmapproject/sqlmap.git /opt/sqlmap 
     && ln -sf /opt/sqlmap/sqlmap.py /usr/local/bin/sqlmap
 
 # Install Dalfox (Go-based XSS confirmation tool)
-RUN DALFOX_VERSION=$(curl -s https://api.github.com/repos/hahwul/dalfox/releases/latest \
-        | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/') \
-    && echo "Dalfox version: ${DALFOX_VERSION}" \
-    && wget -q "https://github.com/hahwul/dalfox/releases/latest/download/dalfox_${DALFOX_VERSION}_linux_amd64.tar.gz" \
+# Asset naming: dalfox-linux-amd64.tar.gz contains a single binary named
+# `dalfox-linux-amd64` (not `dalfox`) — extract and rename in one step.
+RUN wget -q "https://github.com/hahwul/dalfox/releases/latest/download/dalfox-linux-amd64.tar.gz" \
          -O /tmp/dalfox.tar.gz \
-    && mkdir -p /tmp/dalfox_out \
-    && tar -xzf /tmp/dalfox.tar.gz -C /tmp/dalfox_out \
-    && find /tmp/dalfox_out -name "dalfox" -type f -exec mv {} /usr/local/bin/dalfox \; \
+    && tar -xzf /tmp/dalfox.tar.gz -C /tmp/ \
+    && mv /tmp/dalfox-linux-amd64 /usr/local/bin/dalfox \
     && chmod +x /usr/local/bin/dalfox \
-    && rm -rf /tmp/dalfox.tar.gz /tmp/dalfox_out
+    && /usr/local/bin/dalfox version \
+    && rm -f /tmp/dalfox.tar.gz
 
 # ── Python dependencies ──────────────────────────────────────────────────
 FROM base AS python-deps
