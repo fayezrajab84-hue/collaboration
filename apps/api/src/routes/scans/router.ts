@@ -93,7 +93,44 @@ router.get("/:id", async (req, res, next) => {
       },
     });
     if (!scan) { res.status(404).json({ error: "Scan job not found" }); return; }
-    res.json(scan);
+
+    // Attach computed "confirmed" count — findings that existed before this
+    // scan ran AND were re-observed in it.  Computed on the fly to avoid a
+    // schema migration; the fact that upsertFindings bumps `lastSeen` inside
+    // the scan's time window is our truth source.
+    // "New"       = firstSeen between startedAt and completedAt
+    // "Confirmed" = firstSeen < startedAt, lastSeen >= startedAt
+    const scanTargetFilter =
+      scan.targetType === "REPOSITORY" ? { repositoryId: scan.targetId }
+      : scan.targetType === "CONTAINER" ? { containerId: scan.targetId }
+      : { domainId: scan.targetId };
+
+    let confirmedCount = 0;
+    let newThisScan   = 0;
+    if (scan.startedAt) {
+      const windowEnd = scan.completedAt ?? new Date();
+      [confirmedCount, newThisScan] = await Promise.all([
+        prisma.finding.count({
+          where: {
+            orgId:    scan.orgId,
+            scanType: { in: scan.scanTypes },
+            ...scanTargetFilter,
+            firstSeen: { lt: scan.startedAt },
+            lastSeen:  { gte: scan.startedAt, lte: windowEnd },
+          },
+        }),
+        prisma.finding.count({
+          where: {
+            orgId:    scan.orgId,
+            scanType: { in: scan.scanTypes },
+            ...scanTargetFilter,
+            firstSeen: { gte: scan.startedAt, lte: windowEnd },
+          },
+        }),
+      ]);
+    }
+
+    res.json({ ...scan, confirmedCount, newThisScan });
   } catch (err) { next(err); }
 });
 

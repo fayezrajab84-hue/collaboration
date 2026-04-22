@@ -120,6 +120,12 @@ export interface ScanJob {
   highCount?: number;
   mediumCount?: number;
   lowCount?: number;
+  // Split of this scan's contribution (present on detail endpoint only).
+  //   newThisScan   — findings first seen during this scan run
+  //   confirmedCount — findings that pre-existed and were re-observed
+  // Tells operators whether "0 new" means "clean scan" vs "re-confirmed backlog"
+  newThisScan?: number;
+  confirmedCount?: number;
   // AI-generated summary (Phase 2)
   aiSummary?: string | null;
   aiSummarisedAt?: Date | null;

@@ -192,6 +192,15 @@ async function processScanJob(payload: ScanJobPayload) {
     });
     newCount = upsertResult.newCount;
 
+    logger.info("Findings upsert summary", {
+      scanJobId,
+      scanType,
+      new:       upsertResult.newCount,
+      confirmed: upsertResult.confirmedCount,
+      fixed:     upsertResult.fixedCount,
+      total:     upsertResult.totalCount,
+    });
+
     if (upsertResult.fixedCount > 0) {
       logger.info("Auto-fixed resolved findings", { scanJobId, scanType, fixedCount: upsertResult.fixedCount });
     }

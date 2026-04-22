@@ -820,7 +820,14 @@ export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: n
     });
   }
 
-  return { newCount, totalCount: findings.length, fixedCount, newFindings };
+  // ── Confirmed count ──────────────────────────────────────────────────────
+  // Findings that already existed AND were seen again in this scan run.
+  // Useful for the UI to distinguish "scan found nothing new" from "scan
+  // re-confirmed N known issues still present" — a critical signal for
+  // operators tracking remediation progress.
+  const confirmedCount = fingerprints.length - newCount;
+
+  return { newCount, totalCount: findings.length, fixedCount, confirmedCount, newFindings };
 }
 
 export function countBySeverity(findings: NormalizedFinding[]): Record<string, number> {

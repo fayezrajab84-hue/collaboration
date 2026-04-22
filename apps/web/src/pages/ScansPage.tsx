@@ -195,10 +195,29 @@ function AISummaryRow({ scan }: { scan: ScanJob }) {
   const summary = scan.aiSummary ?? fresh?.aiSummary ?? null;
   const isGenerating = !summary && (generateMutation.isIdle ? !scan.aiSummarisedAt : !generateMutation.isError);
 
+  const newCount = fresh?.newThisScan;
+  const confirmedCount = fresh?.confirmedCount;
+  const hasSplit = typeof newCount === "number" && typeof confirmedCount === "number";
+  const splitBadge = hasSplit ? (
+    <div className="mb-2 flex items-center gap-3 text-[11px] text-gray-400">
+      <span>
+        <span className="font-semibold text-emerald-400">{newCount}</span> new this run
+      </span>
+      <span className="text-gray-600">·</span>
+      <span>
+        <span className="font-semibold text-sky-400">{confirmedCount}</span> re-confirmed from prior scans
+      </span>
+      {newCount === 0 && confirmedCount === 0 && (
+        <span className="text-gray-500">(clean)</span>
+      )}
+    </div>
+  ) : null;
+
   if (summary) {
     return (
       <tr>
         <td colSpan={7} className="px-4 pb-3 pt-0">
+          {splitBadge}
           <div className="flex items-start gap-2.5 rounded-lg border border-indigo-900/40 bg-indigo-950/20 px-4 py-3">
             <Sparkles className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-indigo-400" />
             <p className="text-xs leading-relaxed text-gray-300">{summary}</p>
@@ -214,6 +233,7 @@ function AISummaryRow({ scan }: { scan: ScanJob }) {
   return (
     <tr>
       <td colSpan={7} className="px-4 pb-3 pt-0">
+        {splitBadge}
         <div className="flex items-center gap-3 rounded-lg border border-dashed border-indigo-900/50 bg-indigo-950/20 px-4 py-2.5">
           {isGenerating && !wasNeverGenerated ? (
             <>
