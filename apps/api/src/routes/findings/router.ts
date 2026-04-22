@@ -307,7 +307,14 @@ router.post("/:id/fix", async (req, res, next) => {
     if (!finding) { res.status(404).json({ error: "Finding not found" }); return; }
 
     const force = req.query["force"] === "true";
-    const diff  = await generateFixSuggestion(finding.id, force);
+    // Optional sub-location index: when present, generate a per-location diff
+    // for merged SAST findings instead of the shared primary-location diff.
+    const locIdxRaw = req.query["locationIndex"];
+    const locationIndex = typeof locIdxRaw === "string" && /^\d+$/.test(locIdxRaw)
+      ? Number(locIdxRaw)
+      : undefined;
+
+    const diff  = await generateFixSuggestion(finding.id, force, locationIndex);
 
     const updated = await prisma.finding.findUniqueOrThrow({ where: { id: finding.id } });
     res.json({ diff, aiFixSuggestedAt: updated.aiFixSuggestedAt });

@@ -12,6 +12,7 @@ import type { ScanJobPayload } from "../queues/definitions.js";
 import type { NormalizedFinding, ScanType, TargetType } from "@devsecops/types";
 import type { ScanResult } from "@devsecops/types";
 import { notifyNewFindings } from "../services/notificationService.js";
+import { backfillSnippetsForScanJob } from "../services/sastSnippetService.js";
 import { generateScanSummary } from "../services/scanSummaryService.js";
 import { scoreTarget } from "../services/riskScoringService.js";
 import { generateTargetReport } from "../services/reportHtmlService.js";
@@ -147,7 +148,7 @@ async function processScanJob(payload: ScanJobPayload) {
     const response = await axios.post<ScanResult>(
       `${scannerUrl}/scan`,
       scanRequest,
-      { timeout: 1_500_000 } // 25 min
+      { timeout: 2_700_000 } // 45 min — DAST active scan can run up to 27 min alone
     );
     result = response.data;
   } catch (err) {
@@ -162,6 +163,20 @@ async function processScanJob(payload: ScanJobPayload) {
       error: msg,
       durationMs: 0,
     };
+  }
+
+  // Surface scanner-side exceptions: when the FastAPI handler catches an
+  // exception inside scan(), it returns success=false with an error string
+  // but HTTP 200. Without this we'd silently mark the ScanJob COMPLETED with
+  // 0 findings and no diagnostic — the failure mode that hid the DVWA DAST
+  // ZAP timeout for 13 minutes.
+  if (!result.success) {
+    logger.error("Scanner reported failure", {
+      scanJobId,
+      scanType,
+      error: result.error ?? "(no error message)",
+      durationMs: result.durationMs,
+    });
   }
 
   // Store findings and auto-fix any that disappeared since the last scan
@@ -179,6 +194,25 @@ async function processScanJob(payload: ScanJobPayload) {
 
     if (upsertResult.fixedCount > 0) {
       logger.info("Auto-fixed resolved findings", { scanJobId, scanType, fixedCount: upsertResult.fixedCount });
+    }
+
+    // Backfill SAST snippets from GitHub when Semgrep returned nothing usable.
+    // Fire-and-forget: we don't want a slow GitHub API round to delay scan
+    // completion or AI triage enqueue. Errors are swallowed inside the service.
+    if (scanType === "SAST" && targetType === "REPOSITORY") {
+      backfillSnippetsForScanJob({ scanJobId, repositoryId: targetId })
+        .then((r) => {
+          if (r.updatedFindings > 0 || r.updatedLocations > 0) {
+            logger.info("[sast-snippet] backfilled from GitHub", {
+              scanJobId,
+              updatedFindings:  r.updatedFindings,
+              updatedLocations: r.updatedLocations,
+            });
+          }
+        })
+        .catch((err: Error) =>
+          logger.warn("[sast-snippet] backfill failed", { scanJobId, error: err.message })
+        );
     }
 
     // Enqueue AI triage for newly discovered findings (fire-and-forget)
@@ -308,6 +342,10 @@ export function initWorkers() {
       {
         connection: bullRedis,
         concurrency: 2,
+        // DAST/PENTEST_FULL can run up to ~40 min (ZAP active scan 27 min +
+        // crawler + nuclei + nikto). Default lockDuration of 30s would mark
+        // long scans as stalled and re-deliver them, causing duplicate work.
+        lockDuration: 2_700_000, // 45 min — matches axios scanner timeout
       }
     );
 

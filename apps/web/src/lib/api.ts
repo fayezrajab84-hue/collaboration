@@ -212,12 +212,20 @@ export const findingsApi = {
       {},
       { params: force ? { force: "true" } : undefined, timeout: 200_000 },
     ).then((r) => r.data),
-  // Fix suggestion
-  fixSuggestion: (id: string, force = false) =>
+  // Fix suggestion. Pass `locationIndex` to generate a per-sub-location diff
+  // for merged SAST findings (each sub-issue gets its own targeted fix
+  // instead of all sharing the primary location's diff).
+  fixSuggestion: (id: string, force = false, locationIndex?: number) =>
     apiClient.post<{ diff: string; aiFixSuggestedAt: string }>(
       `/findings/${id}/fix`,
       {},
-      { params: force ? { force: "true" } : undefined, timeout: 300_000 },
+      {
+        params: {
+          ...(force ? { force: "true" } : {}),
+          ...(locationIndex != null ? { locationIndex: String(locationIndex) } : {}),
+        },
+        timeout: 700_000, // 10 min — qwen2.5-coder:7b cold call ~520s + buffer
+      },
     ).then((r) => r.data),
 };
 

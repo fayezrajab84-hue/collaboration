@@ -353,10 +353,12 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
-    mem_limit: 4g
+    # 7B-class models (qwen2.5-coder:7b) at num_ctx=8192 need ~7 GiB.
+    # 4 GiB caused "Load failed: context canceled" OOM aborts.
+    mem_limit: 8g
     cpus: '4.0'
 
-  # ── Ollama model pull (one-shot: downloads llama3.2:3b on first start) ─────
+  # ── Ollama model pull (one-shot: downloads model on first start) ───────────
   # Safe to re-run — ollama pull is a no-op when model is already present.
   ollama-init:
     image: ollama/ollama:latest
@@ -365,7 +367,7 @@ services:
         condition: service_healthy
     environment:
       OLLAMA_HOST: http://ollama:11434
-    entrypoint: ["/bin/sh", "-c", "ollama pull ${OLLAMA_MODEL:-llama3.2:3b}"]
+    entrypoint: ["/bin/sh", "-c", "ollama pull ${OLLAMA_MODEL:-qwen2.5-coder:7b}"]
     networks:
       - internal   # reaches Ollama server
       - public     # downloads model weights from Ollama registry
@@ -388,7 +390,7 @@ services:
       NODE_ENV: ${NODE_ENV:-production}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost}
       OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5-coder:7b}
       INTERACTSH_URL: ${INTERACTSH_URL:-}
     networks:
       - internal

@@ -50,7 +50,10 @@ DISABLED_ASCAN_RULES = [
 ]
 
 # Cap active scan so it never runs longer than this (minutes).
-ASCAN_MAX_DURATION_MINS = 7
+# Sized for ~50–300 seeded URLs × 13 HIGH-strength rules. Below ~20 min the
+# active scan barely starts and produces zero alerts, which means SQLi/XSS
+# confirmation tools (SQLMap, Dalfox) never get any candidates to validate.
+ASCAN_MAX_DURATION_MINS = 25
 
 # ── False-positive suppression ────────────────────────────────────────────────
 # ZAP passive rules that produce near-zero actionable signal in practice.
@@ -700,7 +703,7 @@ class DASTScanner(BaseScanner):
             "nuclei",
             "-l", url_list_path,
             "-tags", "api,rest,graphql,jwt,auth,sqli,xss,ssrf,exposure,misconfig,token,idor",
-            "-json", "-nc", "-silent",
+            "-jsonl", "-nc", "-silent",  # nuclei v3: -json was renamed to -jsonl
             "-severity", "critical,high,medium,low",
             "-timeout", "10",
             "-retries", "1",

@@ -1057,6 +1057,15 @@ interface LocationOverride {
   lineEnd:   number | null;
   snippet:   string | null;
   githubUrl: string | null;
+  /**
+   * Index in the *original* `rawOutput.locations[]` array (NOT the
+   * primary-filtered `locations` shown in SubissuesPanel). The backend
+   * uses this index to load/cache the per-location fix on the same JSON
+   * blob it was generated from.
+   */
+  locationIndex?: number;
+  /** Cached per-location diff (if already generated). */
+  cachedFix?:    string | null;
 }
 
 interface CodeAnalysisModalProps {
@@ -1078,24 +1087,37 @@ function CodeAnalysisModal({ finding, snippet, githubUrl, repoInfo, locationOver
   const [localAnalysis, setLocalAnalysis] = useState<{ analysis: AIAnalysis; aiAnalysedAt: string } | null>(null);
   const [localFix, setLocalFix]           = useState<{ diff: string; aiFixSuggestedAt: string } | null>(null);
 
+  const locIdx = locationOverride?.locationIndex;
+  const isPerLocation = locIdx != null;
+
   const analyse    = useMutation({
     mutationFn: (force: boolean) => findingsApi.analyse(finding.id, force),
     onSuccess:  (data) => { setLocalAnalysis(data); qc.invalidateQueries({ queryKey: ["findings"] }); },
   });
   const suggestFix = useMutation({
-    mutationFn: (force: boolean) => findingsApi.fixSuggestion(finding.id, force),
+    mutationFn: (force: boolean) => findingsApi.fixSuggestion(finding.id, force, locIdx),
     onSuccess:  (data) => { setLocalFix(data); qc.invalidateQueries({ queryKey: ["findings"] }); },
   });
 
-  // Auto-trigger on open
+  // Auto-trigger on open. For per-location modals, only fetch the fix if the
+  // sub-location doesn't already have a cached diff — never re-use the
+  // parent's primary-location fix here (it would target the wrong code).
   useEffect(() => {
     if (!f.aiAnalysis) analyse.mutate(false);
-    if (!f.aiFixSuggestion) suggestFix.mutate(false);
+    if (isPerLocation) {
+      if (!locationOverride?.cachedFix) suggestFix.mutate(false);
+    } else if (!f.aiFixSuggestion) {
+      suggestFix.mutate(false);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const shownAnalysis = localAnalysis?.analysis   ?? f.aiAnalysis        ?? null;
-  const shownFix      = localFix?.diff             ?? f.aiFixSuggestion   ?? null;
+  // For per-location modals: prefer freshly-fetched, then sub-location's
+  // cached diff, then nothing (do NOT fall back to the primary's diff).
+  const shownFix      = isPerLocation
+    ? (localFix?.diff ?? locationOverride?.cachedFix ?? null)
+    : (localFix?.diff ?? f.aiFixSuggestion ?? null);
 
   // Code panel resolves from locationOverride first, then primary finding
   const codeFilePath  = locationOverride?.filePath  ?? (finding.filePath  as string | null) ?? null;
@@ -1649,7 +1671,15 @@ export default function FindingDetailDrawer({ finding, onClose }: Props) {
   const isIacMerged     = rawOut?.merged === true
     && finding.scanType === "IAC"
     && Array.isArray((rawOut as unknown as IacMergedRawOutput)?.resources);
-  const locations: SastLocation[] = isMerged ? rawOut!.locations : [];
+  // Merged SAST includes the primary location inside `locations[]` (the
+  // merge script keeps it so `locations[0]` can act as the canonical snippet
+  // source — see rawOut?.locations?.[0]?.snippet below). Strip the primary
+  // entry before rendering SubissuesPanel, otherwise the finding shown at
+  // the top of the drawer appears again as a sub-issue.
+  const allLocations: SastLocation[] = isMerged ? rawOut!.locations : [];
+  const locations: SastLocation[] = allLocations.filter(
+    (loc) => !(loc.filePath === finding.filePath && loc.lineStart === finding.lineStart),
+  );
   const dastOccurrences: DastOccurrence[] = isDastMerged ? rawOut!.occurrences : [];
   const secretOccurrences: SecretOccurrence[] = isSecretMerged ? (rawOut!.occurrences as unknown as SecretOccurrence[]) : [];
   const iacResources: IacResource[] = isIacMerged ? (rawOut as unknown as IacMergedRawOutput).resources : [];
@@ -1892,12 +1922,25 @@ export default function FindingDetailDrawer({ finding, onClose }: Props) {
                 // Clean up the snippet the same way codeSnippet does
                 const rawSnip = loc.snippet?.trim() ?? null;
                 const cleanSnip = rawSnip && !/^requires?\s+login$/i.test(rawSnip) ? rawSnip : null;
+
+                // Resolve the location's index in the *original* locations[]
+                // array (allLocations) — that's what the backend uses to
+                // load/cache the per-location fix on the JSON blob.
+                const originalIdx = allLocations.findIndex(
+                  (l) => l.filePath === loc.filePath && l.lineStart === loc.lineStart,
+                );
+                const cached = originalIdx >= 0
+                  ? (allLocations[originalIdx] as SastLocation & { aiFixSuggestion?: string | null })?.aiFixSuggestion ?? null
+                  : null;
+
                 setCodeModalOverride({
                   filePath:  loc.filePath,
                   lineStart: loc.lineStart,
                   lineEnd:   loc.lineEnd,
                   snippet:   cleanSnip,
                   githubUrl: ghUrl,
+                  locationIndex: originalIdx >= 0 ? originalIdx : undefined,
+                  cachedFix: cached,
                 });
                 setShowCodeModal(true);
               }}

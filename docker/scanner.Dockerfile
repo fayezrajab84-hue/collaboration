@@ -178,6 +178,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Playwright browser path — must match python-deps stage
 ENV PLAYWRIGHT_BROWSERS_PATH=/usr/share/ms-playwright
 
+# Unbuffered stdout/stderr so per-phase pentest logs appear in real time
+# and survive abrupt container restarts. Without this, Python buffers ~8KB
+# before flushing, which was swallowing crashed-phase tracebacks.
+ENV PYTHONUNBUFFERED=1
+
 WORKDIR /app
 
 # Copy scanner binaries from tools stage

@@ -96,7 +96,7 @@ export function initAiTriageWorker(): void {
     {
       connection:   bullRedis,
       concurrency:  1,          // Ollama is single-threaded — never run two at once
-      lockDuration: 720_000,    // 12 min — analysis (6 min) + fix (5 min) + buffer
+      lockDuration: 1_200_000,  // 20 min — analysis (6 min) + fix (10 min on 7B model) + buffer
     },
   );
 

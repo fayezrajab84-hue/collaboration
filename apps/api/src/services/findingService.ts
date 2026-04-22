@@ -1,5 +1,6 @@
 import { createHash } from "crypto";
 import prisma from "../db.js";
+import { logger } from "../logger.js";
 import type { NormalizedFinding, ScanType, TargetType } from "@devsecops/types";
 
 // ── Severity helpers ──────────────────────────────────────────────────────────
@@ -773,24 +774,42 @@ export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: n
   // ── Auto-fix resolved findings ───────────────────────────────────────────
   // Any OPEN/ACKNOWLEDGED finding for this target+scanType absent from this
   // scan is now fixed. FALSE_POSITIVE / IGNORED are left alone.
+  //
+  // SAFETY GUARD: do NOT mass-fix when the incoming fingerprint list is
+  // empty.  A zero-finding response from the scanner is indistinguishable
+  // from a silent failure (TruffleHog rate-limited by verification APIs,
+  // empty branch clone, detector miss, etc).  Under the naive rule
+  // `fingerprint: { notIn: [] }` matches EVERY prior finding — one bad scan
+  // would mass-close the entire backlog.  Require at least one live
+  // fingerprint before trusting absence as proof of remediation.
   const targetFilter =
     targetType === "REPOSITORY" ? { repositoryId: targetId }
     : targetType === "CONTAINER" ? { containerId: targetId }
     : { domainId: targetId };
 
-  const { count: fixedCount } = await prisma.finding.updateMany({
-    where: {
-      orgId,
-      scanType,
-      ...targetFilter,
-      status:      { in: ["OPEN", "ACKNOWLEDGED"] },
-      fingerprint: { notIn: fingerprints },
-    },
-    data: {
-      status:     "FIXED",
-      resolvedAt: new Date(),
-    },
-  });
+  let fixedCount = 0;
+  if (fingerprints.length === 0) {
+    logger.warn(
+      "[findings] skipping auto-fix: scanner returned zero findings — treating " +
+      "as unreliable signal, previous findings left OPEN",
+      { orgId, scanType, targetType, targetId },
+    );
+  } else {
+    const res = await prisma.finding.updateMany({
+      where: {
+        orgId,
+        scanType,
+        ...targetFilter,
+        status:      { in: ["OPEN", "ACKNOWLEDGED"] },
+        fingerprint: { notIn: fingerprints },
+      },
+      data: {
+        status:     "FIXED",
+        resolvedAt: new Date(),
+      },
+    });
+    fixedCount = res.count;
+  }
 
   // Fetch IDs for newly created findings so the scan worker can enqueue AI triage
   let newFindings: NewFindingRef[] = [];

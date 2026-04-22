@@ -19,7 +19,7 @@ const envSchema = z.object({
   ZAP_BASE_URL: z.string().url(),
   SCAN_WORKSPACE_DIR: z.string().default("/tmp/scan_workspace"),
   OLLAMA_URL:   z.string().url().default("http://ollama:11434"),
-  OLLAMA_MODEL: z.string().default("llama3.2:3b"),
+  OLLAMA_MODEL: z.string().default("qwen2.5-coder:7b"),
 });
 
 const parsed = envSchema.safeParse(process.env);

@@ -17,6 +17,65 @@ import prisma from "../db.js";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
 
+// ── Language detection (mirrors apps/web/src/components/SyntaxHighlight.tsx) ──
+// Knowing the language lets the model emit syntactically-correct fixes instead
+// of guessing from the snippet alone — a significant accuracy win on small
+// snippets where Python and JS look superficially similar.
+const EXT_TO_LANG: Record<string, string> = {
+  ts: "TypeScript", tsx: "TypeScript (TSX)", js: "JavaScript", jsx: "JavaScript (JSX)",
+  mjs: "JavaScript", cjs: "JavaScript",
+  py: "Python", pyi: "Python",
+  java: "Java", go: "Go", rb: "Ruby", php: "PHP",
+  c: "C", h: "C", cpp: "C++", cc: "C++", cxx: "C++",
+  cs: "C#",
+  yaml: "YAML", yml: "YAML", json: "JSON", jsonc: "JSON", xml: "XML",
+  sh: "Bash", bash: "Bash", zsh: "Bash",
+  ps1: "PowerShell", psm1: "PowerShell",
+  html: "HTML", htm: "HTML", css: "CSS", scss: "SCSS",
+  tf: "Terraform (HCL)", tfvars: "Terraform (HCL)", hcl: "HCL",
+  sql: "SQL", rs: "Rust", kt: "Kotlin", kts: "Kotlin",
+  swift: "Swift", scala: "Scala", groovy: "Groovy", gradle: "Groovy (Gradle)",
+  r: "R", lua: "Lua", perl: "Perl", pl: "Perl",
+  vue: "Vue.js (SFC)", svelte: "Svelte", toml: "TOML",
+  md: "Markdown", dockerfile: "Dockerfile", containerfile: "Dockerfile",
+  proto: "Protobuf", dart: "Dart", ex: "Elixir", exs: "Elixir",
+  clj: "Clojure", cljs: "ClojureScript", m: "Objective-C", mm: "Objective-C++",
+  env: "dotenv", properties: "Java properties", ini: "INI",
+};
+const BASENAME_TO_LANG: Record<string, string> = {
+  dockerfile: "Dockerfile", containerfile: "Dockerfile",
+  makefile: "Makefile", jenkinsfile: "Groovy (Jenkinsfile)",
+  vagrantfile: "Ruby", gemfile: "Ruby", rakefile: "Ruby",
+  procfile: "YAML", caddyfile: "Caddyfile",
+};
+
+function detectLanguage(filePath: string | null | undefined): string | null {
+  if (!filePath) return null;
+  const base = filePath.split(/[\\/]/).pop()?.toLowerCase() ?? "";
+  const byBase = BASENAME_TO_LANG[base];
+  if (byBase) return byBase;
+  const ext = base.includes(".") ? base.split(".").pop() ?? "" : "";
+  return EXT_TO_LANG[ext] ?? null;
+}
+
+/**
+ * A unified diff is only useful if it actually has the structural markers
+ * Git/GitHub need to apply it. This rejects:
+ *   - hallucinated "here's how you fix it" prose
+ *   - markdown-only output
+ *   - diffs missing the `--- a/`, `+++ b/`, or `@@ ... @@` markers
+ *   - diffs that have no `+` or `-` lines (i.e. nothing changed)
+ */
+function isValidUnifiedDiff(s: string): boolean {
+  if (!s || s.length < 20) return false;
+  if (!/^---\s+a\//m.test(s)) return false;
+  if (!/^\+\+\+\s+b\//m.test(s)) return false;
+  if (!/^@@\s+-\d+(,\d+)?\s+\+\d+(,\d+)?\s+@@/m.test(s)) return false;
+  // Must have at least one actual change line (not just context)
+  const changes = s.split("\n").filter((l) => /^[+-]/.test(l) && !/^(\+\+\+|---)/.test(l));
+  return changes.length > 0;
+}
+
 // ── rawOutput fallback extractors ─────────────────────────────────────────────
 
 /**
@@ -183,12 +242,15 @@ Format exactly:
   // ── SCA / Container: version bump ────────────────────────────────────────
   if (scanType === "SCA" || scanType === "CONTAINER") {
     const depFile = detectDependencyFile(f);
+    const targetFile = filePath ?? depFile;
+    const lang = detectLanguage(targetFile) ?? "manifest";
     return `Fix this vulnerable dependency by bumping to the patched version.
 
 Vulnerability : ${title}${cveId ? ` (${cveId})` : ""}
 Package       : ${pkg ?? "unknown"}${pkgVer ? `@${pkgVer}` : ""}
 Fix version   : ${fixVer ?? "latest"}
-File          : ${filePath ?? depFile}
+File          : ${targetFile}
+Language      : ${lang}
 Description   : ${description}
 ${remediation ? `Fix hint     : ${remediation}` : ""}
 
@@ -198,11 +260,13 @@ ${FORMAT}`;
   // ── IAC: infrastructure-as-code config fix ───────────────────────────────
   if (scanType === "IAC") {
     const file = filePath ?? "main.tf";
+    const lang = detectLanguage(file) ?? "Terraform/YAML";
     return `Fix this IaC misconfiguration with a minimal change to the Terraform/CloudFormation/Kubernetes config.
 
 Check         : ${iacCheckId ?? title}
 Resource      : ${iacResource ?? "see file"}
 File          : ${file}
+Language      : ${lang}
 Line          : ${lineStart ?? 1}–${f["lineEnd"] ? Number(f["lineEnd"]) : (lineStart ?? 1)}
 Description   : ${description}
 ${iacGuideline ? `Guideline    : ${iacGuideline}` : ""}
@@ -216,10 +280,12 @@ ${FORMAT}`;
   if (scanType === "SECRET") {
     const file = filePath ?? "src/config.js";
     const detector = (raw["DetectorName"] ?? raw["DetectorType"] ?? "credential") as string;
+    const lang = detectLanguage(file) ?? "source code";
     return `Fix this hardcoded secret by replacing it with a secure alternative (environment variable or secrets manager lookup).
 
 Secret type   : ${detector}
 File          : ${file}
+Language      : ${lang}
 Line          : ${lineStart ?? "?"}
 Description   : ${description}
 ${remediation  ? `Fix hint     : ${remediation}` : ""}
@@ -238,16 +304,19 @@ ${FORMAT}`;
     // absolute line range stated below, not the embedded numbers, when
     // constructing the @@ hunk header.
     const cleanCode = snippet ? stripSemgrepLinePrefixes(snippet) : null;
+    const lang = detectLanguage(file) ?? "source code";
     return `Fix this security vulnerability with a minimal, targeted code change.
 
 Vulnerability : ${title}
 File          : ${file}
+Language      : ${lang}
 Lines         : ${lineStart ?? 1}–${lineEnd ?? lineStart ?? 1}
 Description   : ${description}
 ${remediation  ? `Fix hint     : ${remediation}` : ""}
 ${cleanCode    ? `\nVulnerable code (starts at line ${lineStart ?? 1}):\n${cleanCode}` : "\n(No code preview available — use the description and line number above.)"}
 
 IMPORTANT:
+- Output must be valid ${lang} syntax — do not mix in JavaScript/Python/etc. unless that is the language above.
 - Use exactly "--- a/${file}" and "+++ b/${file}" as file headers.
 - The @@ hunk must reference the real line numbers shown above (starting at ${lineStart ?? 1}).
 - Change only the vulnerable lines. Keep surrounding context lines unchanged.
@@ -311,9 +380,66 @@ function guessFileFromTitle(title: string): string {
 export async function generateFixSuggestion(
   findingId: string,
   force = false,
+  locationIndex?: number,
 ): Promise<string> {
   const finding = await prisma.finding.findUniqueOrThrow({ where: { id: findingId } });
 
+  // ── Per-location branch (merged SAST sub-issues) ───────────────────────────
+  // When `locationIndex` is provided, build a prompt scoped to that specific
+  // sub-location's filePath/lineStart/snippet and cache the diff inside
+  // `rawOutput.locations[i].aiFixSuggestion` so each sub-issue gets its own
+  // targeted fix instead of all sharing the primary location's diff.
+  const raw = (finding.rawOutput ?? {}) as Record<string, unknown>;
+  const isMergedSast =
+    finding.scanType === "SAST" &&
+    raw["merged"] === true &&
+    Array.isArray(raw["locations"]);
+
+  if (locationIndex != null && isMergedSast) {
+    const locations = [...(raw["locations"] as Array<Record<string, unknown>>)];
+    const loc = locations[locationIndex];
+    if (!loc) throw new Error(`Location index ${locationIndex} out of range`);
+
+    if (!force && typeof loc["aiFixSuggestion"] === "string" && loc["aiFixSuggestion"]) {
+      logger.info(`[fix] returning cached fix for ${findingId} location ${locationIndex}`);
+      return loc["aiFixSuggestion"] as string;
+    }
+
+    // Build a synthetic "finding-like" object scoped to this sub-location.
+    // Reuse parent title/description/remediation but override the file/line
+    // and use the location's stored snippet directly (skip the GitHub
+    // fallback path — locations are already snippet-backfilled by scanWorker).
+    const snippetRaw = typeof loc["snippet"] === "string" ? (loc["snippet"] as string).trim() : "";
+    const snippet = snippetRaw && !/^requires?\s+login$/i.test(snippetRaw) ? snippetRaw : null;
+
+    const subF: Record<string, unknown> = {
+      ...(finding as unknown as Record<string, unknown>),
+      filePath:  loc["filePath"],
+      lineStart: loc["lineStart"],
+      lineEnd:   loc["lineEnd"],
+      severity:  loc["severity"] ?? finding.severity,
+      // Drop merged rawOutput so prompt builder doesn't re-extract from it
+      rawOutput: {},
+    };
+
+    const prompt = buildPrompt(subF, snippet);
+    logger.info(`[fix] generating per-location fix for ${findingId} loc=${locationIndex} (${loc["filePath"]}:${loc["lineStart"]})`);
+
+    const cleaned = await runFixGeneration(prompt, findingId);
+
+    // Cache inside the locations array
+    locations[locationIndex] = { ...loc, aiFixSuggestion: cleaned };
+    await prisma.finding.update({
+      where: { id: findingId },
+      data:  { rawOutput: { ...raw, locations } as object },
+    });
+
+    const valid = isValidUnifiedDiff(cleaned);
+    logger.info(`[fix] per-location fix cached for ${findingId} loc=${locationIndex} (valid=${valid})`);
+    return cleaned;
+  }
+
+  // ── Primary-location (default) path ─────────────────────────────────────────
   if (!force && finding.aiFixSuggestion) {
     logger.info(`[fix] returning cached fix suggestion for finding ${findingId}`);
     return finding.aiFixSuggestion;
@@ -333,38 +459,76 @@ export async function generateFixSuggestion(
   const prompt = buildPrompt(f, snippet);
   logger.info(`[fix] generating fix for ${findingId} (${finding.scanType})`);
 
-  let raw: string;
-  try {
-    const resp = await axios.post(
-      `${config.OLLAMA_URL}/api/generate`,
-      {
-        model:  config.OLLAMA_MODEL,
-        prompt,
-        stream: false,
-        options: { temperature: 0.15, num_predict: 1024, num_ctx: 4096 },
-      },
-      { timeout: 300_000 },
-    );
-    raw = ((resp.data as { response?: string }).response ?? "").trim();
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logger.error(`[fix] ollama request failed: ${msg}`);
-    throw new Error(`AI service unavailable: ${msg}`);
-  }
-
-  if (!raw) throw new Error("AI returned an empty response — please try again.");
-
-  // Strip any accidental markdown fences the model might add
-  const cleaned = raw
-    .replace(/^```(?:diff|patch)?\n?/m, "")
-    .replace(/\n?```$/m, "")
-    .trim();
+  const cleaned = await runFixGeneration(prompt, findingId);
 
   await prisma.finding.update({
     where: { id: findingId },
     data: { aiFixSuggestion: cleaned, aiFixSuggestedAt: new Date() },
   });
 
-  logger.info(`[fix] fix suggestion cached for finding ${findingId}`);
+  const valid = isValidUnifiedDiff(cleaned);
+  logger.info(`[fix] fix suggestion cached for finding ${findingId} (valid=${valid})`);
+  return cleaned;
+}
+
+/**
+ * Shared Ollama call + retry-once-on-invalid-diff loop. Used by both the
+ * primary-location path and the per-sub-location path so they share the same
+ * model config, validation rules and retry semantics.
+ */
+async function runFixGeneration(prompt: string, label: string): Promise<string> {
+  /** Single Ollama call → cleaned string (markdown fences removed). */
+  const callModel = async (p: string): Promise<string> => {
+    const resp = await axios.post(
+      `${config.OLLAMA_URL}/api/generate`,
+      {
+        model:  config.OLLAMA_MODEL,
+        prompt: p,
+        stream: false,
+        // num_ctx 6144 (was 4096): SAST snippets + 1KB scanner context can
+        // push past 4K tokens on .cs / Java files. Bumped to 6144 (not 8192)
+        // because 7B models with full 8K context require ~8 GiB on CPU and
+        // cause OOM aborts in the 8 GiB Ollama container.
+        options: { temperature: 0.1, num_predict: 1024, num_ctx: 6144 },
+      },
+      { timeout: 600_000 }, // 10 min — code generation on 7B model can be slow on CPU
+    );
+    const txt = ((resp.data as { response?: string }).response ?? "").trim();
+    return txt
+      .replace(/^```(?:diff|patch)?\n?/m, "")
+      .replace(/\n?```$/m, "")
+      .trim();
+  };
+
+  let cleaned: string;
+  try {
+    cleaned = await callModel(prompt);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error(`[fix] ollama request failed for ${label}: ${msg}`);
+    throw new Error(`AI service unavailable: ${msg}`);
+  }
+  if (!cleaned) throw new Error("AI returned an empty response — please try again.");
+
+  if (!isValidUnifiedDiff(cleaned)) {
+    logger.warn(`[fix] first attempt returned invalid diff for ${label} — retrying`);
+    const stricterPrompt =
+      prompt +
+      "\n\nREMINDER: The previous response was rejected because it was not a valid unified diff. " +
+      "Reply with ONLY the diff. No prose, no markdown fences. " +
+      "It MUST contain `--- a/<file>`, `+++ b/<file>`, an `@@ ...,... +...,... @@` hunk header, " +
+      "and at least one `-` or `+` line.";
+    try {
+      cleaned = await callModel(stricterPrompt);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn(`[fix] retry call failed for ${label}: ${msg}`);
+    }
+  }
+
+  if (!isValidUnifiedDiff(cleaned)) {
+    logger.warn(`[fix] diff still invalid after retry for ${label} — caching with warning`);
+  }
+
   return cleaned;
 }

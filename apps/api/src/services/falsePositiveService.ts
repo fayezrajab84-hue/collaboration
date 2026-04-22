@@ -107,9 +107,9 @@ export async function checkFalsePositive(
         ],
         stream:  false,
         format:  "json",
-        options: { temperature: 0.1, num_predict: 300, num_ctx: 1024 },
+        options: { temperature: 0.1, num_predict: 300, num_ctx: 2048 },
       },
-      { timeout: 180_000 },
+      { timeout: 360_000 }, // 6 min — qwen2.5-coder:7b is slower on CPU than the legacy 3B model
     );
 
     rawContent = (resp.data?.message?.content ?? resp.data?.response ?? "") as string;
@@ -145,14 +145,42 @@ export async function checkFalsePositive(
     throw new Error("AI returned an unreadable response — please try again.");
   }
 
+  // ── Derive confidence override from AI verdict ──────────────────────────────
+  // Keep operator-visible Confidence column in sync with AI triage, so the
+  // dashboard doesn't contradict the drawer's verdict. Rules:
+  //   LIKELY_FP   + HIGH/MED  → POSSIBLE  (demote)
+  //   LIKELY_REAL + HIGH      → CONFIRMED (promote, only from LIKELY)
+  //   otherwise               → leave as-is
+  // Never overwrite CONFIRMED set by the runtime verifier — that is ground truth.
+  const current = finding.confidence;
+  let nextConfidence: "CONFIRMED" | "LIKELY" | "POSSIBLE" | null = null;
+
+  if (analysis.verdict === "LIKELY_FP" &&
+      (analysis.confidence === "HIGH" || analysis.confidence === "MEDIUM") &&
+      current !== "CONFIRMED") {
+    nextConfidence = "POSSIBLE";
+  } else if (analysis.verdict === "LIKELY_REAL" &&
+             analysis.confidence === "HIGH" &&
+             current === "LIKELY") {
+    nextConfidence = "CONFIRMED";
+  }
+
   // ── Cache in DB ─────────────────────────────────────────────────────────────
   await prisma.finding.update({
     where: { id: findingId },
     data: {
       aiFpAnalysis:   analysis as object,
       aiFpAnalysedAt: new Date(),
+      ...(nextConfidence && nextConfidence !== current ? { confidence: nextConfidence } : {}),
     },
   });
+
+  if (nextConfidence && nextConfidence !== current) {
+    logger.info(
+      `[fp] confidence ${current} → ${nextConfidence} for finding ${findingId} ` +
+      `(AI: ${analysis.verdict}/${analysis.confidence})`,
+    );
+  }
 
   logger.info(`[fp] FP analysis cached for finding ${findingId}: ${analysis.verdict} (${analysis.confidence})`);
   return analysis;
