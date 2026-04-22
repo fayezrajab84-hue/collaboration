@@ -275,10 +275,32 @@ async function processScanJob(payload: ScanJobPayload) {
 
   // If all scans complete, finalize ScanJob
   if (updated.completedScans >= updated.totalScans) {
-    // Aggregate severity counts from all findings for this scan job
+    // Aggregate severity counts for findings OBSERVED by this scan — i.e. either
+    // first-seen or re-confirmed within this scan's time window. Strict
+    // `scanJobId` equality undercounts because upsertFindings preserves the
+    // *original* scanJobId when a fingerprint is re-observed, so re-confirmed
+    // findings would not show up on subsequent scan rows.
+    const jobRow = await prisma.scanJob.findUniqueOrThrow({
+      where: { id: scanJobId },
+      select: {
+        orgId: true, targetType: true, scanTypes: true, startedAt: true,
+        repositoryId: true, containerId: true, domainId: true,
+      },
+    });
+    const windowStart = jobRow.startedAt ?? new Date(0);
+    const windowEnd   = new Date();
+    const targetFilter =
+      jobRow.targetType === "REPOSITORY" ? { repositoryId: jobRow.repositoryId }
+      : jobRow.targetType === "CONTAINER" ? { containerId: jobRow.containerId }
+      : { domainId: jobRow.domainId };
     const counts = await prisma.finding.groupBy({
       by: ["severity"],
-      where: { scanJobId },
+      where: {
+        orgId:    jobRow.orgId,
+        scanType: { in: jobRow.scanTypes },
+        ...targetFilter,
+        lastSeen: { gte: windowStart, lte: windowEnd },
+      },
       _count: true,
     });
     const severityCounts: Record<string, number> = {};

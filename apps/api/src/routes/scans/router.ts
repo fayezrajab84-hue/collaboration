@@ -101,9 +101,9 @@ router.get("/:id", async (req, res, next) => {
     // "New"       = firstSeen between startedAt and completedAt
     // "Confirmed" = firstSeen < startedAt, lastSeen >= startedAt
     const scanTargetFilter =
-      scan.targetType === "REPOSITORY" ? { repositoryId: scan.targetId }
-      : scan.targetType === "CONTAINER" ? { containerId: scan.targetId }
-      : { domainId: scan.targetId };
+      scan.targetType === "REPOSITORY" ? { repositoryId: scan.repositoryId }
+      : scan.targetType === "CONTAINER" ? { containerId: scan.containerId }
+      : { domainId: scan.domainId };
 
     let confirmedCount = 0;
     let newThisScan   = 0;

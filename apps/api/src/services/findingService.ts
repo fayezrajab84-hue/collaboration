@@ -616,10 +616,10 @@ export interface NewFindingRef {
   severity: string;
 }
 
-export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: number; totalCount: number; fixedCount: number; newFindings: NewFindingRef[] }> {
+export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: number; totalCount: number; fixedCount: number; confirmedCount: number; newFindings: NewFindingRef[] }> {
   const { scanJobId, orgId, targetType, targetId, scanType, findings: rawFindings } = opts;
 
-  if (rawFindings.length === 0) return { newCount: 0, totalCount: 0, fixedCount: 0, newFindings: [] };
+  if (rawFindings.length === 0) return { newCount: 0, totalCount: 0, fixedCount: 0, confirmedCount: 0, newFindings: [] };
 
   // Merge per-CVE SCA/CONTAINER findings → one per package+version
   // Merge per-location SAST findings       → one per rule per target
