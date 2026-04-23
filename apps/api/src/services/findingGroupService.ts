@@ -10,10 +10,10 @@
  * (good enough for a single-instance deployment).
  */
 
-import axios from "axios";
+import { AIServiceName } from "@prisma/client";
 import prisma from "../db.js";
-import { config } from "../config.js";
 import { logger } from "../logger.js";
+import { invokeAI, AIError } from "./aiClient.js";
 import type { FindingGroup } from "@devsecops/types";
 
 // ── In-process cache: groupKey → { insight, cachedAt } ───────────────────────
@@ -182,27 +182,38 @@ export async function generateGroupInsight(
     .map((f) => `- [${f.severity}] ${f.title} on ${targetName(f)}${f.cveId ? ` (${f.cveId})` : ""}`)
     .join("\n");
 
-  const prompt = `You are a security expert. The following findings share a common root cause.
+  const SYSTEM = `You are a security expert. Findings shown share a common root cause.
 In 3-4 sentences: (1) identify the shared root cause, (2) explain the risk, (3) give one concrete unified fix.
-Be concise. Do not use headings.
-
-Findings:
+Be concise. Do not use headings.`;
+  const prompt = `Findings:
 ${sampleText}
 
 Analysis:`;
 
-  const resp = await axios.post(
-    `${config.OLLAMA_URL}/api/generate`,
-    {
-      model:  config.OLLAMA_MODEL,
-      prompt,
-      stream: false,
-      options: { temperature: 0.2, num_predict: 250, num_ctx: 1024 },
-    },
-    { timeout: 300_000 },
-  );
-
-  const insight = ((resp.data as { response?: string }).response ?? "").trim();
+  let insight: string;
+  try {
+    const result = await invokeAI({
+      service:         AIServiceName.GROUP_INSIGHT,
+      orgId,
+      system:          SYSTEM,
+      messages:        [{ role: "user", content: prompt }],
+      maxOutputTokens: 250,
+      temperature:     0.2,
+      timeoutMs:       300_000,
+    });
+    insight = result.data.trim();
+  } catch (err) {
+    if (err instanceof AIError) {
+      logger.error(`[findingGroups] invokeAI failed for ${groupKey}: ${err.kind} — ${err.message}`);
+      if (err.kind === "INVALID_OUTPUT") {
+        throw new Error("AI returned an unreadable response — please try again.");
+      }
+      throw new Error(
+        `AI service is unavailable (${err.kind}). Check that the configured provider is reachable. (${err.message})`,
+      );
+    }
+    throw err;
+  }
   if (!insight) throw new Error("Empty insight from AI");
 
   // Cache it

@@ -11,10 +11,11 @@
  * so repeated opens of the same finding are instant.
  */
 
-import axios from "axios";
+import { z } from "zod";
+import { AIServiceName } from "@prisma/client";
 import prisma from "../db.js";
 import { logger } from "../logger.js";
-import { config } from "../config.js";
+import { invokeAI, AIError } from "./aiClient.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -24,6 +25,16 @@ export interface AIAnalysis {
   remediation:  string[];
   risk_context: string;
 }
+
+// Zod schema enforces the contract at parse time — invokeAI runs this against
+// the provider's structured-output response and throws AIError(INVALID_OUTPUT)
+// on mismatch, which the caller already maps to a friendly message.
+const analysisSchema = z.object({
+  summary:      z.string(),
+  impact:       z.string(),
+  remediation:  z.array(z.string()),
+  risk_context: z.string(),
+});
 
 // ── Prompt ────────────────────────────────────────────────────────────────────
 
@@ -163,55 +174,36 @@ export async function analyseFinding(
   }
 
   const prompt = buildPrompt(finding as unknown as Record<string, unknown>);
-  logger.info(`[ai] generating analysis for finding ${findingId} (model: ${config.OLLAMA_MODEL})`);
+  logger.info(`[ai] generating analysis for finding ${findingId} via aiClient`);
 
-  // ── Call Ollama ─────────────────────────────────────────────────────────────
-  let rawContent: string;
-  try {
-    const resp = await axios.post(
-      `${config.OLLAMA_URL}/api/chat`,
-      {
-        model:    config.OLLAMA_MODEL,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user",   content: prompt },
-        ],
-        stream:  false,
-        format:  "json",   // Ollama enforces JSON-mode output
-        options: {
-          temperature: 0.1,  // low temp = deterministic, factual
-          num_predict:  900,
-          num_ctx:     4096,  // bumped: prompt now includes code snippet
-        },
-      },
-      { timeout: 360_000 },  // 6 min — CPU inference can be slow
-    );
-
-    rawContent = (resp.data?.message?.content ?? resp.data?.response ?? "") as string;
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logger.error(`[ai] ollama request failed: ${msg}`);
-    throw new Error(
-      `AI service is unavailable. Make sure the Ollama container is running and the model has finished downloading. (${msg})`,
-    );
-  }
-
-  // ── Parse & validate ────────────────────────────────────────────────────────
+  // ── Route through the multi-provider client ────────────────────────────────
+  // Routing precedence (from aiClient): per-service routing override → org
+  // default provider → synthetic Ollama fallback. Schema validation happens
+  // inside invokeAI; on mismatch we get AIError(INVALID_OUTPUT).
   let analysis: AIAnalysis;
   try {
-    analysis = JSON.parse(rawContent) as AIAnalysis;
-
-    if (
-      typeof analysis.summary      !== "string" ||
-      typeof analysis.impact       !== "string" ||
-      !Array.isArray(analysis.remediation)       ||
-      typeof analysis.risk_context !== "string"
-    ) {
-      throw new Error("schema mismatch");
+    const result = await invokeAI({
+      service:         AIServiceName.ANALYSE_FINDING,
+      orgId:           finding.orgId,
+      system:          SYSTEM_PROMPT,
+      messages:        [{ role: "user", content: prompt }],
+      schema:          analysisSchema,
+      maxOutputTokens: 900,
+      temperature:     0.1,
+      findingId,
+    });
+    analysis = result.data;
+  } catch (err) {
+    if (err instanceof AIError) {
+      logger.error(`[ai] invokeAI failed for finding ${findingId}: ${err.kind} — ${err.message}`);
+      if (err.kind === "INVALID_OUTPUT") {
+        throw new Error("AI returned an unreadable response — please try again.");
+      }
+      throw new Error(
+        `AI service is unavailable (${err.kind}). Check that the configured provider is reachable. (${err.message})`,
+      );
     }
-  } catch {
-    logger.error(`[ai] unparseable response (first 300 chars): ${rawContent.slice(0, 300)}`);
-    throw new Error("AI returned an unreadable response — please try again.");
+    throw err;
   }
 
   // ── Cache in DB ─────────────────────────────────────────────────────────────

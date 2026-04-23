@@ -12,10 +12,10 @@
  * Result is cached in Finding.aiFixSuggestion / Finding.aiFixSuggestedAt.
  */
 
-import axios from "axios";
+import { AIServiceName } from "@prisma/client";
 import prisma from "../db.js";
-import { config } from "../config.js";
 import { logger } from "../logger.js";
+import { invokeAI, AIError } from "./aiClient.js";
 
 // ── Language detection (mirrors apps/web/src/components/SyntaxHighlight.tsx) ──
 // Knowing the language lets the model emit syntactically-correct fixes instead
@@ -425,7 +425,7 @@ export async function generateFixSuggestion(
     const prompt = buildPrompt(subF, snippet);
     logger.info(`[fix] generating per-location fix for ${findingId} loc=${locationIndex} (${loc["filePath"]}:${loc["lineStart"]})`);
 
-    const cleaned = await runFixGeneration(prompt, findingId);
+    const cleaned = await runFixGeneration(prompt, findingId, finding.orgId);
 
     // Cache inside the locations array
     locations[locationIndex] = { ...loc, aiFixSuggestion: cleaned };
@@ -459,7 +459,7 @@ export async function generateFixSuggestion(
   const prompt = buildPrompt(f, snippet);
   logger.info(`[fix] generating fix for ${findingId} (${finding.scanType})`);
 
-  const cleaned = await runFixGeneration(prompt, findingId);
+  const cleaned = await runFixGeneration(prompt, findingId, finding.orgId);
 
   await prisma.finding.update({
     where: { id: findingId },
@@ -472,28 +472,28 @@ export async function generateFixSuggestion(
 }
 
 /**
- * Shared Ollama call + retry-once-on-invalid-diff loop. Used by both the
+ * Shared AI call + retry-once-on-invalid-diff loop. Used by both the
  * primary-location path and the per-sub-location path so they share the same
  * model config, validation rules and retry semantics.
  */
-async function runFixGeneration(prompt: string, label: string): Promise<string> {
-  /** Single Ollama call → cleaned string (markdown fences removed). */
+async function runFixGeneration(prompt: string, label: string, orgId: string): Promise<string> {
+  // Diff output is free-text (not JSON) — no schema. The system prompt is
+  // empty because the original /api/generate call had no system message;
+  // all instructions are in the user prompt.
+  const SYSTEM = "You generate unified diffs that fix security vulnerabilities. Output only the diff.";
+
   const callModel = async (p: string): Promise<string> => {
-    const resp = await axios.post(
-      `${config.OLLAMA_URL}/api/generate`,
-      {
-        model:  config.OLLAMA_MODEL,
-        prompt: p,
-        stream: false,
-        // num_ctx 6144 (was 4096): SAST snippets + 1KB scanner context can
-        // push past 4K tokens on .cs / Java files. Bumped to 6144 (not 8192)
-        // because 7B models with full 8K context require ~8 GiB on CPU and
-        // cause OOM aborts in the 8 GiB Ollama container.
-        options: { temperature: 0.1, num_predict: 1024, num_ctx: 6144 },
-      },
-      { timeout: 600_000 }, // 10 min — code generation on 7B model can be slow on CPU
-    );
-    const txt = ((resp.data as { response?: string }).response ?? "").trim();
+    const result = await invokeAI({
+      service:         AIServiceName.FIX_SUGGESTION,
+      orgId,
+      system:          SYSTEM,
+      messages:        [{ role: "user", content: p }],
+      maxOutputTokens: 1024,
+      temperature:     0.1,
+      timeoutMs:       600_000, // 10 min — code generation on 7B model can be slow on CPU
+      findingId:       label,
+    });
+    const txt = result.data.trim();
     return txt
       .replace(/^```(?:diff|patch)?\n?/m, "")
       .replace(/\n?```$/m, "")
@@ -504,8 +504,17 @@ async function runFixGeneration(prompt: string, label: string): Promise<string> 
   try {
     cleaned = await callModel(prompt);
   } catch (err: unknown) {
+    if (err instanceof AIError) {
+      logger.error(`[fix] invokeAI failed for ${label}: ${err.kind} — ${err.message}`);
+      if (err.kind === "INVALID_OUTPUT") {
+        throw new Error("AI returned an unreadable response — please try again.");
+      }
+      throw new Error(
+        `AI service is unavailable (${err.kind}). Check that the configured provider is reachable. (${err.message})`,
+      );
+    }
     const msg = err instanceof Error ? err.message : String(err);
-    logger.error(`[fix] ollama request failed for ${label}: ${msg}`);
+    logger.error(`[fix] AI request failed for ${label}: ${msg}`);
     throw new Error(`AI service unavailable: ${msg}`);
   }
   if (!cleaned) throw new Error("AI returned an empty response — please try again.");

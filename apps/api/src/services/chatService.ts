@@ -5,10 +5,10 @@
  * responses from Ollama token-by-token via a callback.
  */
 
-import axios from "axios";
+import { AIServiceName } from "@prisma/client";
 import prisma from "../db.js";
-import { config } from "../config.js";
 import { logger } from "../logger.js";
+import { invokeAI, AIError } from "./aiClient.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -166,63 +166,35 @@ export async function streamChat(
     context = "(Could not load finding context — DB may be unavailable)";
   }
 
-  const ollamaMessages = [
-    { role: "system", content: `${SYSTEM_PROMPT}\n\n${context}` },
-    ...messages,
-  ];
+  logger.info(`[chat] response for org ${orgId} (${messages.length} messages) via aiClient`);
 
-  logger.info(`[chat] streaming response for org ${orgId} (${messages.length} messages)`);
-
+  // The aiClient abstraction is non-streaming; the SSE route still expects to
+  // emit tokens, so we buffer the full response and deliver it as a single
+  // chunk. Streaming support can be added later by extending invokeAI.
   try {
-    const resp = await axios.post(
-      `${config.OLLAMA_URL}/api/chat`,
-      {
-        model:    config.OLLAMA_MODEL,
-        messages: ollamaMessages,
-        stream:   true,
-        options: {
-          temperature: 0.3,
-          num_predict: 400,
-          num_ctx:     2048,
-        },
-      },
-      { responseType: "stream", timeout: 600_000 },
-    );
-
-    const stream = resp.data as NodeJS.ReadableStream;
-    let finished = false;
-
-    stream.on("data", (chunk: Buffer) => {
-      for (const line of chunk.toString().split("\n")) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        try {
-          const parsed = JSON.parse(trimmed) as {
-            message?: { content?: string };
-            done?: boolean;
-          };
-          const token = parsed.message?.content ?? "";
-          if (token) onToken(token);
-          if (parsed.done && !finished) {
-            finished = true;
-            onDone();
-          }
-        } catch {
-          // partial JSON chunk — safe to ignore
-        }
-      }
+    const result = await invokeAI({
+      service:         AIServiceName.CHAT,
+      orgId,
+      system:          `${SYSTEM_PROMPT}\n\n${context}`,
+      messages:        messages.map((m) => ({ role: m.role, content: m.content })),
+      maxOutputTokens: 400,
+      temperature:     0.3,
+      timeoutMs:       600_000,
     });
-
-    stream.on("end", () => {
-      if (!finished) { finished = true; onDone(); }
-    });
-
-    stream.on("error", (err: Error) => {
-      if (!finished) { finished = true; onError(err); }
-    });
+    if (result.data) onToken(result.data);
+    onDone();
   } catch (err: unknown) {
+    if (err instanceof AIError) {
+      logger.error(`[chat] invokeAI failed: ${err.kind} — ${err.message}`);
+      const friendly =
+        err.kind === "INVALID_OUTPUT"
+          ? "AI returned an unreadable response — please try again."
+          : `AI service is unavailable (${err.kind}). Check that the configured provider is reachable.`;
+      onError(new Error(friendly));
+      return;
+    }
     const msg = err instanceof Error ? err.message : String(err);
-    logger.error(`[chat] ollama request failed: ${msg}`);
+    logger.error(`[chat] AI request failed: ${msg}`);
     onError(new Error(`AI service unavailable: ${msg}`));
   }
 }

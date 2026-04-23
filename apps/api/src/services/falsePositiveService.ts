@@ -2,16 +2,17 @@
  * AI False Positive Detection Service
  *
  * Analyses a security finding and assesses whether it's a false positive,
- * using scan-type-aware heuristics fed to Ollama (local CPU inference).
+ * using scan-type-aware heuristics fed through the multi-provider AI client.
  *
  * Results are cached on Finding.aiFpAnalysis / Finding.aiFpAnalysedAt.
  * Pass force=true to regenerate the cached result.
  */
 
-import axios from "axios";
+import { z } from "zod";
+import { AIServiceName } from "@prisma/client";
 import prisma from "../db.js";
 import { logger } from "../logger.js";
-import { config } from "../config.js";
+import { invokeAI, AIError } from "./aiClient.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -24,6 +25,13 @@ export interface FpAnalysis {
   reasoning:  string;      // 2-3 sentence explanation
   indicators: string[];    // concrete evidence items
 }
+
+const fpSchema = z.object({
+  verdict:    z.enum(["LIKELY_FP", "LIKELY_REAL", "UNCERTAIN"]),
+  confidence: z.enum(["HIGH", "MEDIUM", "LOW"]),
+  reasoning:  z.string(),
+  indicators: z.array(z.string()),
+});
 
 // ── Prompt ────────────────────────────────────────────────────────────────────
 
@@ -92,57 +100,41 @@ export async function checkFalsePositive(
   }
 
   const prompt = buildPrompt(finding as unknown as Record<string, unknown>);
-  logger.info(`[fp] generating FP analysis for finding ${findingId} (${finding.scanType})`);
+  logger.info(`[fp] generating FP analysis for finding ${findingId} (${finding.scanType}) via aiClient`);
 
-  // ── Call Ollama ─────────────────────────────────────────────────────────────
-  let rawContent: string;
-  try {
-    const resp = await axios.post(
-      `${config.OLLAMA_URL}/api/chat`,
-      {
-        model:   config.OLLAMA_MODEL,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user",   content: prompt },
-        ],
-        stream:  false,
-        format:  "json",
-        options: { temperature: 0.1, num_predict: 300, num_ctx: 2048 },
-      },
-      { timeout: 360_000 }, // 6 min — qwen2.5-coder:7b is slower on CPU than the legacy 3B model
-    );
-
-    rawContent = (resp.data?.message?.content ?? resp.data?.response ?? "") as string;
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logger.error(`[fp] ollama request failed: ${msg}`);
-    throw new Error(`AI service unavailable: ${msg}`);
-  }
-
-  // ── Parse & validate ────────────────────────────────────────────────────────
+  // ── Call configured AI provider ─────────────────────────────────────────────
   let analysis: FpAnalysis;
   try {
-    analysis = JSON.parse(rawContent) as FpAnalysis;
-
-    if (
-      !["LIKELY_FP", "LIKELY_REAL", "UNCERTAIN"].includes(analysis.verdict)    ||
-      !["HIGH", "MEDIUM", "LOW"].includes(analysis.confidence)                  ||
-      typeof analysis.reasoning !== "string"                                    ||
-      !Array.isArray(analysis.indicators)
-    ) {
-      throw new Error("schema mismatch");
+    const result = await invokeAI({
+      service:         AIServiceName.FP_TRIAGE,
+      orgId:           finding.orgId,
+      system:          SYSTEM_PROMPT,
+      messages:        [{ role: "user", content: prompt }],
+      schema:          fpSchema,
+      maxOutputTokens: 300,
+      temperature:     0.1,
+      findingId,
+    });
+    analysis = result.data;
+  } catch (err) {
+    if (err instanceof AIError) {
+      logger.error(`[fp] invokeAI failed for finding ${findingId}: ${err.kind} — ${err.message}`);
+      if (err.kind === "INVALID_OUTPUT") {
+        throw new Error("AI returned an unreadable response — please try again.");
+      }
+      throw new Error(
+        `AI service is unavailable (${err.kind}). Check that the configured provider is reachable. (${err.message})`,
+      );
     }
+    throw err;
+  }
 
-    // Normalise — ensure indicators is always a non-empty array
-    analysis.indicators = analysis.indicators.slice(0, 4).filter(
-      (i): i is string => typeof i === "string",
-    );
-    if (analysis.indicators.length === 0) {
-      analysis.indicators = [analysis.reasoning.split(".")[0] ?? "see reasoning"];
-    }
-  } catch {
-    logger.error(`[fp] unparseable response: ${rawContent.slice(0, 300)}`);
-    throw new Error("AI returned an unreadable response — please try again.");
+  // Normalise — ensure indicators is always a non-empty array
+  analysis.indicators = analysis.indicators.slice(0, 4).filter(
+    (i): i is string => typeof i === "string",
+  );
+  if (analysis.indicators.length === 0) {
+    analysis.indicators = [analysis.reasoning.split(".")[0] ?? "see reasoning"];
   }
 
   // ── Derive confidence override from AI verdict ──────────────────────────────

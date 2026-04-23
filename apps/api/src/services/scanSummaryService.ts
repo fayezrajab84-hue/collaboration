@@ -6,10 +6,10 @@
  * background so it never blocks the worker.
  */
 
-import axios from "axios";
+import { AIServiceName } from "@prisma/client";
 import prisma from "../db.js";
-import { config } from "../config.js";
 import { logger } from "../logger.js";
+import { invokeAI, AIError } from "./aiClient.js";
 
 // ── Summary generator ─────────────────────────────────────────────────────────
 
@@ -69,9 +69,8 @@ export async function generateScanSummary(scanJobId: string): Promise<void> {
       .map((f) => `- [${f.severity}] ${f.title}${f.cveId ? ` (${f.cveId})` : ""} via ${f.scanType}`)
       .join("\n");
 
-    const prompt = `You are a security analyst. Summarise this scan result in exactly 2-3 sentences for an engineering manager. Be specific about the most important risks. Do not use bullet points — write flowing prose.
-
-Scan target  : ${target}
+    const SYSTEM = `You are a security analyst. Summarise scan results in exactly 2-3 sentences for an engineering manager. Be specific about the most important risks. Do not use bullet points — write flowing prose.`;
+    const prompt = `Scan target  : ${target}
 Scan types   : ${scan.scanTypes.join(", ")}
 Total findings: ${total} (${sevLine})
 Top findings :
@@ -79,18 +78,26 @@ ${topList}
 
 Write your 2-3 sentence summary now:`;
 
-    const resp = await axios.post(
-      `${config.OLLAMA_URL}/api/generate`,
-      {
-        model:  config.OLLAMA_MODEL,
-        prompt,
-        stream: false,
-        options: { temperature: 0.2, num_predict: 200, num_ctx: 1024 },
-      },
-      { timeout: 300_000 },
-    );
-
-    const summary: string = ((resp.data as { response?: string }).response ?? "").trim();
+    let summary: string;
+    try {
+      const result = await invokeAI({
+        service:         AIServiceName.SCAN_SUMMARY,
+        orgId:           scan.orgId,
+        system:          SYSTEM,
+        messages:        [{ role: "user", content: prompt }],
+        maxOutputTokens: 200,
+        temperature:     0.2,
+        timeoutMs:       300_000,
+        scanJobId,
+      });
+      summary = result.data.trim();
+    } catch (err) {
+      if (err instanceof AIError) {
+        logger.warn(`[scanSummary] invokeAI failed for scan ${scanJobId}: ${err.kind} — ${err.message}`);
+        return;
+      }
+      throw err;
+    }
 
     if (summary) {
       await prisma.scanJob.update({

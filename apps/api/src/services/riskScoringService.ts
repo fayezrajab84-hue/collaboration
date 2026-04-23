@@ -6,11 +6,17 @@
  * Runs as a fire-and-forget after scan completion.
  */
 
-import axios from "axios";
+import { z } from "zod";
+import { AIServiceName } from "@prisma/client";
 import prisma from "../db.js";
-import { config } from "../config.js";
 import { logger } from "../logger.js";
+import { invokeAI, AIError } from "./aiClient.js";
 import type { TargetType } from "@devsecops/types";
+
+const riskSchema = z.object({
+  score:  z.number(),
+  reason: z.string().optional(),
+});
 
 // ── Score helpers ─────────────────────────────────────────────────────────────
 
@@ -64,33 +70,44 @@ export async function scoreTarget(
       .map((f) => `- [${f.severity}] ${f.scanType}: ${f.title}${f.cveId ? ` (${f.cveId})` : ""}`)
       .join("\n");
 
-    const targetName = await getTargetName(targetType, targetId);
+    const { name: targetName, orgId } = await getTargetInfo(targetType, targetId);
+    if (!orgId) {
+      logger.warn(`[riskScore] no orgId for ${targetType} ${targetId} — skipping`);
+      return;
+    }
 
-    const prompt = `You are a security analyst. Score this target's risk from 0 to 100.
+    const SYSTEM = `You are a security analyst. Score targets' risk from 0 to 100.
 Scoring guide: 0=no findings, 1-20=only info/low, 21-40=some medium, 41-60=high severity present, 61-80=multiple high or one critical, 81-100=multiple critical.
-Respond ONLY with valid JSON: {"score": <integer 0-100>, "reason": "<one sentence>"}
+Respond ONLY with valid JSON: {"score": <integer 0-100>, "reason": "<one sentence>"}`;
 
-Target: ${targetName}
+    const prompt = `Target: ${targetName}
 Severity summary: ${counts.CRITICAL} CRITICAL, ${counts.HIGH} HIGH, ${counts.MEDIUM} MEDIUM, ${counts.LOW} LOW, ${counts.INFO} INFO (${total} total)
 Worst findings:
 ${topFindings}
 
 JSON:`;
 
-    const resp = await axios.post(
-      `${config.OLLAMA_URL}/api/generate`,
-      {
-        model:  config.OLLAMA_MODEL,
-        prompt,
-        stream: false,
-        format: "json",
-        options: { temperature: 0.1, num_predict: 120, num_ctx: 2048 },
-      },
-      { timeout: 300_000 },
-    );
+    let parsed: { score?: number; reason?: string };
+    try {
+      const result = await invokeAI({
+        service:         AIServiceName.RISK_SCORE,
+        orgId,
+        system:          SYSTEM,
+        messages:        [{ role: "user", content: prompt }],
+        schema:          riskSchema,
+        maxOutputTokens: 120,
+        temperature:     0.1,
+        timeoutMs:       300_000,
+      });
+      parsed = result.data;
+    } catch (err) {
+      if (err instanceof AIError) {
+        logger.warn(`[riskScore] invokeAI failed for ${targetType} ${targetId}: ${err.kind} — ${err.message}`);
+        return;
+      }
+      throw err;
+    }
 
-    const raw = ((resp.data as { response?: string }).response ?? "").trim();
-    const parsed = JSON.parse(raw) as { score?: number; reason?: string };
     const score  = Math.min(100, Math.max(0, Math.round(parsed.score ?? 0)));
     const reason = (parsed.reason ?? "").trim() || `${counts.CRITICAL} critical and ${counts.HIGH} high severity findings detected.`;
 
@@ -103,17 +120,26 @@ JSON:`;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-async function getTargetName(targetType: TargetType, targetId: string): Promise<string> {
+async function getTargetInfo(
+  targetType: TargetType,
+  targetId:   string,
+): Promise<{ name: string; orgId: string | null }> {
   if (targetType === "REPOSITORY") {
-    const r = await prisma.repository.findUnique({ where: { id: targetId }, select: { fullName: true } });
-    return r?.fullName ?? targetId;
+    const r = await prisma.repository.findUnique({
+      where: { id: targetId }, select: { fullName: true, orgId: true },
+    });
+    return { name: r?.fullName ?? targetId, orgId: r?.orgId ?? null };
   }
   if (targetType === "CONTAINER") {
-    const c = await prisma.container.findUnique({ where: { id: targetId }, select: { imageRef: true } });
-    return c?.imageRef ?? targetId;
+    const c = await prisma.container.findUnique({
+      where: { id: targetId }, select: { imageRef: true, orgId: true },
+    });
+    return { name: c?.imageRef ?? targetId, orgId: c?.orgId ?? null };
   }
-  const d = await prisma.domain.findUnique({ where: { id: targetId }, select: { domain: true } });
-  return d?.domain ?? targetId;
+  const d = await prisma.domain.findUnique({
+    where: { id: targetId }, select: { domain: true, orgId: true },
+  });
+  return { name: d?.domain ?? targetId, orgId: d?.orgId ?? null };
 }
 
 async function saveScore(
