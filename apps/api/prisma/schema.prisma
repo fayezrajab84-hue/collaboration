@@ -94,6 +94,31 @@ enum IntegrationType {
   MICROSOFT_TEAMS
 }
 
+// ── AI provider abstraction ──────────────────────────────────────────────────
+// Lets each org plug in any of these as their AI backend, and optionally route
+// individual services (FP triage / fix suggestion / scan summary / …) to
+// different providers. Keys are AES-256-GCM encrypted via encryptionService,
+// same pattern as Integration.encryptedData.
+enum AIProviderType {
+  ANTHROPIC
+  OPENAI
+  GEMINI
+  OLLAMA
+}
+
+// One row per AI service that the platform calls. Used as the discriminator
+// for per-service routing overrides. Add new entries here when introducing a
+// new AI-backed feature.
+enum AIServiceName {
+  ANALYSE_FINDING       // aiService.analyseFinding — drawer deep analysis
+  FP_TRIAGE             // falsePositiveService — verdict + confidence
+  FIX_SUGGESTION        // fixSuggestionService — unified diff
+  SCAN_SUMMARY          // scanSummaryService — post-scan paragraph
+  RISK_SCORE            // riskScoringService — repo/container/domain score
+  CHAT                  // chatService — interactive Q&A
+  GROUP_INSIGHT         // findingGroupService — cluster commentary
+}
+
 enum ReportTrigger {
   ON_SCAN_COMPLETE
   MANUAL
@@ -135,15 +160,18 @@ model Organization {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  members      OrganizationMember[]
-  repositories Repository[]
-  containers   Container[]
-  domains      Domain[]
-  integrations Integration[]
-  findings     Finding[]
-  tickets      Ticket[]
-  scanJobs     ScanJob[]
-  reports      Report[]
+  members         OrganizationMember[]
+  repositories    Repository[]
+  containers      Container[]
+  domains         Domain[]
+  integrations    Integration[]
+  findings        Finding[]
+  tickets         Ticket[]
+  scanJobs        ScanJob[]
+  reports         Report[]
+  aiProviders     AIProvider[]
+  aiServiceRoutings AIServiceRouting[]
+  aiCallLogs      AICallLog[]
 }
 
 model OrganizationMember {
@@ -463,4 +491,84 @@ model Integration {
   org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
   @@unique([orgId, type])
+}
+
+// ── AI Provider configuration (per org) ──────────────────────────────────────
+// Stores the provider's API key (encrypted) + the org's chosen default model
+// for that provider. Exactly one row per (org, type). Set isDefault=true on
+// the row that should be used when a service has no explicit routing override.
+model AIProvider {
+  id              String         @id @default(cuid())
+  orgId           String
+  type            AIProviderType
+  // Encrypted via encryptionService (same JSON-with-IV shape as Integration).
+  // Decrypted shape: { apiKey: string }  for ANTHROPIC/OPENAI/GEMINI
+  //                  { /* nothing required */ } for OLLAMA (uses baseUrl)
+  encryptedConfig Json
+  // Public model id used when this provider is selected and no override given.
+  // e.g. "claude-sonnet-4-5", "gpt-5", "gemini-2.5-pro", "llama3.1:8b"
+  defaultModel    String
+  // Override the SDK base URL — required for Ollama (e.g. http://ollama:11434),
+  // optional for Anthropic/OpenAI (e.g. proxies, Azure OpenAI, Bedrock).
+  baseUrl         String?
+  isActive        Boolean        @default(true)
+  isDefault       Boolean        @default(false)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  org      Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  routings AIServiceRouting[]
+
+  @@unique([orgId, type])
+  @@index([orgId, isDefault])
+}
+
+// ── Per-service provider routing override ────────────────────────────────────
+// Optional. If a service name has no row here, the org's default AIProvider
+// (isDefault=true) is used. Lets ops say "use Anthropic Sonnet for FP triage,
+// but route fix-suggestion through local Ollama for compliance."
+model AIServiceRouting {
+  id            String        @id @default(cuid())
+  orgId         String
+  service       AIServiceName
+  providerId    String
+  // Optional model override — falls back to AIProvider.defaultModel if null.
+  modelOverride String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  provider AIProvider   @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, service])
+}
+
+// ── Per-call telemetry for cost dashboards & A/B comparisons ─────────────────
+// One row per AI invocation. Cheap (Postgres can take it) and gives you ground
+// truth instead of estimating from prompt sizes. Token fields use providers'
+// reported counts; cached_tokens is provider-specific (Anthropic prompt cache,
+// OpenAI cached input). Cost is computed at insert time from a price table so
+// historical reporting stays correct when prices change.
+model AICallLog {
+  id                String        @id @default(cuid())
+  orgId             String
+  service           AIServiceName
+  providerType      AIProviderType
+  model             String
+  inputTokens       Int           @default(0)
+  outputTokens      Int           @default(0)
+  cachedInputTokens Int           @default(0)   // 0 if provider doesn't support
+  latencyMs         Int
+  costUsd           Decimal       @default(0) @db.Decimal(10, 6)
+  // For correlating with the resource that triggered it
+  findingId         String?
+  scanJobId         String?
+  errorMessage      String?       // null on success
+  createdAt         DateTime      @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, createdAt])
+  @@index([orgId, service, createdAt])
+  @@index([orgId, providerType, createdAt])
 }
