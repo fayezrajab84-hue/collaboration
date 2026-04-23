@@ -11,3 +11,5 @@ setuptools==75.8.2
 # Playwright: headless Chromium for true SPA crawling (React/Angular/Vue)
 # Captures network requests made by JS frameworks that static crawlers miss.
 playwright==1.44.0
+# QA harness — smoke + contract tests for all scanners. See apps/scanner/qa/.
+pytest==8.2.0

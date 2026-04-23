@@ -1,0 +1,11 @@
+{
+  "name": "qa-vulnerable-fixture",
+  "version": "1.0.0",
+  "description": "Deliberately pinned to vulnerable versions for SCA scanner QA. Do not bump.",
+  "private": true,
+  "dependencies": {
+    "lodash": "4.17.4",
+    "minimist": "1.2.0",
+    "axios": "0.18.0"
+  }
+}
