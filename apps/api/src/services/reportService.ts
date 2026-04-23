@@ -5,10 +5,10 @@
  * Sections: Executive Summary, Finding Overview, Top Risks, Remediation Roadmap.
  */
 
-import axios from "axios";
+import { AIServiceName } from "@prisma/client";
 import prisma from "../db.js";
-import { config } from "../config.js";
 import { logger } from "../logger.js";
+import { invokeAI, AIError } from "./aiClient.js";
 
 // ── Report context builder ─────────────────────────────────────────────────────
 
@@ -126,38 +126,30 @@ Write the full report now:`;
 
   logger.info(`[report] generating security report for org ${orgId}`);
 
+  // NOTE: invokeAI is not streaming today — we buffer the full report then
+  // emit it as one onToken + onDone. The SSE handler still works unmodified;
+  // first-byte latency increases, end-to-end latency does not. Adapter-level
+  // streaming is a separate follow-up.
   try {
-    const resp = await axios.post(
-      `${config.OLLAMA_URL}/api/generate`,
-      {
-        model:  config.OLLAMA_MODEL,
-        prompt,
-        stream: true,
-        options: { temperature: 0.2, num_predict: 800, num_ctx: 2048 },
-      },
-      { responseType: "stream", timeout: 600_000 },
-    );
-
-    const stream = resp.data as NodeJS.ReadableStream;
-    let finished = false;
-
-    stream.on("data", (chunk: Buffer) => {
-      for (const line of chunk.toString().split("\n")) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        try {
-          const parsed = JSON.parse(trimmed) as { response?: string; done?: boolean };
-          if (parsed.response) onToken(parsed.response);
-          if (parsed.done && !finished) { finished = true; onDone(); }
-        } catch { /* partial chunk */ }
-      }
+    const result = await invokeAI({
+      service:         AIServiceName.SCAN_SUMMARY,  // closest existing enum; report-specific enum can be added later
+      orgId,
+      system:          "You are a senior security analyst writing professional markdown reports.",
+      messages:        [{ role: "user", content: prompt }],
+      maxOutputTokens: 800,
+      temperature:     0.2,
+      timeoutMs:       600_000,
     });
-
-    stream.on("end",   () => { if (!finished) { finished = true; onDone(); } });
-    stream.on("error", (err: Error) => { if (!finished) { finished = true; onError(err); } });
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logger.error(`[report] ollama request failed: ${msg}`);
+    onToken(result.rawText);
+    onDone();
+  } catch (err) {
+    const msg =
+      err instanceof AIError
+        ? `AI service unavailable (${err.kind}): ${err.message}`
+        : err instanceof Error
+          ? err.message
+          : String(err);
+    logger.error(`[report] invokeAI failed: ${msg}`);
     onError(new Error(`AI service unavailable: ${msg}`));
   }
 }
