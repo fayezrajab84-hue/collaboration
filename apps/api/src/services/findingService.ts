@@ -632,9 +632,21 @@ export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: n
   if (scanType === "SCA" || scanType === "CONTAINER") {
     findings = mergePackageFindings(rawFindings, orgId, targetId, scanType);
   } else if (scanType === "SAST") {
+    // Semgrep emits a mix of SAST / IAC / SECRET findings in one run. Route each
+    // sub-type through its own merger so SECRET / IAC findings don't end up as
+    // one row per file/line (they previously bypassed merging entirely).
     const trueSast = rawFindings.filter((f) => !f.scanType || f.scanType === "SAST");
-    const nonSast  = rawFindings.filter((f) => f.scanType && f.scanType !== "SAST");
-    findings = [...mergeSastFindings(trueSast, orgId, targetId), ...nonSast];
+    const secret   = rawFindings.filter((f) => f.scanType === "SECRET");
+    const iac      = rawFindings.filter((f) => f.scanType === "IAC");
+    const other    = rawFindings.filter((f) =>
+      f.scanType && !["SAST", "SECRET", "IAC"].includes(f.scanType),
+    );
+    findings = [
+      ...mergeSastFindings(trueSast, orgId, targetId),
+      ...(secret.length ? mergeSecretFindings(secret, orgId, targetId) : []),
+      ...(iac.length    ? mergeIacFindings(iac,       orgId, targetId) : []),
+      ...other,
+    ];
   } else if (scanType === "DAST" || scanType === "PENTEST" || scanType === "PENTEST_FULL") {
     findings = mergeDastFindings(rawFindings, orgId, targetId, scanType);
   } else if (scanType === "SECRET") {

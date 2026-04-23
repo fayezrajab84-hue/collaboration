@@ -48,6 +48,25 @@ def _classify_scan_type(check_id: str, metadata: dict) -> ScanType:
     return ScanType.SAST
 
 
+def _read_snippet(file_path: str, line_num: int | None, context: int = 2) -> str | None:
+    """Read ±context lines around line_num from a local file.
+
+    Used as a fallback when Semgrep returns the "requires login" Pro paywall
+    placeholder instead of the matched lines (common for `generic.secrets.*`
+    rules in the community engine).
+    """
+    if not line_num:
+        return None
+    try:
+        with open(file_path, encoding="utf-8", errors="replace") as fh:
+            lines = fh.readlines()
+        start = max(0, line_num - context - 1)
+        end   = min(len(lines), line_num + context)
+        return "".join(lines[start:end]).rstrip()[:1000]
+    except Exception:
+        return None
+
+
 class SASTScanner(BaseScanner):
     """SAST scanner using Semgrep."""
 
@@ -99,8 +118,16 @@ class SASTScanner(BaseScanner):
             sev_str    = item.get("extra", {}).get("severity", "INFO")
             metadata   = item.get("extra", {}).get("metadata", {})
             raw_snippet = item.get("extra", {}).get("lines", "") or ""
-            # "requires login" is a Semgrep Pro paywall placeholder — not real code
+            # "requires login" is a Semgrep Pro paywall placeholder — not real code.
+            # When Semgrep withholds the lines (common for generic.secrets.* rules
+            # in the community engine), read them off the cloned repo instead so
+            # the developer still sees the actual code.
             snippet = "" if raw_snippet.strip().lower() == "requires login" else raw_snippet
+            if not snippet and path:
+                local_path = f"{repo_dir}/{path}" if not path.startswith(repo_dir) else path
+                disk_snippet = _read_snippet(local_path, line_start)
+                if disk_snippet:
+                    snippet = disk_snippet
 
             # Classify the finding into the correct scan type based on rule ID
             scan_type   = _classify_scan_type(check_id, metadata)
