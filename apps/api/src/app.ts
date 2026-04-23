@@ -23,6 +23,7 @@ import webhooksRouter from "./routes/webhooks/router.js";
 import chatRouter from "./routes/chat/router.js";
 import reportsRouter from "./routes/reports/router.js";
 import suppressionsRouter from "./routes/suppressions/router.js";
+import aiProvidersRouter from "./routes/aiProviders/router.js";
 
 import "./auth/passport.js"; // side-effect: registers passport strategies
 
@@ -97,6 +98,7 @@ app.use("/api/webhooks", webhooksRouter);
 app.use("/api/chat", apiLimiter, chatRouter);
 app.use("/api/reports", apiLimiter, reportsRouter);
 app.use("/api/suppressions", apiLimiter, suppressionsRouter);
+app.use("/api/ai-providers", apiLimiter, aiProvidersRouter);
 
 // ── Error handler (must be last) ──────────────────────────────────────────
 app.use(errorHandler);
