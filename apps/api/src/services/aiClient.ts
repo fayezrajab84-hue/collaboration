@@ -8,20 +8,24 @@
  * Routing precedence (highest first):
  *   1. AIServiceRouting row for (org, service) — explicit override
  *   2. AIProvider row with isDefault=true for that org
- *   3. Hard fallback to OLLAMA at OLLAMA_URL (preserves current dev experience
- *      when nothing has been configured yet)
+ *   3. Hard fallback to OLLAMA at config.OLLAMA_URL — preserves the current
+ *      dev experience when nothing has been configured yet
  *
- * IMPLEMENTATION STATUS: signatures only. The four `*Adapter.invoke` functions
- * and the cost table are stubbed and will throw at runtime — wired in next
- * PR. This file exists so call sites can be migrated against the final API
- * surface without waiting for the providers to land.
+ * IMPLEMENTATION STATUS:
+ *   - ollamaAdapter: implemented
+ *   - anthropic / openai / gemini adapters: stubs (next PR)
+ *
+ * Every successful or failed call writes an AICallLog row best-effort. Logging
+ * failures never block the caller; they're emitted to the structured logger.
  */
 
+import axios, { AxiosError } from "axios";
 import { z } from "zod";
-import type {
-  AIProviderType,
-  AIServiceName,
-} from "@prisma/client";
+import { AIProviderType, type AIServiceName } from "@prisma/client";
+import prisma from "../db.js";
+import { logger } from "../logger.js";
+import { config } from "../config.js";
+import { decrypt } from "./encryptionService.js";
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
@@ -46,6 +50,8 @@ export interface AIInvokeOptions<TSchema extends z.ZodTypeAny | undefined = unde
   maxOutputTokens?: number;
   /** 0 = deterministic, 1 = creative. Default 0.1 for security workloads. */
   temperature?: number;
+  /** Per-call timeout override (ms). */
+  timeoutMs?: number;
   /** For correlating telemetry rows back to the resource that triggered the call. */
   findingId?: string;
   scanJobId?: string;
@@ -83,18 +89,124 @@ export interface AIInvokeResult<TSchema extends z.ZodTypeAny | undefined> {
  * fall back gracefully (e.g. drop the FP triage if the provider is down).
  */
 export async function invokeAI<TSchema extends z.ZodTypeAny | undefined>(
-  _opts: AIInvokeOptions<TSchema>,
+  opts: AIInvokeOptions<TSchema>,
 ): Promise<AIInvokeResult<TSchema>> {
-  throw new Error("[aiClient] not yet implemented — pending provider adapters");
+  const resolved = await resolveProvider(opts.orgId, opts.service);
+  const adapter  = ADAPTERS[resolved.providerType];
+
+  const t0 = Date.now();
+  try {
+    const result = await adapter.invoke(resolved, opts);
+    void writeCallLog({
+      orgId:        opts.orgId,
+      service:      opts.service,
+      providerType: result.providerType,
+      model:        result.model,
+      usage:        result.usage,
+      findingId:    opts.findingId,
+      scanJobId:    opts.scanJobId,
+      errorMessage: null,
+    });
+    return result;
+  } catch (err) {
+    const latencyMs = Date.now() - t0;
+    const message   = err instanceof Error ? err.message : String(err);
+    void writeCallLog({
+      orgId:        opts.orgId,
+      service:      opts.service,
+      providerType: resolved.providerType,
+      model:        resolved.model,
+      usage:        { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, latencyMs, costUsd: 0 },
+      findingId:    opts.findingId,
+      scanJobId:    opts.scanJobId,
+      errorMessage: message.slice(0, 500),
+    });
+    throw err;
+  }
+}
+
+// ── Routing ──────────────────────────────────────────────────────────────────
+
+/**
+ * Pick the provider that handles a given (org, service) call.
+ *
+ * Precedence:
+ *   1. AIServiceRouting (org-specific override per service)
+ *   2. AIProvider with isDefault=true for that org
+ *   3. Synthetic OLLAMA fallback to config.OLLAMA_URL — keeps dev UX working
+ *      when an org hasn't configured anything yet.
+ *
+ * Throws AIError(PROVIDER_UNCONFIGURED) only if a routing override points at
+ * an inactive provider — explicit misconfiguration, not "missing config".
+ */
+async function resolveProvider(
+  orgId: string,
+  service: AIServiceName,
+): Promise<ResolvedProvider> {
+  // 1. Per-service routing override
+  const routing = await prisma.aIServiceRouting.findUnique({
+    where:   { orgId_service: { orgId, service } },
+    include: { provider: true },
+  });
+  if (routing) {
+    if (!routing.provider.isActive) {
+      throw new AIError(
+        "PROVIDER_UNCONFIGURED",
+        `AIServiceRouting for ${service} points at inactive ${routing.provider.type} provider`,
+        routing.provider.type,
+      );
+    }
+    return providerRowToResolved(routing.provider, routing.modelOverride);
+  }
+
+  // 2. Org default provider
+  const def = await prisma.aIProvider.findFirst({
+    where: { orgId, isDefault: true, isActive: true },
+  });
+  if (def) return providerRowToResolved(def, null);
+
+  // 3. Synthetic OLLAMA fallback — same shape as a real row, no DB lookup
+  return {
+    providerType: AIProviderType.OLLAMA,
+    model:        config.OLLAMA_MODEL,
+    baseUrl:      config.OLLAMA_URL,
+    apiKey:       undefined,
+  };
+}
+
+function providerRowToResolved(
+  row: { type: AIProviderType; encryptedConfig: unknown; defaultModel: string; baseUrl: string | null },
+  modelOverride: string | null,
+): ResolvedProvider {
+  const model   = modelOverride ?? row.defaultModel;
+  const baseUrl = row.baseUrl ?? undefined;
+
+  let apiKey: string | undefined;
+  if (row.type !== AIProviderType.OLLAMA) {
+    // encryptedConfig is { apiKey: "<base64-cipher>" }
+    const cfg = row.encryptedConfig as { apiKey?: string } | null;
+    if (!cfg?.apiKey) {
+      throw new AIError(
+        "PROVIDER_UNCONFIGURED",
+        `${row.type} provider missing encrypted apiKey`,
+        row.type,
+      );
+    }
+    try {
+      apiKey = decrypt(cfg.apiKey);
+    } catch (err) {
+      throw new AIError(
+        "UNAUTHORIZED",
+        `Failed to decrypt ${row.type} apiKey: ${err instanceof Error ? err.message : String(err)}`,
+        row.type,
+      );
+    }
+  }
+
+  return { providerType: row.type, model, baseUrl, apiKey };
 }
 
 // ── Provider adapter contract ────────────────────────────────────────────────
-// One file per provider implements this. Adapters are responsible for:
-//   - translating AIInvokeOptions into provider SDK calls
-//   - applying provider-specific features when supported (prompt caching,
-//     structured outputs, extended thinking, batch API)
-//   - normalising token counts + computing cost from PRICE_TABLE
-//   - returning AIInvokeResult OR throwing AIError
 
 export interface ResolvedProvider {
   providerType: AIProviderType;
@@ -110,21 +222,150 @@ export interface ProviderAdapter {
   ): Promise<AIInvokeResult<TSchema>>;
 }
 
-// Adapter stubs — flesh out one at a time.
-// Recommended order: ollama (preserves dev experience) → anthropic
-// (default for prod) → openai → gemini.
+// ── Ollama adapter ───────────────────────────────────────────────────────────
+// Local CPU/GPU inference. Free per-token cost. Used as the default for dev
+// and as the hard fallback when an org hasn't configured a paid provider.
+
+const OLLAMA_DEFAULT_TIMEOUT_MS = 360_000;  // 6 min — CPU inference can be slow
+
+export const ollamaAdapter: ProviderAdapter = {
+  async invoke<TSchema extends z.ZodTypeAny | undefined>(
+    provider: ResolvedProvider,
+    opts: AIInvokeOptions<TSchema>,
+  ): Promise<AIInvokeResult<TSchema>> {
+    const baseUrl = provider.baseUrl ?? config.OLLAMA_URL;
+    const t0      = Date.now();
+
+    const body: Record<string, unknown> = {
+      model:    provider.model,
+      messages: [
+        { role: "system", content: opts.system },
+        ...opts.messages.map((m) => ({ role: m.role, content: m.content })),
+      ],
+      stream:  false,
+      options: {
+        temperature: opts.temperature ?? 0.1,
+        num_predict: opts.maxOutputTokens ?? 900,
+        num_ctx:     4096,
+      },
+    };
+    if (opts.schema) body["format"] = "json";
+
+    let resp;
+    try {
+      resp = await axios.post(`${baseUrl}/api/chat`, body, {
+        timeout: opts.timeoutMs ?? OLLAMA_DEFAULT_TIMEOUT_MS,
+      });
+    } catch (err) {
+      throw mapAxiosError(err, AIProviderType.OLLAMA);
+    }
+
+    const rawText = String(resp.data?.message?.content ?? resp.data?.response ?? "");
+    // Ollama reports prompt_eval_count + eval_count
+    const inputTokens  = Number(resp.data?.prompt_eval_count ?? 0);
+    const outputTokens = Number(resp.data?.eval_count ?? 0);
+
+    const data = parseAndValidate(rawText, opts.schema) as AIInvokeResult<TSchema>["data"];
+
+    return {
+      data,
+      rawText,
+      providerType: AIProviderType.OLLAMA,
+      model:        provider.model,
+      usage: {
+        inputTokens,
+        outputTokens,
+        cachedInputTokens: 0,
+        latencyMs:         Date.now() - t0,
+        costUsd:           0,    // local inference — track tokens for capacity, not billing
+      },
+    };
+  },
+};
+
+// ── Stub adapters (next PRs) ─────────────────────────────────────────────────
+
 export const anthropicAdapter: ProviderAdapter = {
-  invoke: async () => { throw new Error("anthropicAdapter: not yet implemented"); },
+  invoke: () => { throw new AIError("PROVIDER_UNCONFIGURED", "anthropicAdapter: not yet implemented", AIProviderType.ANTHROPIC); },
 };
 export const openaiAdapter: ProviderAdapter = {
-  invoke: async () => { throw new Error("openaiAdapter: not yet implemented"); },
+  invoke: () => { throw new AIError("PROVIDER_UNCONFIGURED", "openaiAdapter: not yet implemented", AIProviderType.OPENAI); },
 };
 export const geminiAdapter: ProviderAdapter = {
-  invoke: async () => { throw new Error("geminiAdapter: not yet implemented"); },
+  invoke: () => { throw new AIError("PROVIDER_UNCONFIGURED", "geminiAdapter: not yet implemented", AIProviderType.GEMINI); },
 };
-export const ollamaAdapter: ProviderAdapter = {
-  invoke: async () => { throw new Error("ollamaAdapter: not yet implemented"); },
+
+const ADAPTERS: Record<AIProviderType, ProviderAdapter> = {
+  ANTHROPIC: anthropicAdapter,
+  OPENAI:    openaiAdapter,
+  GEMINI:    geminiAdapter,
+  OLLAMA:    ollamaAdapter,
 };
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function parseAndValidate(rawText: string, schema: z.ZodTypeAny | undefined): unknown {
+  if (!schema) return rawText;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawText);
+  } catch {
+    throw new AIError("INVALID_OUTPUT", `model returned non-JSON: ${rawText.slice(0, 200)}`);
+  }
+  const result = schema.safeParse(parsed);
+  if (!result.success) {
+    throw new AIError("INVALID_OUTPUT", `schema validation failed: ${result.error.message}`);
+  }
+  return result.data;
+}
+
+function mapAxiosError(err: unknown, providerType: AIProviderType): AIError {
+  if (err instanceof AxiosError) {
+    const status = err.response?.status;
+    if (err.code === "ECONNABORTED") return new AIError("TIMEOUT", err.message, providerType, true);
+    if (status === 401 || status === 403) return new AIError("UNAUTHORIZED", err.message, providerType);
+    if (status === 429) return new AIError("RATE_LIMITED", err.message, providerType, true);
+    if (status && status >= 500) return new AIError("PROVIDER_DOWN", err.message, providerType, true);
+    if (!err.response) return new AIError("PROVIDER_DOWN", err.message, providerType, true);
+  }
+  const msg = err instanceof Error ? err.message : String(err);
+  return new AIError("PROVIDER_DOWN", msg, providerType, false);
+}
+
+interface CallLogInput {
+  orgId: string;
+  service: AIServiceName;
+  providerType: AIProviderType;
+  model: string;
+  usage: AIInvokeResult<undefined>["usage"];
+  findingId?: string;
+  scanJobId?: string;
+  errorMessage: string | null;
+}
+
+async function writeCallLog(input: CallLogInput): Promise<void> {
+  try {
+    await prisma.aICallLog.create({
+      data: {
+        orgId:             input.orgId,
+        service:           input.service,
+        providerType:      input.providerType,
+        model:             input.model,
+        inputTokens:       input.usage.inputTokens,
+        outputTokens:      input.usage.outputTokens,
+        cachedInputTokens: input.usage.cachedInputTokens,
+        latencyMs:         input.usage.latencyMs,
+        costUsd:           input.usage.costUsd,
+        findingId:         input.findingId,
+        scanJobId:         input.scanJobId,
+        errorMessage:      input.errorMessage,
+      },
+    });
+  } catch (err) {
+    // Telemetry failures must never propagate
+    logger.warn(`[aiClient] failed to write AICallLog: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
 
 // ── Errors ───────────────────────────────────────────────────────────────────
 
