@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Settings, Github, AlertTriangle } from "lucide-react";
-import { integrationsApi } from "../lib/api";
+import { integrationsApi, aiProvidersApi } from "../lib/api";
 import { useAuth } from "../hooks/useAuth";
 import { useToast } from "../hooks/useToast";
+import AIProvidersTab from "../components/settings/AIProvidersTab";
 
-type Tab = "github" | "jira" | "slack" | "teams";
+type Tab = "github" | "ai" | "jira" | "slack" | "teams";
 
 function SaveButton({ isPending, saved }: { isPending: boolean; saved: boolean }) {
   return (
@@ -366,9 +367,10 @@ function TeamsTab() {
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "github", label: "GitHub" },
-  { id: "jira", label: "Jira" },
-  { id: "slack", label: "Slack" },
-  { id: "teams", label: "Microsoft Teams" },
+  { id: "ai",     label: "AI Providers" },
+  { id: "jira",   label: "Jira" },
+  { id: "slack",  label: "Slack" },
+  { id: "teams",  label: "Microsoft Teams" },
 ];
 
 export default function SettingsPage() {
@@ -376,12 +378,14 @@ export default function SettingsPage() {
 
   // Fetch all integration statuses at the page level so tab nav can show
   // connected indicators without the user having to open each tab first.
-  const { data: jiraData }  = useQuery({ queryKey: ["integrations", "jira"],  queryFn: integrationsApi.getJira,  retry: false });
-  const { data: slackData } = useQuery({ queryKey: ["integrations", "slack"], queryFn: integrationsApi.getSlack, retry: false });
-  const { data: teamsData } = useQuery({ queryKey: ["integrations", "teams"], queryFn: integrationsApi.getTeams, retry: false });
+  const { data: jiraData }      = useQuery({ queryKey: ["integrations", "jira"],  queryFn: integrationsApi.getJira,  retry: false });
+  const { data: slackData }     = useQuery({ queryKey: ["integrations", "slack"], queryFn: integrationsApi.getSlack, retry: false });
+  const { data: teamsData }     = useQuery({ queryKey: ["integrations", "teams"], queryFn: integrationsApi.getTeams, retry: false });
+  const { data: aiProviders = [] } = useQuery({ queryKey: ["ai-providers"], queryFn: aiProvidersApi.list, retry: false });
 
   const connected: Record<Tab, boolean> = {
     github: true,   // GitHub is always connected (OAuth session)
+    ai:     aiProviders.length > 0,
     jira:   !!jiraData,
     slack:  !!slackData,
     teams:  !!teamsData,
@@ -428,9 +432,10 @@ export default function SettingsPage() {
           </div>
 
           {activeTab === "github" && <GitHubTab />}
-          {activeTab === "jira" && <JiraTab />}
-          {activeTab === "slack" && <SlackTab />}
-          {activeTab === "teams" && <TeamsTab />}
+          {activeTab === "ai"     && <AIProvidersTab />}
+          {activeTab === "jira"   && <JiraTab />}
+          {activeTab === "slack"  && <SlackTab />}
+          {activeTab === "teams"  && <TeamsTab />}
         </div>
       </div>
     </div>

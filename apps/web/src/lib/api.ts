@@ -333,3 +333,87 @@ export const integrationsApi = {
     apiClient.put("/integrations/teams", data).then((r) => r.data),
   deleteTeams: () => apiClient.delete("/integrations/teams"),
 };
+
+// ── AI Providers ──────────────────────────────────────────────────────────
+
+export type AIProviderType   = "ANTHROPIC" | "OPENAI" | "GEMINI" | "OLLAMA";
+export type AIServiceName    =
+  | "ANALYSE_FINDING" | "FP_TRIAGE" | "FIX_SUGGESTION"
+  | "SCAN_SUMMARY"    | "RISK_SCORE" | "CHAT" | "GROUP_INSIGHT";
+
+export interface AIProvider {
+  id:           string;
+  type:         AIProviderType;
+  defaultModel: string;
+  baseUrl:      string | null;
+  isActive:     boolean;
+  isDefault:    boolean;
+  hasApiKey:    boolean;
+  createdAt:    string;
+  updatedAt:    string;
+}
+
+export interface AIProviderUpsert {
+  apiKey?:      string;
+  defaultModel: string;
+  baseUrl?:     string;
+  isDefault?:   boolean;
+}
+
+export interface AIServiceRouting {
+  id:            string;
+  service:       AIServiceName;
+  providerId:    string;
+  providerType:  AIProviderType;
+  modelOverride: string | null;
+  defaultModel:  string;
+}
+
+export interface AITestResult {
+  ok:        boolean;
+  provider?: AIProviderType;
+  model?:    string;
+  latencyMs?: number;
+  tokens?:   { input: number; output: number };
+  error?:    string;
+  message?:  string;
+}
+
+export interface AIUsageRollup {
+  since:      string;
+  totals: {
+    _count: number;
+    _sum: { inputTokens: number | null; outputTokens: number | null;
+            cachedInputTokens: number | null; costUsd: string | null; };
+  } | null;
+  byService:  Array<{
+    service: AIServiceName;
+    _count: number;
+    _sum: { inputTokens: number | null; outputTokens: number | null; costUsd: string | null };
+  }>;
+  byProvider: Array<{
+    providerType: AIProviderType;
+    model:        string;
+    _count: number;
+    _sum: { inputTokens: number | null; outputTokens: number | null; costUsd: string | null };
+  }>;
+}
+
+export const aiProvidersApi = {
+  list:     () => apiClient.get<AIProvider[]>("/ai-providers").then((r) => r.data),
+  upsert:   (type: AIProviderType, data: AIProviderUpsert) =>
+              apiClient.put(`/ai-providers/${type}`, data).then((r) => r.data),
+  remove:   (type: AIProviderType) => apiClient.delete(`/ai-providers/${type}`),
+  setDefault: (type: AIProviderType) =>
+              apiClient.post(`/ai-providers/${type}/default`).then((r) => r.data),
+  test:     (type: AIProviderType) =>
+              apiClient.post<AITestResult>(`/ai-providers/${type}/test`).then((r) => r.data),
+
+  routings:        () => apiClient.get<AIServiceRouting[]>("/ai-providers/routings").then((r) => r.data),
+  setRouting:      (service: AIServiceName, data: { providerId: string; modelOverride?: string }) =>
+                     apiClient.put(`/ai-providers/routings/${service}`, data).then((r) => r.data),
+  clearRouting:    (service: AIServiceName) =>
+                     apiClient.delete(`/ai-providers/routings/${service}`).then((r) => r.data),
+
+  usage: () => apiClient.get<AIUsageRollup>("/ai-providers/usage").then((r) => r.data),
+};
