@@ -80,18 +80,29 @@ router.put("/:type", async (req, res, next) => {
     const orgId = await getOrgId(user.id);
     if (!orgId) { res.status(400).json({ error: "No organization" }); return; }
 
-    if (type !== AIProviderType.OLLAMA && !body.apiKey) {
+    // Look up existing row first — apiKey is only required on first-time create.
+    // On update, the UI sends apiKey:undefined when the user didn't re-enter it
+    // (the password field is intentionally blank to avoid re-displaying secrets).
+    const existing = await prisma.aIProvider.findUnique({
+      where: { orgId_type: { orgId, type } },
+    });
+
+    if (type !== AIProviderType.OLLAMA && !body.apiKey && !existing) {
       res.status(422).json({ error: `apiKey required for ${type}` });
       return;
     }
-    if (type === AIProviderType.OLLAMA && !body.baseUrl) {
+    if (type === AIProviderType.OLLAMA && !body.baseUrl && !existing) {
       res.status(422).json({ error: "baseUrl required for OLLAMA (e.g. http://ollama:11434)" });
       return;
     }
 
+    // Build encryptedConfig:
+    //  - new apiKey supplied → encrypt + store
+    //  - update with no new key → preserve the existing encrypted blob
+    //  - new create with no key (OLLAMA) → empty object
     const encryptedConfig = body.apiKey
       ? { apiKey: encrypt(body.apiKey) }
-      : {};
+      : (existing?.encryptedConfig ?? {});
 
     // If isDefault=true, unset any other defaults for this org first
     if (body.isDefault) {
@@ -104,17 +115,18 @@ router.put("/:type", async (req, res, next) => {
     const row = await prisma.aIProvider.upsert({
       where:  { orgId_type: { orgId, type } },
       create: {
-        orgId, type, encryptedConfig,
-        defaultModel: body.defaultModel,
-        baseUrl:      body.baseUrl,
-        isActive:     true,
-        isDefault:    body.isDefault ?? false,
+        orgId, type,
+        encryptedConfig: encryptedConfig as object,
+        defaultModel:    body.defaultModel,
+        baseUrl:         body.baseUrl,
+        isActive:        true,
+        isDefault:       body.isDefault ?? false,
       },
       update: {
-        encryptedConfig,
-        defaultModel: body.defaultModel,
-        baseUrl:      body.baseUrl,
-        isDefault:    body.isDefault ?? undefined,
+        encryptedConfig: encryptedConfig as object,
+        defaultModel:    body.defaultModel,
+        baseUrl:         body.baseUrl,
+        isDefault:       body.isDefault ?? undefined,
       },
     });
 

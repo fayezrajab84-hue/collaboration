@@ -532,9 +532,13 @@ const ADAPTERS: Record<AIProviderType, ProviderAdapter> = {
 
 function parseAndValidate(rawText: string, schema: z.ZodTypeAny | undefined): unknown {
   if (!schema) return rawText;
+  // Some providers (notably Gemini) wrap JSON in ```json ... ``` fences even
+  // when responseMimeType=application/json is requested. Strip fences and
+  // fall back to extracting the first {...} / [...] block if needed.
+  const stripped = stripJsonFences(rawText);
   let parsed: unknown;
   try {
-    parsed = JSON.parse(rawText);
+    parsed = JSON.parse(stripped);
   } catch {
     throw new AIError("INVALID_OUTPUT", `model returned non-JSON: ${rawText.slice(0, 200)}`);
   }
@@ -543,6 +547,29 @@ function parseAndValidate(rawText: string, schema: z.ZodTypeAny | undefined): un
     throw new AIError("INVALID_OUTPUT", `schema validation failed: ${result.error.message}`);
   }
   return result.data;
+}
+
+function stripJsonFences(text: string): string {
+  let s = text.trim();
+  // ```json ... ``` or ``` ... ```
+  const fenceMatch = s.match(/^```(?:json|JSON)?\s*\n?([\s\S]*?)\n?```$/);
+  if (fenceMatch && fenceMatch[1] !== undefined) {
+    s = fenceMatch[1].trim();
+  }
+  // If still not parseable as-is, try extracting the first balanced { ... } or [ ... ]
+  if (s.startsWith("{") || s.startsWith("[")) return s;
+  const objStart = s.indexOf("{");
+  const arrStart = s.indexOf("[");
+  const start =
+    objStart === -1 ? arrStart :
+    arrStart === -1 ? objStart :
+    Math.min(objStart, arrStart);
+  if (start === -1) return s;
+  const open = s[start];
+  const close = open === "{" ? "}" : "]";
+  const end = s.lastIndexOf(close);
+  if (end > start) return s.slice(start, end + 1);
+  return s;
 }
 
 function mapAxiosError(err: unknown, providerType: AIProviderType): AIError {
