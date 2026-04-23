@@ -285,14 +285,240 @@ export const ollamaAdapter: ProviderAdapter = {
 
 // ── Stub adapters (next PRs) ─────────────────────────────────────────────────
 
+// ── Anthropic adapter ────────────────────────────────────────────────────────
+// Uses the public Messages API directly (no SDK dep). Applies cache_control
+// breakpoint on the system prompt — security workloads reuse the same long
+// system prompt across many findings, so the savings are substantial.
+
+const ANTHROPIC_API_URL          = "https://api.anthropic.com/v1/messages";
+const ANTHROPIC_VERSION          = "2023-06-01";
+const ANTHROPIC_DEFAULT_TIMEOUT  = 120_000;
+const ANTHROPIC_CACHE_MIN_TOKENS = 1024;   // Anthropic requires ≥1024 tokens to cache
+
 export const anthropicAdapter: ProviderAdapter = {
-  invoke: () => { throw new AIError("PROVIDER_UNCONFIGURED", "anthropicAdapter: not yet implemented", AIProviderType.ANTHROPIC); },
+  async invoke<TSchema extends z.ZodTypeAny | undefined>(
+    provider: ResolvedProvider,
+    opts: AIInvokeOptions<TSchema>,
+  ): Promise<AIInvokeResult<TSchema>> {
+    if (!provider.apiKey) {
+      throw new AIError("PROVIDER_UNCONFIGURED", "Anthropic provider missing apiKey", AIProviderType.ANTHROPIC);
+    }
+    const t0 = Date.now();
+
+    // Cache breakpoint: only attach when system prompt is large enough to
+    // qualify for the cache (Anthropic returns an error otherwise).
+    // Rough estimate: 4 chars ≈ 1 token.
+    type SystemBlock = { type: "text"; text: string; cache_control?: { type: "ephemeral" } };
+    const systemBlocks: SystemBlock[] = opts.system.length / 4 >= ANTHROPIC_CACHE_MIN_TOKENS
+      ? [{ type: "text", text: opts.system, cache_control: { type: "ephemeral" } }]
+      : [{ type: "text", text: opts.system }];
+
+    // Structured output via JSON-only system suffix when a schema is supplied.
+    // Anthropic doesn't expose a `response_format` field — we steer via prompt.
+    if (opts.schema) {
+      systemBlocks.push({
+        type: "text",
+        text: "\n\nRespond ONLY with a single valid JSON object. No prose, no markdown fences.",
+      });
+    }
+
+    const body: Record<string, unknown> = {
+      model:       provider.model,
+      max_tokens:  opts.maxOutputTokens ?? 1024,
+      temperature: opts.temperature ?? 0.1,
+      system:      systemBlocks,
+      messages:    opts.messages.map((m) => ({ role: m.role, content: m.content })),
+    };
+
+    let resp;
+    try {
+      resp = await axios.post(ANTHROPIC_API_URL, body, {
+        timeout: opts.timeoutMs ?? ANTHROPIC_DEFAULT_TIMEOUT,
+        headers: {
+          "x-api-key":         provider.apiKey,
+          "anthropic-version": ANTHROPIC_VERSION,
+          "content-type":      "application/json",
+        },
+      });
+    } catch (err) {
+      throw mapAxiosError(err, AIProviderType.ANTHROPIC);
+    }
+
+    // content is an array of blocks; we asked for a single text response
+    const blocks  = (resp.data?.content ?? []) as Array<{ type: string; text?: string }>;
+    const rawText = blocks.filter((b) => b.type === "text").map((b) => b.text ?? "").join("");
+
+    const usage = resp.data?.usage ?? {};
+    const inputTokens       = Number(usage.input_tokens ?? 0);
+    const outputTokens      = Number(usage.output_tokens ?? 0);
+    const cachedInputTokens = Number(usage.cache_read_input_tokens ?? 0);
+    const cacheCreated      = Number(usage.cache_creation_input_tokens ?? 0);
+
+    const price   = priceFor(provider.model);
+    // Anthropic bills cache writes at 1.25x input rate — approximate from input price
+    const costUsd =
+      (inputTokens       * price.inputPerMTok       / 1_000_000) +
+      (cachedInputTokens * price.cachedInputPerMTok / 1_000_000) +
+      (cacheCreated      * price.inputPerMTok * 1.25 / 1_000_000) +
+      (outputTokens      * price.outputPerMTok      / 1_000_000);
+
+    const data = parseAndValidate(rawText, opts.schema) as AIInvokeResult<TSchema>["data"];
+
+    return {
+      data,
+      rawText,
+      providerType: AIProviderType.ANTHROPIC,
+      model:        provider.model,
+      usage: {
+        inputTokens,
+        outputTokens,
+        cachedInputTokens,
+        latencyMs: Date.now() - t0,
+        costUsd,
+      },
+    };
+  },
 };
+// ── OpenAI adapter ───────────────────────────────────────────────────────────
+// Chat Completions API. Uses response_format: json_object when a schema is
+// supplied (works on all gpt-4o+ / gpt-5 models). Cached input is reported
+// in usage.prompt_tokens_details.cached_tokens — automatic on prompts ≥1024
+// tokens; no client-side opt-in needed.
+
+const OPENAI_API_URL         = "https://api.openai.com/v1/chat/completions";
+const OPENAI_DEFAULT_TIMEOUT = 120_000;
+
 export const openaiAdapter: ProviderAdapter = {
-  invoke: () => { throw new AIError("PROVIDER_UNCONFIGURED", "openaiAdapter: not yet implemented", AIProviderType.OPENAI); },
+  async invoke<TSchema extends z.ZodTypeAny | undefined>(
+    provider: ResolvedProvider,
+    opts: AIInvokeOptions<TSchema>,
+  ): Promise<AIInvokeResult<TSchema>> {
+    if (!provider.apiKey) {
+      throw new AIError("PROVIDER_UNCONFIGURED", "OpenAI provider missing apiKey", AIProviderType.OPENAI);
+    }
+    const t0  = Date.now();
+    const url = (provider.baseUrl ?? "https://api.openai.com") + "/v1/chat/completions";
+
+    const body: Record<string, unknown> = {
+      model:       provider.model,
+      max_tokens:  opts.maxOutputTokens ?? 1024,
+      temperature: opts.temperature ?? 0.1,
+      messages: [
+        { role: "system", content: opts.system },
+        ...opts.messages.map((m) => ({ role: m.role, content: m.content })),
+      ],
+    };
+    if (opts.schema) body["response_format"] = { type: "json_object" };
+
+    let resp;
+    try {
+      resp = await axios.post(url === "/v1/chat/completions" ? OPENAI_API_URL : url, body, {
+        timeout: opts.timeoutMs ?? OPENAI_DEFAULT_TIMEOUT,
+        headers: {
+          authorization:  `Bearer ${provider.apiKey}`,
+          "content-type": "application/json",
+        },
+      });
+    } catch (err) {
+      throw mapAxiosError(err, AIProviderType.OPENAI);
+    }
+
+    const rawText = String(resp.data?.choices?.[0]?.message?.content ?? "");
+    const usage   = resp.data?.usage ?? {};
+    const inputTokens       = Number(usage.prompt_tokens ?? 0);
+    const outputTokens      = Number(usage.completion_tokens ?? 0);
+    const cachedInputTokens = Number(usage.prompt_tokens_details?.cached_tokens ?? 0);
+
+    const price   = priceFor(provider.model);
+    // OpenAI bills cached tokens at the cached rate; non-cached input at the input rate.
+    const billableInput = Math.max(0, inputTokens - cachedInputTokens);
+    const costUsd =
+      (billableInput     * price.inputPerMTok       / 1_000_000) +
+      (cachedInputTokens * price.cachedInputPerMTok / 1_000_000) +
+      (outputTokens      * price.outputPerMTok      / 1_000_000);
+
+    const data = parseAndValidate(rawText, opts.schema) as AIInvokeResult<TSchema>["data"];
+
+    return {
+      data,
+      rawText,
+      providerType: AIProviderType.OPENAI,
+      model:        provider.model,
+      usage: { inputTokens, outputTokens, cachedInputTokens, latencyMs: Date.now() - t0, costUsd },
+    };
+  },
 };
+
+// ── Gemini adapter ───────────────────────────────────────────────────────────
+// Generative Language API (v1beta). Schema enforcement via responseMimeType +
+// responseSchema. Cached tokens are reported in usageMetadata.cachedContentTokenCount.
+
+const GEMINI_DEFAULT_TIMEOUT = 120_000;
+
 export const geminiAdapter: ProviderAdapter = {
-  invoke: () => { throw new AIError("PROVIDER_UNCONFIGURED", "geminiAdapter: not yet implemented", AIProviderType.GEMINI); },
+  async invoke<TSchema extends z.ZodTypeAny | undefined>(
+    provider: ResolvedProvider,
+    opts: AIInvokeOptions<TSchema>,
+  ): Promise<AIInvokeResult<TSchema>> {
+    if (!provider.apiKey) {
+      throw new AIError("PROVIDER_UNCONFIGURED", "Gemini provider missing apiKey", AIProviderType.GEMINI);
+    }
+    const t0      = Date.now();
+    const baseUrl = provider.baseUrl ?? "https://generativelanguage.googleapis.com";
+    const url     = `${baseUrl}/v1beta/models/${encodeURIComponent(provider.model)}:generateContent?key=${encodeURIComponent(provider.apiKey)}`;
+
+    const generationConfig: Record<string, unknown> = {
+      temperature:     opts.temperature ?? 0.1,
+      maxOutputTokens: opts.maxOutputTokens ?? 1024,
+    };
+    if (opts.schema) generationConfig["responseMimeType"] = "application/json";
+
+    const body = {
+      systemInstruction: { parts: [{ text: opts.system }] },
+      contents: opts.messages.map((m) => ({
+        // Gemini uses "model" instead of "assistant"
+        role:  m.role === "assistant" ? "model" : "user",
+        parts: [{ text: m.content }],
+      })),
+      generationConfig,
+    };
+
+    let resp;
+    try {
+      resp = await axios.post(url, body, {
+        timeout: opts.timeoutMs ?? GEMINI_DEFAULT_TIMEOUT,
+        headers: { "content-type": "application/json" },
+      });
+    } catch (err) {
+      throw mapAxiosError(err, AIProviderType.GEMINI);
+    }
+
+    const candidate = resp.data?.candidates?.[0];
+    const parts     = candidate?.content?.parts ?? [];
+    const rawText   = parts.map((p: { text?: string }) => p.text ?? "").join("");
+
+    const usage = resp.data?.usageMetadata ?? {};
+    const inputTokens       = Number(usage.promptTokenCount ?? 0);
+    const outputTokens      = Number(usage.candidatesTokenCount ?? 0);
+    const cachedInputTokens = Number(usage.cachedContentTokenCount ?? 0);
+
+    const price         = priceFor(provider.model);
+    const billableInput = Math.max(0, inputTokens - cachedInputTokens);
+    const costUsd =
+      (billableInput     * price.inputPerMTok       / 1_000_000) +
+      (cachedInputTokens * price.cachedInputPerMTok / 1_000_000) +
+      (outputTokens      * price.outputPerMTok      / 1_000_000);
+
+    const data = parseAndValidate(rawText, opts.schema) as AIInvokeResult<TSchema>["data"];
+
+    return {
+      data,
+      rawText,
+      providerType: AIProviderType.GEMINI,
+      model:        provider.model,
+      usage: { inputTokens, outputTokens, cachedInputTokens, latencyMs: Date.now() - t0, costUsd },
+    };
+  },
 };
 
 const ADAPTERS: Record<AIProviderType, ProviderAdapter> = {
