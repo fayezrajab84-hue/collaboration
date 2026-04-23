@@ -34,8 +34,17 @@ enum ScanType {
   IAC
   CONTAINER
   DAST
+  DAST_INTERACTIVE   // Active scan seeded from a user-recorded ZAP proxy session
   PENTEST
   PENTEST_FULL
+}
+
+enum RecordingStatus {
+  ACTIVE      // user is currently browsing through the proxy
+  STOPPED     // user clicked stop or session timed out
+  SCANNING    // active scan kicked off; recording is implicitly stopped
+  COMPLETED   // active scan finished
+  FAILED      // active scan errored out
 }
 
 enum Severity {
@@ -150,6 +159,7 @@ model User {
 
   organizations OrganizationMember[]
   tickets       Ticket[]
+  recordings    RecordingSession[]
 }
 
 model Organization {
@@ -172,6 +182,7 @@ model Organization {
   aiProviders     AIProvider[]
   aiServiceRoutings AIServiceRouting[]
   aiCallLogs      AICallLog[]
+  recordings      RecordingSession[]
 }
 
 model OrganizationMember {
@@ -242,12 +253,42 @@ model Domain {
   pentestDepth    PentestDepth @default(STANDARD)
   excludePaths    String[]
 
-  org        Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  scans      ScanJob[]
-  findings   Finding[]
-  subdomains SubdomainDiscovery[]
-  authConfig DomainAuthConfig?
-  apiSpec    DomainApiSpec?
+  org         Organization         @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  scans       ScanJob[]
+  findings    Finding[]
+  subdomains  SubdomainDiscovery[]
+  authConfig  DomainAuthConfig?
+  apiSpec     DomainApiSpec?
+  recordings  RecordingSession[]
+}
+
+// ── Interactive DAST recording session ────────────────────────────────────────
+// One row per "user opens browser → proxies through ZAP → scans recorded URLs"
+// flow. ACTIVE rows hold a ZAP context open; the single-session lock is enforced
+// by the unique partial index below (only one ACTIVE row per org at a time).
+model RecordingSession {
+  id              String          @id @default(cuid())
+  orgId           String
+  domainId        String
+  startedById     String                                  // user who clicked "Start Recording"
+  zapContextId    String                                  // ZAP-assigned numeric context id
+  zapContextName  String                                  // human-readable name we picked
+  status          RecordingStatus @default(ACTIVE)
+  urlCount        Int             @default(0)             // last polled count of recorded URLs
+  alertCount      Int             @default(0)             // last polled passive-scan alert count
+  lastActivityAt  DateTime        @default(now())         // bumped each time we see new URLs (for idle auto-stop)
+  scanJobId       String?                                 // populated when user kicks off the active scan
+  startedAt       DateTime        @default(now())
+  endedAt         DateTime?
+  errorMessage    String?
+
+  domain    Domain        @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  org       Organization  @relation(fields: [orgId],    references: [id], onDelete: Cascade)
+  startedBy User          @relation(fields: [startedById], references: [id])
+  scanJob   ScanJob?      @relation(fields: [scanJobId],  references: [id])
+
+  @@index([orgId, status])
+  @@index([domainId, startedAt])
 }
 
 // ── Scan authentication config ────────────────────────────────────────────────
@@ -342,6 +383,7 @@ model ScanJob {
   domain     Domain?      @relation(fields: [domainId], references: [id])
   findings   Finding[]
   reports    Report[]
+  recordings RecordingSession[]
 
   @@index([orgId, status])
   @@index([orgId, createdAt])

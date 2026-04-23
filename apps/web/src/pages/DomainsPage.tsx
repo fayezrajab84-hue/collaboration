@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Play, Trash2, Pencil, Globe, X, ShieldAlert, Lock, FileJson } from "lucide-react";
+import { Plus, Play, Trash2, Pencil, Globe, X, ShieldAlert, Lock, FileJson, Radio } from "lucide-react";
 import { domainsApi } from "../lib/api";
 import DomainAuthPanel from "../components/DomainAuthPanel";
 import DomainApiSpecPanel from "../components/DomainApiSpecPanel";
+import RecordingPanel from "../components/RecordingPanel";
 import RiskScoreBadge from "../components/RiskScoreBadge";
 import type { Domain } from "@devsecops/types";
 import ScanStatusBadge from "../components/ScanStatusBadge";
@@ -125,6 +126,7 @@ export default function DomainsPage() {
   const [pentestDomain, setPentestDomain] = useState<Domain | null>(null);
   const [authOpenId, setAuthOpenId] = useState<string | null>(null);
   const [apiSpecOpenId, setApiSpecOpenId] = useState<string | null>(null);
+  const [recordingOpenId, setRecordingOpenId] = useState<string | null>(null);
   const [tab, setTab] = useState<"domains" | "dast-checks" | "pentest-checks">("domains");
   const qc = useQueryClient();
   const { data: domains, isLoading } = useQuery({ queryKey: ["domains"], queryFn: domainsApi.list });
@@ -219,6 +221,13 @@ export default function DomainsPage() {
                         >
                           <FileJson className="h-4 w-4" />
                         </button>
+                        <button
+                          onClick={() => setRecordingOpenId(recordingOpenId === d.id ? null : d.id)}
+                          className={`rounded p-1.5 transition-colors ${recordingOpenId === d.id ? "text-rose-400 bg-rose-900/30" : "text-gray-600 hover:text-rose-400"}`}
+                          title="Interactive DAST recording"
+                        >
+                          <Radio className="h-4 w-4" />
+                        </button>
                         <button onClick={() => setEditDomain(d)} className="text-gray-600 hover:text-indigo-400" title="Edit domain">
                           <Pencil className="h-4 w-4" />
                         </button>
@@ -239,6 +248,13 @@ export default function DomainsPage() {
                     <tr key={`${d.id}-apispec`} className="bg-gray-800/20">
                       <td colSpan={5} className="px-4 py-2">
                         <DomainApiSpecPanel domainId={d.id} />
+                      </td>
+                    </tr>
+                  )}
+                  {recordingOpenId === d.id && (
+                    <tr key={`${d.id}-recording`} className="bg-gray-800/20">
+                      <td colSpan={5} className="px-4 py-2">
+                        <RecordingPanel domainId={d.id} />
                       </td>
                     </tr>
                   )}

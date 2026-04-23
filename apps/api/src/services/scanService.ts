@@ -16,6 +16,11 @@ interface TriggerScanOptions {
   selectedSubdomains?: string[];
   pentestDepth?: "STANDARD" | "AGGRESSIVE";
   domainAuthConfigId?: string;
+  // DAST_INTERACTIVE — recorded ZAP context to active-scan against
+  recordingContextId?: string;
+  recordingContextName?: string;
+  recordingTargetUrl?: string;
+  recordingSessionId?: string;
 }
 
 export async function triggerScan(opts: TriggerScanOptions) {
@@ -54,6 +59,10 @@ export async function triggerScan(opts: TriggerScanOptions) {
       selectedSubdomains: opts.selectedSubdomains,
       pentestDepth: opts.pentestDepth,
       domainAuthConfigId: opts.domainAuthConfigId,
+      recordingContextId:   opts.recordingContextId,
+      recordingContextName: opts.recordingContextName,
+      recordingTargetUrl:   opts.recordingTargetUrl,
+      recordingSessionId:   opts.recordingSessionId,
     };
 
     const queue = scanQueues[scanType];

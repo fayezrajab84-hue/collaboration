@@ -170,6 +170,131 @@ class DASTScanner(BaseScanner):
             res.raise_for_status()
             return res.json()
 
+    # Limits for stashed HTTP bodies.  Bodies of binary responses (images,
+    # gzip, protobuf) can be MB-sized — cap aggressively so the Finding row
+    # stays JSON-friendly and the drawer doesn't render multi-megabyte blobs.
+    _REQ_BODY_MAX  = 2_048
+    _RESP_BODY_MAX = 8_192
+    _HEADERS_MAX   = 4_096
+
+    @staticmethod
+    def _sanitize(s: str | None) -> str | None:
+        """Strip NUL bytes + fix invalid UTF-8 (Postgres jsonb rejects both)."""
+        if not s:
+            return None
+        s = s.replace("\x00", "")
+        try:
+            s = s.encode("utf-8", "replace").decode("utf-8", "replace")
+        except Exception:
+            pass
+        return s
+
+    def _fetch_message(
+        self,
+        message_id: str | int | None,
+        *,
+        full: bool = False,
+    ) -> dict | None:
+        """Pull the full HTTP exchange ZAP captured when an alert fired.
+
+        Returns a dict with request_header / request_body / response_header /
+        response_body (NUL bytes stripped — Postgres jsonb/text rejects
+        `\\u0000`), plus the `message_id` so the frontend can lazy-load the
+        untruncated version later.
+
+        ``full=True`` skips truncation — used by the scanner's
+        ``/dast/message/{id}`` route when the drawer asks for full evidence.
+        """
+        if message_id is None or str(message_id) == "":
+            return None
+        try:
+            res = self._zap("/JSON/core/view/message/", {"id": str(message_id)})
+        except Exception:
+            return None
+        msg = res.get("message") or {}
+        if not msg:
+            return None
+
+        def _trim(s: str | None, limit: int) -> str | None:
+            s = self._sanitize(s)
+            if s is None:
+                return None
+            if full or len(s) <= limit:
+                return s
+            return s[:limit] + f"\n… [truncated {len(s) - limit} bytes]"
+
+        return {
+            "message_id":      str(message_id),
+            "request_header":  _trim(msg.get("requestHeader"),  self._HEADERS_MAX),
+            "request_body":    _trim(msg.get("requestBody"),    self._REQ_BODY_MAX),
+            "response_header": _trim(msg.get("responseHeader"), self._HEADERS_MAX),
+            "response_body":   _trim(msg.get("responseBody"),   self._RESP_BODY_MAX),
+        }
+
+    # ── Baseline capture for diff view ────────────────────────────────────────
+
+    _BASELINE_PROBE = "baselineprobe"
+
+    def _capture_baseline(
+        self,
+        attack_exchange: dict | None,
+        param:           str | None,
+        attack_value:    str | None,
+    ) -> dict | None:
+        """Send an equivalent "safe" request so the UI can diff attack vs baseline.
+
+        Strategy: clone the attack request, replace the attack payload with a
+        benign probe string, replay it through ZAP's sendRequest, then fetch
+        the resulting exchange.  Only invoked for alerts with a clear param +
+        attack value — passive header alerts skip this path.
+
+        Returns None on any failure; callers MUST treat this as best-effort.
+        """
+        if not attack_exchange or not attack_value:
+            return None
+        req_header = attack_exchange.get("request_header") or ""
+        req_body   = attack_exchange.get("request_body")   or ""
+        if not req_header:
+            return None
+
+        # Naive string replace — covers the raw payload plus a URL-encoded copy
+        # (attack may appear in query string).  Good enough for the common
+        # reflected-XSS / SQLi cases; exotic encodings fall through to None.
+        import urllib.parse
+        encoded = urllib.parse.quote(attack_value, safe="")
+        replaced_header = req_header.replace(attack_value, self._BASELINE_PROBE)
+        replaced_header = replaced_header.replace(encoded, self._BASELINE_PROBE)
+        replaced_body   = req_body.replace(attack_value, self._BASELINE_PROBE)
+        replaced_body   = replaced_body.replace(encoded, self._BASELINE_PROBE)
+        if replaced_header == req_header and replaced_body == req_body:
+            # Attack value didn't appear anywhere we can rewrite — skip.
+            return None
+
+        # ZAP expects CRLF-separated header, blank line, body.  Force CRLF.
+        header_crlf = replaced_header.replace("\r\n", "\n").replace("\n", "\r\n")
+        full_req    = header_crlf + "\r\n\r\n" + replaced_body
+
+        try:
+            res = self._zap(
+                "/JSON/core/action/sendRequest/",
+                {"request": full_req, "followRedirects": "false"},
+            )
+        except Exception:
+            return None
+        messages = res.get("sendRequest") or []
+        if not messages:
+            return None
+        msg = messages[0] or {}
+
+        return {
+            "request_header":  self._sanitize(msg.get("requestHeader") or "")[: self._HEADERS_MAX]   if msg.get("requestHeader")  else None,
+            "request_body":    self._sanitize(msg.get("requestBody")   or "")[: self._REQ_BODY_MAX]  if msg.get("requestBody")    else None,
+            "response_header": self._sanitize(msg.get("responseHeader") or "")[: self._HEADERS_MAX]  if msg.get("responseHeader") else None,
+            "response_body":   self._sanitize(msg.get("responseBody")  or "")[: self._RESP_BODY_MAX] if msg.get("responseBody")   else None,
+            "probe_value":     self._BASELINE_PROBE,
+            "attack_value":    attack_value,
+        }
+
     def _configure_ascan(self) -> None:
         """Disable rules known to hang and cap total active-scan duration."""
         # Cap duration — ZAP will stop the scan gracefully and return whatever it found
@@ -944,6 +1069,19 @@ class DASTScanner(BaseScanner):
                 evidence["param"] = alert["param"]
             if alert.get("other"):
                 evidence["other"] = str(alert["other"])[:300]
+
+            # Full HTTP exchange — drawer shows it in the Request/Response tabs
+            # under the Affected URLs panel.  Same capture logic as interactive DAST.
+            exchange = self._fetch_message(alert.get("messageId"))
+            if exchange:
+                evidence["http_exchange"] = exchange
+                # Baseline replay for diff view — best-effort, skips silently
+                # when the attack payload isn't a simple param substitution.
+                baseline = self._capture_baseline(
+                    exchange, alert.get("param"), alert.get("attack"),
+                )
+                if baseline:
+                    evidence["http_baseline_exchange"] = baseline
 
             findings.append(NormalizedFinding(
                 fingerprint=fingerprint,

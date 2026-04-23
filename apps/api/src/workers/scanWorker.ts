@@ -17,7 +17,7 @@ import { generateScanSummary } from "../services/scanSummaryService.js";
 import { scoreTarget } from "../services/riskScoringService.js";
 import { generateTargetReport } from "../services/reportHtmlService.js";
 
-const SCAN_TYPES: ScanType[] = ["SAST", "SCA", "SECRET", "IAC", "CONTAINER", "DAST", "PENTEST", "PENTEST_FULL"];
+const SCAN_TYPES: ScanType[] = ["SAST", "SCA", "SECRET", "IAC", "CONTAINER", "DAST", "DAST_INTERACTIVE", "PENTEST", "PENTEST_FULL"];
 
 async function processScanJob(payload: ScanJobPayload) {
   const { scanJobId, orgId, targetType, targetId, scanType, encryptedGitToken } = payload;
@@ -142,12 +142,24 @@ async function processScanJob(payload: ScanJobPayload) {
       ? config.SCANNER_PENTEST_URL
       : config.SCANNER_URL;
 
-  // Call Python scanner service
+  // Call Python scanner service. DAST_INTERACTIVE scans skip the full /scan
+  // pipeline — they re-scan an existing ZAP context populated by browser proxy
+  // traffic, so we POST to /dast/recording/scan with the recorded context info.
   let result: ScanResult;
   try {
+    const isInteractive = scanType === "DAST_INTERACTIVE";
+    const endpoint = isInteractive ? "/dast/recording/scan" : "/scan";
+    const body = isInteractive
+      ? {
+          ...scanRequest,
+          contextId:   payload.recordingContextId,
+          contextName: payload.recordingContextName,
+          targetUrl:   payload.recordingTargetUrl,
+        }
+      : scanRequest;
     const response = await axios.post<ScanResult>(
-      `${scannerUrl}/scan`,
-      scanRequest,
+      `${scannerUrl}${endpoint}`,
+      body,
       { timeout: 2_700_000 } // 45 min — DAST active scan can run up to 27 min alone
     );
     result = response.data;
@@ -335,6 +347,15 @@ async function processScanJob(payload: ScanJobPayload) {
       highCount: severityCounts["HIGH"] ?? 0,
     });
 
+    // If this was an interactive recording scan, mark the linked
+    // RecordingSession as COMPLETED so the UI clears the SCANNING state.
+    if (scanType === "DAST_INTERACTIVE") {
+      await prisma.recordingSession.updateMany({
+        where: { scanJobId, status: { in: ["SCANNING", "ACTIVE"] } },
+        data:  { status: "COMPLETED", endedAt: new Date() },
+      }).catch(() => {/* non-fatal */});
+    }
+
     // Send Slack/Teams alerts for new CRITICAL/HIGH findings
     const alertableFindings = await prisma.finding.findMany({
       where: {
@@ -388,6 +409,13 @@ export function initWorkers() {
         where: { id: scanJobId },
         data: { status: "FAILED", error: err.message, completedAt: new Date() },
       }).catch(() => {});
+      // Release the linked recording session so the UI clears.
+      if (scanType === "DAST_INTERACTIVE") {
+        await prisma.recordingSession.updateMany({
+          where: { scanJobId, status: { in: ["SCANNING", "ACTIVE"] } },
+          data:  { status: "FAILED", endedAt: new Date(), errorMessage: err.message },
+        }).catch(() => {});
+      }
       emitStatusChange(scanJobId, "FAILED", { error: err.message });
     });
   }

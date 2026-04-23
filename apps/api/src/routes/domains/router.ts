@@ -9,6 +9,7 @@ import { scoreTarget } from "../../services/riskScoringService.js";
 import { config } from "../../config.js";
 import { triggerScan } from "../../services/scanService.js";
 import { encrypt, decrypt } from "../../services/encryptionService.js";
+import * as recording from "../../services/recordingService.js";
 import type { ScanType } from "@devsecops/types";
 
 const router = Router();
@@ -533,6 +534,73 @@ router.delete("/:id/apispec", requireAuth, async (req, res, next) => {
 
     await prisma.domainApiSpec.deleteMany({ where: { domainId: req.params.id } });
     res.status(204).send();
+  } catch (err) { next(err); }
+});
+
+// ── Interactive DAST recording ────────────────────────────────────────────────
+
+// Special path (underscore-prefixed) — never collides with cuid domain ids.
+// Streams ZAP's CA cert through the API so the user can install it locally
+// without the scanner being directly reachable from the browser.
+router.get("/_recording/zap-ca.cer", async (_req, res, next) => {
+  try {
+    const bytes = await recording.fetchZapCaBytes();
+    res.setHeader("Content-Type", "application/x-x509-ca-cert");
+    res.setHeader("Content-Disposition", 'attachment; filename="zap-root-ca.cer"');
+    res.send(bytes);
+  } catch (err) { next(err); }
+});
+
+router.post("/:id/recording/start", async (req, res, next) => {
+  try {
+    const user = req.user as { id: string };
+    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    if (!member) { res.status(403).json({ error: "Forbidden" }); return; }
+    const result = await recording.start({
+      orgId:    member.orgId,
+      domainId: req.params["id"]!,
+      userId:   user.id,
+    });
+    res.json(result);
+  } catch (err) {
+    const code = (err as Error & { code?: string }).code;
+    if (code === "RECORDING_BUSY") { res.status(409).json({ error: (err as Error).message }); return; }
+    if (code === "NOT_FOUND")     { res.status(404).json({ error: (err as Error).message }); return; }
+    next(err);
+  }
+});
+
+router.get("/:id/recording/status", async (req, res, next) => {
+  try {
+    const user = req.user as { id: string };
+    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    if (!member) { res.status(403).json({ error: "Forbidden" }); return; }
+    const result = await recording.status(member.orgId, req.params["id"]!);
+    res.json(result);  // null when no active session — UI shows "start" state
+  } catch (err) { next(err); }
+});
+
+router.post("/:id/recording/scan", async (req, res, next) => {
+  try {
+    const user = req.user as { id: string };
+    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    if (!member) { res.status(403).json({ error: "Forbidden" }); return; }
+    const result = await recording.runScan(member.orgId, req.params["id"]!);
+    res.status(202).json(result);
+  } catch (err) {
+    const code = (err as Error & { code?: string }).code;
+    if (code === "NO_SESSION") { res.status(409).json({ error: (err as Error).message }); return; }
+    next(err);
+  }
+});
+
+router.post("/:id/recording/stop", async (req, res, next) => {
+  try {
+    const user = req.user as { id: string };
+    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    if (!member) { res.status(403).json({ error: "Forbidden" }); return; }
+    const result = await recording.stop(member.orgId, req.params["id"]!);
+    res.json(result);
   } catch (err) { next(err); }
 });
 

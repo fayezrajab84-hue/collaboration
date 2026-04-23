@@ -16,6 +16,7 @@ class ScanType(str, Enum):
     IAC = "IAC"
     CONTAINER = "CONTAINER"
     DAST = "DAST"
+    DAST_INTERACTIVE = "DAST_INTERACTIVE"
     PENTEST = "PENTEST"
     PENTEST_FULL = "PENTEST_FULL"
 

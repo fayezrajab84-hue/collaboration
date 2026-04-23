@@ -1,4 +1,4 @@
-export type ScanType = "SAST" | "SCA" | "SECRET" | "IAC" | "CONTAINER" | "DAST" | "PENTEST" | "PENTEST_FULL";
+export type ScanType = "SAST" | "SCA" | "SECRET" | "IAC" | "CONTAINER" | "DAST" | "DAST_INTERACTIVE" | "PENTEST" | "PENTEST_FULL";
 export type PentestDepth = "STANDARD" | "AGGRESSIVE";
 export type Confidence = "CONFIRMED" | "LIKELY" | "POSSIBLE";
 

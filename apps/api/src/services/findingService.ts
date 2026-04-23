@@ -3,6 +3,30 @@ import prisma from "../db.js";
 import { logger } from "../logger.js";
 import type { NormalizedFinding, ScanType, TargetType } from "@devsecops/types";
 
+// ── JSON sanitizer ────────────────────────────────────────────────────────────
+//
+// Postgres rejects NUL bytes (\u0000) inside jsonb columns (SQLSTATE 22P05).
+// ZAP alerts can embed raw bytes in request/response bodies when the target
+// returns binary content or mis-decoded text. Walk any rawOutput/evidence
+// payload recursively and strip them from every string leaf before upsert.
+function stripNulBytes<T>(value: T): T {
+  if (value === null || value === undefined) return value;
+  if (typeof value === "string") {
+    return (value.includes("\u0000") ? value.replace(/\u0000/g, "") : value) as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map(stripNulBytes) as T;
+  }
+  if (typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = stripNulBytes(v);
+    }
+    return out as T;
+  }
+  return value;
+}
+
 // ── Severity helpers ──────────────────────────────────────────────────────────
 
 const SEV_RANK: Record<string, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, INFO: 4 };
@@ -474,16 +498,25 @@ function mergeSastFindings(
  * One occurrence of the same vulnerability type hitting a different URL/parameter.
  * Stored inside rawOutput.occurrences[] of the merged finding.
  */
+interface DastHttpExchange {
+  request_header:  string | null;
+  request_body:    string | null;
+  response_header: string | null;
+  response_body:   string | null;
+}
+
 interface DastOccurrence {
-  url:            string;
-  param:          string | null;
-  severity:       string;
-  confidence:     string;        // our Confidence enum value
-  zapConfidence:  string;        // raw ZAP confidence string
-  responseStatus: string | number | null;
-  evidence:       string | null; // response evidence fragment
-  attack:         string | null; // attack payload that triggered the alert
-  other:          string | null; // ZAP "other" field
+  url:                  string;
+  param:                string | null;
+  severity:             string;
+  confidence:           string;
+  zapConfidence:        string;
+  responseStatus:       string | number | null;
+  evidence:             string | null;
+  attack:               string | null;
+  other:                string | null;
+  httpExchange:         DastHttpExchange | null;   // attack exchange
+  httpBaselineExchange: DastHttpExchange | null;   // baseline probe for diff view
 }
 
 /**
@@ -541,13 +574,9 @@ function mergeDastFindings(
   for (const [ruleId, group] of groups.entries()) {
     const fp = dastRuleFingerprint(orgId, targetId, scanType, ruleId);
 
-    if (group.length === 1) {
-      // Single hit — still switch to rule-level fingerprint for future merges
-      result.push({ ...group[0]!, fingerprint: fp });
-      continue;
-    }
-
-    // ── Multiple occurrences → build merged finding ───────────────────────
+    // Always emit the merged structure, even for single hits — keeps the
+    // drawer's rendering path uniform (Affected URLs panel + HTTP Exchange
+    // viewer appear whether a rule fires 1× or 50×).
     const sortedBySev = [...group].sort(
       (a, b) => (SEV_RANK[a.severity] ?? 99) - (SEV_RANK[b.severity] ?? 99),
     );
@@ -574,6 +603,8 @@ function mergeDastFindings(
         evidence:       (ev["evidence"]         as string | null)  ?? null,
         attack:         (ev["attack"]           as string | null)  ?? null,
         other:          (ev["other"]            as string | null)  ?? null,
+        httpExchange:         (ev["http_exchange"]          as DastHttpExchange | null) ?? null,
+        httpBaselineExchange: (ev["http_baseline_exchange"] as DastHttpExchange | null) ?? null,
       };
     });
 
@@ -647,7 +678,7 @@ export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: n
       ...(iac.length    ? mergeIacFindings(iac,       orgId, targetId) : []),
       ...other,
     ];
-  } else if (scanType === "DAST" || scanType === "PENTEST" || scanType === "PENTEST_FULL") {
+  } else if (scanType === "DAST" || scanType === "DAST_INTERACTIVE" || scanType === "PENTEST" || scanType === "PENTEST_FULL") {
     findings = mergeDastFindings(rawFindings, orgId, targetId, scanType);
   } else if (scanType === "SECRET") {
     findings = mergeSecretFindings(rawFindings, orgId, targetId);
@@ -669,7 +700,9 @@ export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: n
 
   const now = new Date();
 
-  for (const f of findings) {
+  for (const rawF of findings) {
+    // Scrub NUL bytes from all string fields — Postgres jsonb rejects them.
+    const f = stripNulBytes(rawF);
     await prisma.finding.upsert({
       where: { fingerprint: f.fingerprint },
       create: {

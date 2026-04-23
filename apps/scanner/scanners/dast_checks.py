@@ -37,6 +37,53 @@ def _head(url: str, *, timeout: int = 10, verify: bool = False) -> httpx.Respons
         return None
 
 
+def _sanitize_text(s: str | bytes | None, *, max_len: int = 4000) -> str | None:
+    """Trim + strip NUL bytes so Postgres jsonb can store the value."""
+    if s is None:
+        return None
+    if isinstance(s, bytes):
+        try:
+            s = s.decode("utf-8", errors="replace")
+        except Exception:
+            s = s.decode("latin-1", errors="replace")
+    s = s.replace("\x00", "")
+    if len(s) > max_len:
+        s = s[:max_len] + f"\n... [truncated, {len(s) - max_len} more bytes]"
+    return s
+
+
+def _exchange_from_httpx(resp: httpx.Response) -> dict:
+    """
+    Convert an httpx.Response into a DastHttpExchange-shaped dict so the
+    frontend's HttpExchangeBlock renders these findings the same way it
+    renders ZAP-captured exchanges (headers + body + curl + syntax).
+    """
+    req = resp.request
+    # Request line: "GET /path HTTP/1.1"
+    path = req.url.raw_path.decode("latin-1") if hasattr(req.url, "raw_path") else req.url.path
+    req_line = f"{req.method} {path} HTTP/1.1"
+    req_headers = "\r\n".join(f"{k}: {v}" for k, v in req.headers.items())
+    req_header_block = f"{req_line}\r\n{req_headers}"
+
+    status_line = f"HTTP/{resp.http_version.split('/')[-1] if '/' in resp.http_version else resp.http_version} {resp.status_code} {resp.reason_phrase}"
+    res_headers = "\r\n".join(f"{k}: {v}" for k, v in resp.headers.items())
+    res_header_block = f"{status_line}\r\n{res_headers}"
+
+    try:
+        req_body = req.content.decode("utf-8", errors="replace") if req.content else ""
+    except Exception:
+        req_body = ""
+
+    return {
+        # No message_id — not a ZAP-tracked exchange, so "Load full response"
+        # button won't appear (intentional: nothing to fetch).
+        "request_header":  _sanitize_text(req_header_block),
+        "request_body":    _sanitize_text(req_body),
+        "response_header": _sanitize_text(res_header_block),
+        "response_body":   _sanitize_text(resp.text),
+    }
+
+
 def _finding(
     scanner: BaseScanner,
     request: ScanRequest,
@@ -49,11 +96,20 @@ def _finding(
     cwe_id: str | None = None,
     confidence: Confidence = Confidence.POSSIBLE,
     evidence: dict | None = None,
+    resp: httpx.Response | None = None,
 ) -> NormalizedFinding:
     fingerprint = scanner.compute_fingerprint(
         request.org_id, request.target_id, ScanType.DAST,
         check_id, url or request.domain or "", None,
     )
+    ev = evidence or {"check": check_id, "url": url}
+    # Auto-attach HTTP exchange when the caller had a response on hand.
+    # Gives these findings the same rich drawer as ZAP-captured alerts.
+    if resp is not None and "http_exchange" not in ev:
+        try:
+            ev = {**ev, "http_exchange": _exchange_from_httpx(resp)}
+        except Exception:
+            pass  # evidence without exchange is still valid
     return NormalizedFinding(
         fingerprint=fingerprint,
         rule_id=check_id,
@@ -67,7 +123,7 @@ def _finding(
         references=[],
         raw_output={"check_id": check_id, "url": url},
         confidence=confidence,
-        evidence=evidence or {"check": check_id, "url": url},
+        evidence=ev,
     )
 
 
@@ -421,7 +477,8 @@ def check_exposed_paths(scanner: BaseScanner, request: ScanRequest, base_url: st
             findings.append(_finding(scanner, request, check_id, title, desc, sev, fix, url, "CWE-538",
                 Confidence.CONFIRMED,
                 {"check": check_id, "url": url, "response_status": r.status_code,
-                 "content_length": len(r.content), "snippet": r.text[:300] if r.text else ""}))
+                 "content_length": len(r.content), "snippet": r.text[:300] if r.text else ""},
+                resp=r))
 
     return findings
 
@@ -461,7 +518,8 @@ def check_heartbleed(scanner: BaseScanner, request: ScanRequest, base_url: str) 
             base_url, "CWE-126",
             Confidence.LIKELY,
             {"check": "heartbleed", "url": base_url, "server_header": server,
-             "detail": "OpenSSL version in Server header matches affected range 1.0.1a-1.0.1f"}))
+             "detail": "OpenSSL version in Server header matches affected range 1.0.1a-1.0.1f"},
+            resp=r))
     return findings
 
 
@@ -555,15 +613,30 @@ def run_all_checks(
     findings: list[NormalizedFinding] = []
 
     if home_resp:
-        findings += check_hsts(scanner, request, base_url, home_resp)
-        findings += check_csp(scanner, request, base_url, home_resp)
-        findings += check_clickjacking(scanner, request, base_url, home_resp)
-        findings += check_cookies(scanner, request, base_url, home_resp)
-        findings += check_info_leak_headers(scanner, request, base_url, home_resp)
-        findings += check_sri(scanner, request, base_url, home_resp)
-        findings += check_reverse_tabnabbing(scanner, request, base_url, home_resp)
-        findings += check_directory_listing(scanner, request, base_url, home_resp)
-        findings += check_jwt_in_response(scanner, request, base_url, home_resp)
+        home_checks: list[NormalizedFinding] = []
+        home_checks += check_hsts(scanner, request, base_url, home_resp)
+        home_checks += check_csp(scanner, request, base_url, home_resp)
+        home_checks += check_clickjacking(scanner, request, base_url, home_resp)
+        home_checks += check_cookies(scanner, request, base_url, home_resp)
+        home_checks += check_info_leak_headers(scanner, request, base_url, home_resp)
+        home_checks += check_sri(scanner, request, base_url, home_resp)
+        home_checks += check_reverse_tabnabbing(scanner, request, base_url, home_resp)
+        home_checks += check_directory_listing(scanner, request, base_url, home_resp)
+        home_checks += check_jwt_in_response(scanner, request, base_url, home_resp)
+
+        # Attach the actual HTTP exchange so the drawer shows what headers
+        # were received — consistent with ZAP-captured alerts.
+        try:
+            home_exchange = _exchange_from_httpx(home_resp)
+            for f in home_checks:
+                ev = dict(f.evidence or {})
+                if "http_exchange" not in ev:
+                    ev["http_exchange"] = home_exchange
+                    f.evidence = ev
+        except Exception:
+            pass
+
+        findings += home_checks
 
     findings += check_exposed_paths(scanner, request, base_url)
     findings += check_heartbleed(scanner, request, base_url)

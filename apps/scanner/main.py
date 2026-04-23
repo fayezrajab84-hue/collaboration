@@ -27,6 +27,7 @@ from scanners import (
 )
 from scanners.pentest_full.recon import ReconScanner
 from scanners.verify import verify_finding
+from scanners.dast_interactive import InteractiveDASTSession
 
 app = FastAPI(
     title="DevSecOps Scanner Service",
@@ -178,6 +179,122 @@ async def generate_sbom(request: dict):
     finally:
         scanner.cleanup(workspace)
         _shutil.rmtree(trivy_cache, ignore_errors=True)
+
+
+@app.post("/dast/recording/start")
+async def dast_recording_start(payload: dict) -> dict:
+    """
+    Start an interactive DAST recording session.
+    Body: { domain: str, contextName: str }
+    Returns the ZAP context info the API persists in RecordingSession.
+    """
+    domain       = payload.get("domain")
+    context_name = payload.get("contextName")
+    if not domain or not context_name:
+        raise HTTPException(status_code=400, detail="domain and contextName required")
+    session = InteractiveDASTSession()
+    loop    = asyncio.get_event_loop()
+    return await loop.run_in_executor(_executor, lambda: session.start(domain, context_name))
+
+
+@app.post("/dast/recording/stats")
+async def dast_recording_stats(payload: dict) -> dict:
+    """
+    Body: { contextName: str, targetUrl: str }
+    Returns { urlCount, alertCount } for the live session.
+    """
+    context_name = payload.get("contextName")
+    target_url   = payload.get("targetUrl")
+    if not context_name or not target_url:
+        raise HTTPException(status_code=400, detail="contextName and targetUrl required")
+    session = InteractiveDASTSession()
+    loop    = asyncio.get_event_loop()
+    return await loop.run_in_executor(_executor, lambda: session.stats(context_name, target_url))
+
+
+@app.post("/dast/recording/scan", response_model=ScanResult, response_model_by_alias=True)
+async def dast_recording_scan(payload: dict) -> ScanResult:
+    """
+    Body: ScanRequest fields + { contextId, contextName, targetUrl }
+    Returns the ScanResult with normalized findings, same shape as /scan.
+    """
+    ctx_id       = payload.get("contextId")
+    context_name = payload.get("contextName")
+    target_url   = payload.get("targetUrl")
+    if not ctx_id or not context_name or not target_url:
+        raise HTTPException(status_code=400, detail="contextId, contextName, targetUrl required")
+
+    # Reuse ScanRequest validation for the rest of the payload.
+    try:
+        scan_request = ScanRequest(**{k: v for k, v in payload.items()
+                                      if k not in ("contextId", "contextName", "targetUrl")})
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"invalid scan request: {exc}")
+
+    session = InteractiveDASTSession()
+    start_ms = int(time.time() * 1000)
+    loop = asyncio.get_event_loop()
+    try:
+        findings = await loop.run_in_executor(
+            _executor,
+            lambda: session.run_active_scan(ctx_id, context_name, target_url, scan_request),
+        )
+        return ScanResult(
+            scan_job_id=scan_request.scan_job_id,
+            scan_type=ScanType.DAST_INTERACTIVE,
+            scanner="zap-interactive",
+            success=True,
+            findings=findings,
+            duration_ms=int(time.time() * 1000) - start_ms,
+        )
+    except Exception as exc:
+        return ScanResult(
+            scan_job_id=scan_request.scan_job_id,
+            scan_type=ScanType.DAST_INTERACTIVE,
+            scanner="zap-interactive",
+            success=False,
+            findings=[],
+            error=str(exc)[:1000],
+            duration_ms=int(time.time() * 1000) - start_ms,
+        )
+
+
+@app.post("/dast/recording/stop")
+async def dast_recording_stop(payload: dict) -> dict:
+    """Body: { contextName: str }. Removes the ZAP context."""
+    context_name = payload.get("contextName")
+    if not context_name:
+        raise HTTPException(status_code=400, detail="contextName required")
+    session = InteractiveDASTSession()
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(_executor, lambda: session.stop(context_name))
+    return {"ok": True}
+
+
+@app.get("/dast/message/{message_id}")
+async def dast_fetch_message(message_id: str) -> dict:
+    """
+    Return the full untruncated HTTP exchange for a ZAP message.
+    Used by the drawer's "Load full response" lazy-fetch button.
+    404 when ZAP has evicted the message from its in-memory session.
+    """
+    from scanners.dast import DASTScanner
+    helper = DASTScanner()
+    loop = asyncio.get_event_loop()
+    exchange = await loop.run_in_executor(
+        _executor, lambda: helper._fetch_message(message_id, full=True),
+    )
+    if exchange is None:
+        raise HTTPException(status_code=404, detail="message not found in ZAP")
+    return exchange
+
+
+@app.get("/dast/recording/zap-ca")
+async def dast_recording_zap_ca() -> dict:
+    """Return the URL the API should fetch ZAP's root CA from. The API proxies
+    that URL out to the user so it appears to come from the platform."""
+    session = InteractiveDASTSession()
+    return {"caUrl": session.root_cert_url()}
 
 
 @app.post("/scan", response_model=ScanResult, response_model_by_alias=True)

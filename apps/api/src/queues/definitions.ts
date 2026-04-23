@@ -21,6 +21,11 @@ export interface ScanJobPayload {
   pentestDepth?: "STANDARD" | "AGGRESSIVE";
   // Authenticated scan — domain auth config id (looked up + decrypted in worker)
   domainAuthConfigId?: string;
+  // DAST_INTERACTIVE — recorded ZAP context to active-scan against
+  recordingContextId?: string;
+  recordingContextName?: string;
+  recordingTargetUrl?: string;
+  recordingSessionId?: string;
 }
 
 const QUEUE_OPTS = {
@@ -71,6 +76,7 @@ export const scanQueues: Record<ScanType, Queue<ScanJobPayload>> = {
   IAC: new Queue("scan-IAC", QUEUE_OPTS),
   CONTAINER: new Queue("scan-CONTAINER", QUEUE_OPTS),
   DAST: new Queue("scan-DAST", QUEUE_OPTS),
+  DAST_INTERACTIVE: new Queue("scan-DAST_INTERACTIVE", QUEUE_OPTS),
   PENTEST: new Queue("scan-PENTEST", QUEUE_OPTS),
   PENTEST_FULL: new Queue("scan-PENTEST_FULL", QUEUE_OPTS),
 };

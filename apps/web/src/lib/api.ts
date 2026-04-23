@@ -104,7 +104,33 @@ export const domainsApi = {
     apiClient.put<DomainApiSpecView>(`/domains/${id}/apispec`, data).then((r) => r.data),
   deleteApiSpec: (id: string) =>
     apiClient.delete(`/domains/${id}/apispec`).then((r) => r.data),
+  // Interactive DAST recording
+  recordingStart: (id: string) =>
+    apiClient.post<RecordingSessionView>(`/domains/${id}/recording/start`).then((r) => r.data),
+  recordingStatus: (id: string) =>
+    apiClient.get<RecordingSessionView | null>(`/domains/${id}/recording/status`).then((r) => r.data),
+  recordingScan: (id: string) =>
+    apiClient.post<TriggerScanResponse>(`/domains/${id}/recording/scan`).then((r) => r.data),
+  recordingStop: (id: string) =>
+    apiClient.post(`/domains/${id}/recording/stop`).then((r) => r.data),
 };
+
+export interface RecordingSessionView {
+  sessionId: string;
+  contextId: string;
+  contextName: string;
+  targetUrl: string;
+  proxyHost: string;
+  proxyPort: number;
+  caUrl: string;
+  status: string;
+  urlCount?: number;
+  alertCount?: number;
+  startedAt?: string;
+  lastActivityAt?: string;
+  scanJobId?: string | null;
+  scanJobStatus?: string | null;
+}
 
 export interface DomainAuthConfigView {
   id: string;
@@ -169,6 +195,14 @@ export const findingsApi = {
   list: (params?: FindingFilterParams) =>
     apiClient.get<PaginatedResponse<Finding>>("/findings", { params }).then((r) => r.data),
   get: (id: string) => apiClient.get<Finding>(`/findings/${id}`).then((r) => r.data),
+  httpMessage: (id: string, messageId: string) =>
+    apiClient.get<{
+      message_id:      string;
+      request_header:  string | null;
+      request_body:    string | null;
+      response_header: string | null;
+      response_body:   string | null;
+    }>(`/findings/${id}/http-message/${messageId}`).then((r) => r.data),
   update: (id: string, data: UpdateFindingRequest) =>
     apiClient.patch<Finding>(`/findings/${id}`, data).then((r) => r.data),
   verify: (id: string) =>

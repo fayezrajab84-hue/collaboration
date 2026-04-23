@@ -141,8 +141,10 @@ services:
   # ── DVWA DB init (one-shot) ─────────────────────────────────────────────────
   # Automatically initialises the DVWA database on first start so you don't
   # have to visit setup.php manually. Safe to re-run — CREATE TABLE IF NOT EXISTS.
+  # Run via DVWA's own image so the mysqli extension is available (the
+  # generic php:8-cli-alpine image ships without it and the loop fails forever).
   dvwa-init:
-    image: php:8-cli-alpine
+    image: ghcr.io/digininja/dvwa:latest
     restart: "no"
     depends_on:
       dvwa:
@@ -187,6 +189,11 @@ services:
     networks:
       - internal
       - public       # ZAP needs outbound access to scan external domains
+    # Expose ZAP's listener on the host for the Interactive DAST recording flow.
+    # Localhost-only so external attackers can't MITM through your proxy.
+    # The user configures their browser proxy → http://127.0.0.1:8090.
+    ports:
+      - "127.0.0.1:8090:8080"
     healthcheck:
       test:
         - "CMD-SHELL"

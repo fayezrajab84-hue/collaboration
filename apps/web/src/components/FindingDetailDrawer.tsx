@@ -75,16 +75,26 @@ interface ScaMergedRawOutput {
 
 // ── DAST / Pentest subissues types ────────────────────────────────────────────
 
+interface DastHttpExchange {
+  message_id?:     string;     // present on attack exchange; absent on baseline
+  request_header:  string | null;
+  request_body:    string | null;
+  response_header: string | null;
+  response_body:   string | null;
+}
+
 interface DastOccurrence {
-  url:            string;
-  param:          string | null;
-  severity:       string;
-  confidence:     string;
-  zapConfidence:  string;
-  responseStatus: string | number | null;
-  evidence:       string | null;
-  attack:         string | null;
-  other:          string | null;
+  url:                  string;
+  param:                string | null;
+  severity:             string;
+  confidence:           string;
+  zapConfidence:        string;
+  responseStatus:       string | number | null;
+  evidence:             string | null;
+  attack:               string | null;
+  other:                string | null;
+  httpExchange:         DastHttpExchange | null;
+  httpBaselineExchange: DastHttpExchange | null;   // for diff view
 }
 
 interface DastMergedRawOutput {
@@ -128,12 +138,351 @@ const CONF_LABEL: Record<string, { label: string; cls: string }> = {
   POSSIBLE:  { label: "Possible",   cls: "bg-gray-800/40 text-gray-400     border border-gray-700/50" },
 };
 
+/**
+ * Build an equivalent `curl` command from a ZAP-captured request.
+ * Parses the raw request header (METHOD path HTTP/X\r\nHeader: value\r\n...)
+ * and combines it with the occurrence URL + request body.
+ * Returns null if the header line can't be parsed.
+ */
+function buildCurlCommand(
+  reqHeader: string | null | undefined,
+  reqBody:   string | null | undefined,
+  url:       string,
+): string | null {
+  if (!reqHeader) return null;
+  const lines = reqHeader.split(/\r?\n/).filter((l) => l.length > 0);
+  if (lines.length === 0) return null;
+
+  // Request line: "GET /path HTTP/1.1"
+  const requestLine = lines[0] ?? "";
+  const method = (requestLine.split(" ")[0] ?? "GET").toUpperCase();
+
+  // Shell-escape single quotes by closing-quote + escaped-quote + reopen.
+  const esc = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
+
+  const parts: string[] = [`curl -X ${method} ${esc(url)}`];
+  for (const line of lines.slice(1)) {
+    const idx = line.indexOf(":");
+    if (idx <= 0) continue;
+    const name  = line.slice(0, idx).trim();
+    const value = line.slice(idx + 1).trim();
+    // Skip pseudo-headers + the ones curl computes itself.
+    if (!name || name.toLowerCase() === "content-length") continue;
+    parts.push(`  -H ${esc(`${name}: ${value}`)}`);
+  }
+  if (reqBody && reqBody.trim().length > 0 && method !== "GET" && method !== "HEAD") {
+    parts.push(`  --data-raw ${esc(reqBody)}`);
+  }
+  return parts.join(" \\\n");
+}
+
+/**
+ * Pretty-print JSON bodies; return original string if not JSON-parseable.
+ * Detects both by Content-Type in the header and by try-parse fallback.
+ */
+function prettyBody(body: string | null, header: string | null): string {
+  if (!body) return "";
+  // Cheap content-type sniff
+  const ct = (header ?? "").match(/content-type:\s*([^\r\n;]+)/i)?.[1]?.toLowerCase() ?? "";
+  const looksJson = ct.includes("json") || body.trimStart().startsWith("{") || body.trimStart().startsWith("[");
+  if (!looksJson) return body;
+  try {
+    return JSON.stringify(JSON.parse(body), null, 2);
+  } catch {
+    return body;
+  }
+}
+
+/**
+ * Derive a pseudo-filePath for SyntaxHighlight based on response Content-Type.
+ * SyntaxHighlight picks the language from the file extension, so we pass
+ * strings like "response.json" / "response.html" / "response.xml".
+ */
+function pseudoPathForBody(header: string | null, kind: "request" | "response"): string {
+  const ct = (header ?? "").match(/content-type:\s*([^\r\n;]+)/i)?.[1]?.toLowerCase() ?? "";
+  if (ct.includes("json"))                    return `${kind}.json`;
+  if (ct.includes("html"))                    return `${kind}.html`;
+  if (ct.includes("xml"))                     return `${kind}.xml`;
+  if (ct.includes("javascript") || ct.includes("ecmascript")) return `${kind}.js`;
+  if (ct.includes("css"))                     return `${kind}.css`;
+  if (ct.includes("yaml") || ct.includes("yml")) return `${kind}.yaml`;
+  if (ct.includes("x-www-form-urlencoded"))   return `${kind}.txt`;
+  return `${kind}.txt`;
+}
+
+/**
+ * Build a GitHub-style unified diff between two text blobs.
+ * Handwritten LCS-based diff — avoids pulling in a dependency for the one
+ * place in the app that needs it.  Tuned for small HTTP bodies; O(n*m) mem.
+ */
+function buildUnifiedDiff(
+  aName: string,
+  bName: string,
+  aText: string,
+  bText: string,
+): string {
+  const a = aText.split("\n");
+  const b = bText.split("\n");
+  const n = a.length, m = b.length;
+
+  // LCS length matrix
+  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+
+  const out: string[] = [`--- ${aName}`, `+++ ${bName}`, `@@ attack vs baseline @@`];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j])            { out.push(` ${a[i]}`); i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { out.push(`-${a[i]}`); i++; }
+    else                          { out.push(`+${b[j]}`); j++; }
+  }
+  while (i < n) { out.push(`-${a[i++]}`); }
+  while (j < m) { out.push(`+${b[j++]}`); }
+  return out.join("\n");
+}
+
+/**
+ * Collapsible request/response viewer for a DAST occurrence.
+ * Tabs: Request / Response / Diff (when baseline captured).
+ * Response body is syntax-highlighted by content-type, and can be lazy-loaded
+ * in full from ZAP via /findings/:id/http-message/:messageId.
+ */
+function HttpExchangeBlock({
+  exchange,
+  baseline,
+  url,
+  findingId,
+}: {
+  exchange: DastHttpExchange;
+  baseline: DastHttpExchange | null;
+  url:      string;
+  findingId: string;
+}) {
+  const [open,   setOpen]   = useState(false);
+  const [tab,    setTab]    = useState<"req" | "res" | "diff">("req");
+  const [copied, setCopied] = useState(false);
+
+  // Lazy-load: starts with scanner-truncated body; button swaps in full.
+  const [fullResBody, setFullResBody] = useState<string | null>(null);
+  const [loadingFull, setLoadingFull] = useState(false);
+  const [loadErr,     setLoadErr]     = useState<string | null>(null);
+
+  const reqHeader = exchange.request_header  ?? "";
+  const reqBody   = exchange.request_body    ?? "";
+  const resHeader = exchange.response_header ?? "";
+  const resBodyTruncated = exchange.response_body ?? "";
+  const resBody   = fullResBody ?? resBodyTruncated;
+
+  if (!reqHeader && !reqBody && !resHeader && !resBody) return null;
+
+  const curlCmd       = buildCurlCommand(reqHeader, reqBody, url);
+  const reqBodyPretty = prettyBody(reqBody, reqHeader);
+  const resBodyPretty = prettyBody(resBody, resHeader);
+
+  const hasDiff = !!baseline && (
+    (baseline.request_body  ?? "") !== (exchange.request_body  ?? "") ||
+    (baseline.response_body ?? "") !== (exchange.response_body ?? "")
+  );
+
+  const handleLoadFull = async () => {
+    if (!exchange.message_id || loadingFull) return;
+    setLoadingFull(true);
+    setLoadErr(null);
+    try {
+      const full = await findingsApi.httpMessage(findingId, exchange.message_id);
+      setFullResBody(full.response_body ?? "");
+    } catch {
+      setLoadErr("ZAP no longer has this exchange (session expired).");
+    } finally {
+      setLoadingFull(false);
+    }
+  };
+
+  const handleCopyCurl = async () => {
+    if (!curlCmd) return;
+    try {
+      await navigator.clipboard.writeText(curlCmd);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard API fails in insecure contexts — silently swallow
+    }
+  };
+
+  return (
+    <div className="mt-2 overflow-hidden rounded-lg border border-gray-700/60 bg-gray-950">
+      <div className="flex items-center">
+        <button
+          onClick={() => setOpen((v) => !v)}
+          className="flex flex-1 items-center gap-2 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-400 hover:bg-gray-900 hover:text-gray-200 transition-colors"
+        >
+          {open ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+          HTTP Exchange
+        </button>
+        {curlCmd && (
+          <button
+            onClick={handleCopyCurl}
+            className="flex items-center gap-1 border-l border-gray-800 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-500 hover:bg-gray-900 hover:text-indigo-300 transition-colors"
+            title="Copy as curl command"
+          >
+            {copied
+              ? <><Check className="h-3 w-3 text-green-400" /> Copied</>
+              : <><Copy  className="h-3 w-3" /> curl</>}
+          </button>
+        )}
+      </div>
+
+      {open && (
+        <div>
+          {/* Tabs */}
+          <div className="flex border-b border-gray-800">
+            <button
+              onClick={() => setTab("req")}
+              className={`flex-1 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider transition-colors ${
+                tab === "req" ? "bg-gray-900 text-indigo-300" : "text-gray-500 hover:text-gray-300"
+              }`}
+            >
+              Request
+            </button>
+            <button
+              onClick={() => setTab("res")}
+              className={`flex-1 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider transition-colors ${
+                tab === "res" ? "bg-gray-900 text-indigo-300" : "text-gray-500 hover:text-gray-300"
+              }`}
+            >
+              Response
+            </button>
+            {hasDiff && (
+              <button
+                onClick={() => setTab("diff")}
+                className={`flex-1 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider transition-colors ${
+                  tab === "diff" ? "bg-gray-900 text-amber-300" : "text-gray-500 hover:text-gray-300"
+                }`}
+                title="Compare attack vs baseline probe"
+              >
+                Diff
+              </button>
+            )}
+          </div>
+
+          {/* Body */}
+          <div className="max-h-96 overflow-auto bg-gray-950">
+            {tab === "req" && (
+              <div className="px-3 py-2">
+                {reqHeader && (
+                  <pre className="font-mono text-[10px] leading-relaxed text-gray-300 whitespace-pre-wrap">
+                    {reqHeader}
+                  </pre>
+                )}
+                {reqBodyPretty && (
+                  <div className="mt-2 border-t border-gray-800/60 pt-2">
+                    <SyntaxHighlight
+                      code={reqBodyPretty}
+                      filePath={pseudoPathForBody(reqHeader, "request")}
+                    />
+                  </div>
+                )}
+                {!reqHeader && !reqBody && (
+                  <span className="text-[10px] italic text-gray-600">No request data captured.</span>
+                )}
+              </div>
+            )}
+
+            {tab === "res" && (
+              <div className="px-3 py-2">
+                {resHeader && (
+                  <pre className="font-mono text-[10px] leading-relaxed text-gray-300 whitespace-pre-wrap">
+                    {resHeader}
+                  </pre>
+                )}
+                {resBodyPretty && (
+                  <div className="mt-2 border-t border-gray-800/60 pt-2">
+                    <SyntaxHighlight
+                      code={resBodyPretty}
+                      filePath={pseudoPathForBody(resHeader, "response")}
+                    />
+                  </div>
+                )}
+                {/* Lazy-load full response body */}
+                {exchange.message_id && fullResBody === null && (
+                  <div className="mt-2 flex items-center gap-2 border-t border-gray-800/60 pt-2">
+                    <button
+                      onClick={handleLoadFull}
+                      disabled={loadingFull}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-indigo-700/40 bg-indigo-900/20 px-2.5 py-1 text-[10px] font-medium text-indigo-300 hover:bg-indigo-900/40 hover:text-indigo-200 disabled:opacity-50 transition-colors"
+                    >
+                      {loadingFull
+                        ? <><Loader2 className="h-3 w-3 animate-spin" /> Loading…</>
+                        : <><RefreshCw className="h-3 w-3" /> Load full response</>}
+                    </button>
+                    {loadErr && (
+                      <span className="text-[10px] italic text-amber-400">{loadErr}</span>
+                    )}
+                  </div>
+                )}
+                {fullResBody !== null && (
+                  <div className="mt-2 border-t border-gray-800/60 pt-2 text-[10px] italic text-green-400">
+                    Showing full response body ({fullResBody.length.toLocaleString()} bytes).
+                  </div>
+                )}
+                {!resHeader && !resBody && (
+                  <span className="text-[10px] italic text-gray-600">No response data captured.</span>
+                )}
+              </div>
+            )}
+
+            {tab === "diff" && baseline && (
+              <div className="space-y-3 px-3 py-2">
+                {(baseline.request_body ?? "") !== (exchange.request_body ?? "") && (
+                  <div>
+                    <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+                      Request body — baseline vs attack
+                    </div>
+                    <DiffViewer
+                      diff={buildUnifiedDiff(
+                        "baseline/request",
+                        "attack/request",
+                        prettyBody(baseline.request_body, baseline.request_header),
+                        reqBodyPretty,
+                      )}
+                    />
+                  </div>
+                )}
+                {(baseline.response_body ?? "") !== (exchange.response_body ?? "") && (
+                  <div>
+                    <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+                      Response body — baseline vs attack
+                    </div>
+                    <DiffViewer
+                      diff={buildUnifiedDiff(
+                        "baseline/response",
+                        "attack/response",
+                        prettyBody(baseline.response_body, baseline.response_header),
+                        resBodyPretty,
+                      )}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface DastSubissuesPanelProps {
   rawOut:      DastMergedRawOutput;
+  findingId:   string;
   onViewCode?: (occ: DastOccurrence) => void;
 }
 
-function DastSubissuesPanel({ rawOut, onViewCode }: DastSubissuesPanelProps) {
+function DastSubissuesPanel({ rawOut, findingId, onViewCode }: DastSubissuesPanelProps) {
   const [expanded, setExpanded] = useState(false);
   const LIMIT = 10;
   const all   = rawOut.occurrences ?? [];
@@ -218,6 +567,16 @@ function DastSubissuesPanel({ rawOut, onViewCode }: DastSubissuesPanelProps) {
                 <pre className="mt-2 overflow-x-auto rounded-lg border border-gray-700/60 bg-gray-950 px-3 py-2 font-mono text-[10px] leading-relaxed text-gray-300 whitespace-pre-wrap">
                   {(occ.attack || occ.evidence)!.slice(0, 300)}
                 </pre>
+              )}
+
+              {/* Full HTTP exchange (interactive DAST captures these) */}
+              {occ.httpExchange && (
+                <HttpExchangeBlock
+                  exchange={occ.httpExchange}
+                  baseline={occ.httpBaselineExchange}
+                  url={occ.url}
+                  findingId={findingId}
+                />
               )}
 
               {/* View Code + AI Analysis button */}
@@ -1663,7 +2022,7 @@ export default function FindingDetailDrawer({ finding, onClose }: Props) {
   const isMerged        = rawOut?.merged === true && finding.scanType === "SAST" && Array.isArray(rawOut?.locations);
   const isScaMerged     = rawOut?.merged === true && (finding.scanType === "SCA" || finding.scanType === "CONTAINER") && Array.isArray(rawOut?.cves);
   const isDastMerged    = rawOut?.merged === true
-    && ["DAST", "PENTEST", "PENTEST_FULL"].includes(finding.scanType)
+    && ["DAST", "DAST_INTERACTIVE", "PENTEST", "PENTEST_FULL"].includes(finding.scanType)
     && Array.isArray(rawOut?.occurrences);
   const isSecretMerged  = rawOut?.merged === true
     && finding.scanType === "SECRET"
@@ -1951,6 +2310,7 @@ export default function FindingDetailDrawer({ finding, onClose }: Props) {
           {isDastMerged && dastOccurrences.length > 0 && (
             <DastSubissuesPanel
               rawOut={rawOut as DastMergedRawOutput}
+              findingId={finding.id}
               onViewCode={(occ) => {
                 // Build a structured evidence block as the "snippet" for the AI modal.
                 // DAST findings have no source file — the evidence IS the context.
@@ -2006,7 +2366,7 @@ export default function FindingDetailDrawer({ finding, onClose }: Props) {
           )}
 
           {/* Single URL — non-merged DAST/Pentest finding with a URL */}
-          {!isDastMerged && ["DAST", "PENTEST", "PENTEST_FULL"].includes(finding.scanType) && finding.filePath && (
+          {!isDastMerged && ["DAST", "DAST_INTERACTIVE", "PENTEST", "PENTEST_FULL"].includes(finding.scanType) && finding.filePath && (
             <div>
               <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-gray-500">Affected URL</h3>
               <a

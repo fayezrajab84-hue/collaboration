@@ -152,6 +152,43 @@ router.get("/:id", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+/**
+ * Lazy-fetch the untruncated HTTP exchange for a DAST finding occurrence.
+ * Proxies the scanner's /dast/message/:id route after verifying the caller
+ * owns the finding.  404s when ZAP has evicted the message from memory.
+ */
+router.get("/:id/http-message/:messageId", async (req, res, next) => {
+  try {
+    const user = req.user as { id: string };
+    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    if (!member) { res.status(403).json({ error: "Forbidden" }); return; }
+
+    // Verify the finding belongs to this org before proxying.
+    const finding = await prisma.finding.findFirst({
+      where:  { id: req.params["id"], orgId: member.orgId },
+      select: { id: true },
+    });
+    if (!finding) { res.status(404).json({ error: "Finding not found" }); return; }
+
+    const msgId = req.params["messageId"];
+    if (!msgId || !/^\d+$/.test(msgId)) { res.status(400).json({ error: "Invalid messageId" }); return; }
+
+    try {
+      const r = await axios.get(`${config.SCANNER_URL}/dast/message/${msgId}`, {
+        timeout: 15_000,
+      });
+      res.json(r.data);
+    } catch (err) {
+      const status = (err as { response?: { status?: number } }).response?.status ?? 502;
+      res.status(status === 404 ? 404 : 502).json({
+        error: status === 404
+          ? "Message no longer available in ZAP (session evicted)"
+          : "Scanner unreachable",
+      });
+    }
+  } catch (err) { next(err); }
+});
+
 // Update finding status / confidence — SECURITY+
 router.patch("/:id", requireRole("SECURITY"), async (req, res, next) => {
   try {
