@@ -24,13 +24,26 @@ class IACScanner(BaseScanner):
         repo_dir = f"{workspace}/repo"
         self.clone_repo(request.repo_url, request.branch, request.git_token, repo_dir)
 
-        result = self.run_cmd([
-            "checkov",
-            "-d", repo_dir,
-            "-o", "json",
-            "--quiet",
-            # NOTE: do NOT add --compact — it suppresses code_block which we need for the code preview
-        ])
+        # ── Incremental mode — restrict Checkov to changed IaC files ─────
+        # Checkov's --file flag accepts one-or-more paths and skips directory
+        # framework auto-detection. For PR scans we list the changed paths;
+        # for full scans we fall back to -d on the repo root.
+        import os
+        cmd = ["checkov", "-o", "json", "--quiet"]
+        if request.changed_files:
+            existing_iac_paths = [
+                f"{repo_dir}/{p.lstrip('./')}"
+                for p in request.changed_files
+                if os.path.exists(f"{repo_dir}/{p.lstrip('./')}")
+            ]
+            if not existing_iac_paths:
+                return []
+            for p in existing_iac_paths:
+                cmd.extend(["--file", p])
+        else:
+            cmd.extend(["-d", repo_dir])
+
+        result = self.run_cmd(cmd)
 
         findings: list[NormalizedFinding] = []
 

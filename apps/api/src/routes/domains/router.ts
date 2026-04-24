@@ -38,13 +38,16 @@ router.get("/", async (req, res, next) => {
     const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
     if (!member) { res.json([]); return; }
 
-    const [domains, countRows] = await Promise.all([
+    const [domains, countRows, authRows, specRows, recordingRows] = await Promise.all([
       prisma.domain.findMany({ where: { orgId: member.orgId }, orderBy: { addedAt: "desc" } }),
       prisma.finding.groupBy({
         by: ["domainId", "severity"],
         where: { orgId: member.orgId, domainId: { not: null }, status: { not: "FALSE_POSITIVE" } },
         _count: { id: true },
       }),
+      prisma.domainAuthConfig.findMany({ where: { domain: { orgId: member.orgId } }, select: { domainId: true } }),
+      prisma.domainApiSpec.findMany     ({ where: { domain: { orgId: member.orgId } }, select: { domainId: true } }),
+      prisma.recordingSession.findMany  ({ where: { orgId: member.orgId, status: "ACTIVE" }, select: { domainId: true, urlCount: true } }),
     ]);
 
     const countMap: Record<string, Record<string, number>> = {};
@@ -54,6 +57,10 @@ router.get("/", async (req, res, next) => {
       countMap[did][row.severity] = row._count.id;
     }
 
+    const hasAuth = new Set(authRows.map((r) => r.domainId));
+    const hasSpec = new Set(specRows.map((r) => r.domainId));
+    const activeRec = new Map(recordingRows.map((r) => [r.domainId, r.urlCount] as const));
+
     const result = domains.map((d) => ({
       ...d,
       findingCounts: {
@@ -62,6 +69,9 @@ router.get("/", async (req, res, next) => {
         MEDIUM: countMap[d.id]?.MEDIUM ?? 0,
         LOW: countMap[d.id]?.LOW ?? 0,
       },
+      hasAuthConfig: hasAuth.has(d.id),
+      hasApiSpec:    hasSpec.has(d.id),
+      activeRecordingUrls: activeRec.get(d.id) ?? null,
     }));
 
     res.json(result);
@@ -282,11 +292,17 @@ router.post("/:id/pentest", async (req, res, next) => {
       return;
     }
 
-    // Get user-selected subdomains
-    const selectedSubdomains = await prisma.subdomainDiscovery.findMany({
+    // Get user-selected subdomains. Strip the root domain itself if it
+    // appears — `selectedSubdomains + domain.domain` would otherwise double
+    // nuclei/nikto work in the scanner's vuln phase.
+    const selectedSubdomainRows = await prisma.subdomainDiscovery.findMany({
       where: { domainId: domain.id, includedInScan: true },
       select: { subdomain: true },
     });
+    const rootLower = domain.domain.toLowerCase().trim();
+    const selectedSubdomains = selectedSubdomainRows
+      .map((s) => s.subdomain)
+      .filter((s) => s.toLowerCase().trim() !== rootLower);
 
     // Update pentestDepth on domain
     await prisma.domain.update({ where: { id: domain.id }, data: { pentestDepth: body.depth } });
@@ -297,7 +313,7 @@ router.post("/:id/pentest", async (req, res, next) => {
       targetId: domain.id,
       scanTypes: ["PENTEST_FULL"] as ScanType[],
       domain: domain.domain,
-      selectedSubdomains: selectedSubdomains.map((s) => s.subdomain),
+      selectedSubdomains,
       pentestDepth: body.depth,
       domainAuthConfigId: domain.authConfig?.id,
     });
@@ -590,6 +606,22 @@ router.post("/:id/recording/scan", async (req, res, next) => {
   } catch (err) {
     const code = (err as Error & { code?: string }).code;
     if (code === "NO_SESSION") { res.status(409).json({ error: (err as Error).message }); return; }
+    next(err);
+  }
+});
+
+router.post("/:id/recording/promote", async (req, res, next) => {
+  try {
+    const user = req.user as { id: string };
+    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    if (!member) { res.status(403).json({ error: "Forbidden" }); return; }
+    const depth = req.body?.depth === "AGGRESSIVE" ? "AGGRESSIVE" : "STANDARD";
+    const result = await recording.promote(member.orgId, req.params["id"]!, { depth });
+    res.status(202).json(result);
+  } catch (err) {
+    const code = (err as Error & { code?: string }).code;
+    if (code === "NO_SESSION")      { res.status(409).json({ error: (err as Error).message }); return; }
+    if (code === "EMPTY_RECORDING") { res.status(422).json({ error: (err as Error).message }); return; }
     next(err);
   }
 });

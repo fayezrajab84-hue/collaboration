@@ -9,7 +9,12 @@ from .base import BaseScanner
 def _read_snippet(file_path: str, line_num: int, context: int = 2) -> str | None:
     """Read ±context lines around line_num from a local file.
 
-    Returns clean code (no N: prefixes) — SyntaxHighlight renders line numbers.
+    Emits each line prefixed with its *real* 1-based line number
+    (``"{N}: {content}"``). The frontend's SyntaxHighlight parser detects this
+    prefix and uses the real numbers in the gutter — which also makes the
+    vulnerable-line highlight land on the secret itself rather than on the
+    leading context rows.
+
     The matched line itself is included; the secret value remains visible so the
     developer can confirm the finding — TruffleHog already stripped the raw
     bytes from its JSON output.
@@ -19,7 +24,11 @@ def _read_snippet(file_path: str, line_num: int, context: int = 2) -> str | None
             lines = fh.readlines()
         start = max(0, line_num - context - 1)   # line_num is 1-based
         end   = min(len(lines), line_num + context)
-        return "".join(lines[start:end]).rstrip()[:1000]
+        out = "\n".join(
+            f"{start + i + 1}: {lines[start + i].rstrip()}"
+            for i in range(end - start)
+        )
+        return out[:1200]
     except Exception:
         return None
 
@@ -63,11 +72,29 @@ class SecretsScanner(BaseScanner):
         repo_dir = f"{workspace}/repo"
         self.clone_repo(request.repo_url, request.branch, request.git_token, repo_dir)
 
+        # ── Incremental mode — scan only changed paths ───────────────────
+        # TruffleHog's `filesystem` subcommand accepts one-or-more positional
+        # paths. For PR scans we pass the individual files from the PR's
+        # changed-files list; for push scans (or when the list is empty) we
+        # scan the whole repo as before.
+        import os
+        if request.changed_files:
+            existing_paths = [
+                f"{repo_dir}/{p.lstrip('./')}"
+                for p in request.changed_files
+                if os.path.exists(f"{repo_dir}/{p.lstrip('./')}")
+            ]
+            if not existing_paths:
+                return []  # nothing left to scan after filtering
+            trufflehog_targets = existing_paths
+        else:
+            trufflehog_targets = [repo_dir]
+
         result = self.run_cmd([
             "trufflehog", "filesystem",
             "--json",
             "--no-update",
-            repo_dir,
+            *trufflehog_targets,
         ])
 
         findings: list[NormalizedFinding] = []

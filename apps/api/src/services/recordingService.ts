@@ -4,7 +4,8 @@
  * Lifecycle (per Domain):
  *   1. start()     → create ZAP context via scanner, persist RecordingSession (ACTIVE)
  *   2. status()    → poll scanner for live URL/alert counts (touches lastActivityAt)
- *   3. runScan()   → enqueue DAST_INTERACTIVE ScanJob bound to the recorded context
+ *   3. runScan()   → enqueue DAST ScanJob bound to the recorded context
+ *                   (provenance = recordingSessionId on the ScanJob)
  *   4. stop()      → tell scanner to remove the ZAP context, mark STOPPED
  *
  * Single-session policy: only one ACTIVE/SCANNING recording per org at a time
@@ -104,7 +105,10 @@ export async function status(orgId: string, domainId: string) {
   const session = await prisma.recordingSession.findFirst({
     where:    { orgId, domainId, status: { in: ["ACTIVE", "SCANNING"] } },
     orderBy:  { startedAt: "desc" },
-    include:  { scanJob: { select: { id: true, status: true } } },
+    include:  {
+      scanJob:         { select: { id: true, status: true } },
+      promotedScanJob: { select: { id: true, status: true } },
+    },
   });
   if (!session) return null;
 
@@ -164,6 +168,8 @@ export async function status(orgId: string, domainId: string) {
     lastActivityAt: session.lastActivityAt,
     scanJobId:      session.scanJobId,
     scanJobStatus:  session.scanJob?.status ?? null,
+    promotedScanJobId:     session.promotedScanJobId,
+    promotedScanJobStatus: session.promotedScanJob?.status ?? null,
   };
 }
 
@@ -188,7 +194,7 @@ export async function runScan(orgId: string, domainId: string) {
     orgId,
     targetType:  "DOMAIN",
     targetId:    domainId,
-    scanTypes:   ["DAST_INTERACTIVE"],
+    scanTypes:   ["DAST"],
     domain:      domain.domain,
     domainAuthConfigId:   domain.authConfig?.id,
     recordingContextId:   session.zapContextId,
@@ -206,6 +212,99 @@ export async function runScan(orgId: string, domainId: string) {
     sessionId: session.id, scanJobId: result.scanJobId,
   });
   return result;
+}
+
+/**
+ * Promote the recorded session into a Full Pentest scan.
+ *
+ * Unlike runScan() (which triggers a DAST replay against the recorded
+ * ZAP context), this dispatches PENTEST_FULL — nuclei + nikto + testssl +
+ * sqlmap etc. — against the same authenticated URL set the user recorded.
+ * The scanner's PENTEST_FULL orchestrator sees `recording_context_name`
+ * set and skips its Playwright crawl, pulling URLs straight from ZAP.
+ *
+ * Why we DON'T flip the session to SCANNING here:
+ *   PENTEST_FULL hits the target directly (no ZAP proxy dependency), so
+ *   the recording session stays ACTIVE and the user can still browse more
+ *   URLs while the pentest runs. We stash the scanJobId on the session so
+ *   the UI can show "last promoted pentest" status.
+ */
+export async function promote(
+  orgId: string,
+  domainId: string,
+  opts: { depth?: "STANDARD" | "AGGRESSIVE" } = {},
+) {
+  const session = await prisma.recordingSession.findFirst({
+    where:   { orgId, domainId, status: { in: ["ACTIVE", "SCANNING"] } },
+    orderBy: { startedAt: "desc" },
+  });
+  if (!session) {
+    const e: Error & { code?: string } = new Error(
+      "No active recording session for this domain",
+    );
+    e.code = "NO_SESSION";
+    throw e;
+  }
+
+  const domain = await prisma.domain.findUniqueOrThrow({
+    where:   { id: domainId },
+    include: { authConfig: true },
+  });
+  const targetUrl = await resolveTargetUrl(domain.domain);
+
+  // Sanity-check: a context with 0 URLs means the user clicked Promote before
+  // actually browsing the app. Refuse rather than kick off a 25-minute scan
+  // that will run nothing useful.
+  let urlCount = 0;
+  try {
+    const r = await axios.post(
+      scanner("/dast/recording/stats"),
+      { contextName: session.zapContextName, targetUrl },
+      { timeout: 10_000 },
+    );
+    urlCount = Number(r.data.urlCount ?? 0);
+  } catch (err) {
+    logger.warn("[recording] promote stats check failed, allowing anyway", {
+      sessionId: session.id, error: (err as Error).message,
+    });
+    // Fall through — persisted counts on the session are our second signal.
+    urlCount = session.urlCount;
+  }
+
+  if (urlCount <= 0) {
+    const e: Error & { code?: string } = new Error(
+      "Recorded session has 0 URLs — browse the app through the proxy before promoting.",
+    );
+    e.code = "EMPTY_RECORDING";
+    throw e;
+  }
+
+  const result = await triggerScan({
+    orgId,
+    targetType:           "DOMAIN",
+    targetId:             domainId,
+    scanTypes:            ["PENTEST_FULL"],
+    domain:               domain.domain,
+    domainAuthConfigId:   domain.authConfig?.id,
+    pentestDepth:         opts.depth ?? "STANDARD",
+    recordingContextId:   session.zapContextId,
+    recordingContextName: session.zapContextName,
+    recordingTargetUrl:   targetUrl,
+    recordingSessionId:   session.id,
+  });
+
+  // Track the promoted scan on the session without flipping status — user can
+  // still record more traffic, run interactive DAST, or promote again.
+  await prisma.recordingSession.update({
+    where: { id: session.id },
+    data:  { promotedScanJobId: result.scanJobId, lastActivityAt: new Date() },
+  });
+
+  logger.info("[recording] promoted to full pentest", {
+    sessionId: session.id, scanJobId: result.scanJobId, urlCount,
+    depth: opts.depth ?? "STANDARD",
+  });
+  return { ...result, urlCount };
 }
 
 export async function stop(orgId: string, domainId: string) {

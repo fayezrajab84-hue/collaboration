@@ -125,10 +125,19 @@ class SASTScanner(BaseScanner):
         repo_dir = f"{workspace}/repo"
         self.clone_repo(request.repo_url, request.branch, request.git_token, repo_dir)
 
-        result = self.run_cmd(
-            ["semgrep", "--config", "auto", "--json", "--no-git-ignore", "."],
-            cwd=repo_dir,
-        )
+        # ── Incremental mode ──────────────────────────────────────────────
+        # When the API supplies a changed-files list (e.g. from a PR webhook),
+        # restrict Semgrep to those paths via --include. Semgrep accepts
+        # --include multiple times; patterns are glob-style relative to cwd.
+        # If no files are provided, scan the full tree as before.
+        cmd = ["semgrep", "--config", "auto", "--json", "--no-git-ignore"]
+        if request.changed_files:
+            for path in request.changed_files:
+                cmd.extend(["--include", path])
+            logger.info("[sast] incremental mode — %d changed file(s)", len(request.changed_files))
+        cmd.append(".")
+
+        result = self.run_cmd(cmd, cwd=repo_dir)
 
         # ── Detect semgrep crashes early ──────────────────────────────────
         # semgrep may exit non-zero even when it found things (file-parse errors,

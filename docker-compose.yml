@@ -174,9 +174,14 @@ services:
   zap:
     image: ghcr.io/zaproxy/zaproxy:stable
     restart: unless-stopped
-    # Cap JVM heap — without this Java will grab 25% of host RAM (can be several GB)
+    # Cap JVM heap — without this Java will grab 25% of host RAM.
+    # 3.5 GiB heap handles long proxy recordings + pentest traffic buffering
+    # without GC thrashing. Symptom of too-low heap: the recorder shows 0 URLs
+    # captured while browser traffic silently drops (GC saturates CPU).
+    mem_limit: 4g
+    mem_reservation: 2g
     environment:
-      JVM_PROPERTIES: "-Xmx1200m -Xms256m -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+      JVM_PROPERTIES: "-Xmx3584m -Xms512m -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
     command: >
       zap.sh
       -daemon
@@ -205,8 +210,7 @@ services:
       timeout: 15s
       retries: 10
       start_period: 90s   # ZAP JVM startup is slow
-    mem_limit: 1500m
-    cpus: '1.5'
+    cpus: '2.5'
 
   # ── interactsh — Out-of-band (OAST) callback server for blind vuln detection ──
   # interactsh-server requires a real public IP/domain to function (DNS callbacks).

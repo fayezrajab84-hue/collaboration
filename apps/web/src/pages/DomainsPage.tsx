@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Play, Trash2, Pencil, Globe, X, ShieldAlert, Lock, FileJson, Radio } from "lucide-react";
+import { Plus, Trash2, Pencil, Globe, X, Lock, LockOpen, FileJson, Radio, ScanSearch, Rocket } from "lucide-react";
 import { domainsApi } from "../lib/api";
 import DomainAuthPanel from "../components/DomainAuthPanel";
 import DomainApiSpecPanel from "../components/DomainApiSpecPanel";
@@ -16,7 +16,7 @@ import { useToast } from "../hooks/useToast";
 import { formatRelative } from "../lib/utils";
 import { DOMAIN_CHECKS, PENTEST_CHECKS } from "../data/checks";
 
-function ScanButton({ domainId }: { domainId: string }) {
+function DastScanButton({ domainId }: { domainId: string }) {
   const qc = useQueryClient();
   const { toast } = useToast();
   const { status, isActive } = useTargetScanStatus(domainId);
@@ -31,13 +31,21 @@ function ScanButton({ domainId }: { domainId: string }) {
     onError: (err: Error) => toast.error(err.message || "Failed to queue scan"),
   });
 
-  const displayStatus = status ?? (scan.isPending ? "PENDING" : null);
+  // Only surface status when it's something the user should act on —
+  // COMPLETED next to a "15h ago" timestamp is noise.
+  const rawStatus = status ?? (scan.isPending ? "PENDING" : null);
+  const displayStatus =
+    rawStatus && rawStatus !== "COMPLETED" ? rawStatus : null;
   return (
     <div className="flex items-center gap-2">
       {displayStatus && <ScanStatusBadge status={displayStatus} />}
-      <button onClick={() => scan.mutate()} disabled={scan.isPending || isActive}
-        className="flex items-center gap-1.5 rounded bg-indigo-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-600 disabled:opacity-50">
-        <Play className="h-3 w-3" /> Scan (DAST)
+      <button
+        onClick={() => scan.mutate()}
+        disabled={scan.isPending || isActive}
+        title="Run DAST — ZAP crawl + active attack (~10 min)"
+        className="flex items-center gap-1.5 rounded-md border border-gray-800 bg-gray-900/60 px-2.5 py-1.5 text-xs font-medium text-gray-300 hover:border-sky-700/70 hover:bg-sky-950/30 hover:text-sky-200 disabled:opacity-50 transition-colors"
+      >
+        <ScanSearch className="h-3.5 w-3.5" /> DAST
       </button>
     </div>
   );
@@ -120,6 +128,66 @@ function EditDomainModal({ domain, onClose }: { domain: Domain; onClose: () => v
   );
 }
 
+function DomainsEmptyState({ onAdd }: { onAdd: () => void }) {
+  const workflows = [
+    {
+      icon:  <ScanSearch className="h-5 w-5 text-sky-400" />,
+      title: "DAST",
+      time:  "~10 min",
+      desc:  "ZAP crawls the site, then attacks every URL it finds — fastest way to get a security read on a public domain.",
+    },
+    {
+      icon:  <Radio className="h-5 w-5 text-rose-400" />,
+      title: "Interactive DAST",
+      time:  "~10 min + browse time",
+      desc:  "Record a session by proxying your browser through ZAP, then scan only the URLs you actually visited. Reaches authenticated pages no crawler can.",
+    },
+    {
+      icon:  <Rocket className="h-5 w-5 text-indigo-400" />,
+      title: "Full Pentest",
+      time:  "~25 min",
+      desc:  "Runs nuclei, nikto, testssl, and targeted checks (CORS, SSRF, IDOR, SSTI). Optional AGGRESSIVE depth adds sqlmap + XSStrike.",
+    },
+  ];
+  return (
+    <div className="rounded-lg border border-dashed border-gray-800 bg-gray-900/30 p-8">
+      <div className="mx-auto max-w-2xl text-center">
+        <Globe className="mx-auto h-10 w-10 text-indigo-400/70" />
+        <h2 className="mt-3 text-lg font-semibold text-white">Add your first domain</h2>
+        <p className="mt-1 text-sm text-gray-400">
+          Domains are the target for DAST, Interactive DAST, and Full Pentest scans.
+          Add one below to get started.
+        </p>
+        <button
+          onClick={onAdd}
+          className="mt-4 inline-flex items-center gap-2 rounded-lg bg-indigo-700 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-600"
+        >
+          <Plus className="h-4 w-4" /> Add Domain
+        </button>
+      </div>
+
+      <div className="mx-auto mt-8 grid max-w-4xl gap-3 sm:grid-cols-3">
+        {workflows.map((w) => (
+          <div key={w.title} className="rounded border border-gray-800 bg-gray-900/60 p-4">
+            <div className="mb-2 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                {w.icon}
+                <span className="text-sm font-semibold text-white">{w.title}</span>
+              </div>
+              <span className="rounded-full bg-gray-800 px-2 py-0.5 text-[10px] text-gray-400">{w.time}</span>
+            </div>
+            <p className="text-xs leading-relaxed text-gray-400">{w.desc}</p>
+          </div>
+        ))}
+      </div>
+
+      <p className="mx-auto mt-6 max-w-2xl text-center text-[11px] text-gray-600">
+        Only scan domains you own or have explicit authorization to test.
+      </p>
+    </div>
+  );
+}
+
 export default function DomainsPage() {
   const [showAdd, setShowAdd] = useState(false);
   const [editDomain, setEditDomain] = useState<Domain | null>(null);
@@ -173,10 +241,7 @@ export default function DomainsPage() {
       {isLoading ? (
         <div className="flex h-48 items-center justify-center text-gray-500">Loading…</div>
       ) : domains?.length === 0 ? (
-        <div className="flex h-48 flex-col items-center justify-center gap-3 text-gray-500">
-          <Globe className="h-8 w-8" />
-          <p>No domains added yet.</p>
-        </div>
+        <DomainsEmptyState onAdd={() => setShowAdd(true)} />
       ) : (
         <div className="overflow-x-auto rounded-lg border border-gray-800">
           <table className="w-full text-sm">
@@ -186,7 +251,7 @@ export default function DomainsPage() {
                 <th className="px-4 py-3 font-medium">Issues</th>
                 <th className="px-4 py-3 font-medium">AI Risk</th>
                 <th className="px-4 py-3 font-medium">Last Scanned</th>
-                <th className="px-4 py-3 font-medium">Actions</th>
+                <th className="px-4 py-3 font-medium" aria-label="Actions"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-800 bg-gray-900/50">
@@ -198,42 +263,88 @@ export default function DomainsPage() {
                     <td className="px-4 py-3"><RiskScoreBadge score={d.aiRiskScore} reason={d.aiRiskReason} /></td>
                     <td className="px-4 py-3 text-gray-400">{d.lastScannedAt ? formatRelative(d.lastScannedAt) : "Never"}</td>
                     <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <ScanButton domainId={d.id} />
-                        <button
-                          onClick={() => setPentestDomain(d)}
-                          className="flex items-center gap-1.5 rounded bg-indigo-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-600"
-                          title="Full Pentest"
-                        >
-                          <ShieldAlert className="h-3 w-3" /> Full Pentest
-                        </button>
-                        <button
-                          onClick={() => setAuthOpenId(authOpenId === d.id ? null : d.id)}
-                          className={`rounded p-1.5 transition-colors ${authOpenId === d.id ? "text-indigo-400 bg-indigo-900/30" : "text-gray-600 hover:text-indigo-400"}`}
-                          title="Configure scan credentials"
-                        >
-                          <Lock className="h-4 w-4" />
-                        </button>
-                        <button
-                          onClick={() => setApiSpecOpenId(apiSpecOpenId === d.id ? null : d.id)}
-                          className={`rounded p-1.5 transition-colors ${apiSpecOpenId === d.id ? "text-violet-400 bg-violet-900/30" : "text-gray-600 hover:text-violet-400"}`}
-                          title="Import OpenAPI/Swagger spec"
-                        >
-                          <FileJson className="h-4 w-4" />
-                        </button>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {/* ── Scan actions: three equal-weight, colour-coded buttons ── */}
+                        <DastScanButton domainId={d.id} />
+
                         <button
                           onClick={() => setRecordingOpenId(recordingOpenId === d.id ? null : d.id)}
-                          className={`rounded p-1.5 transition-colors ${recordingOpenId === d.id ? "text-rose-400 bg-rose-900/30" : "text-gray-600 hover:text-rose-400"}`}
-                          title="Interactive DAST recording"
+                          title={
+                            d.activeRecordingUrls !== null && d.activeRecordingUrls !== undefined
+                              ? `Interactive DAST — recording active (${d.activeRecordingUrls} URLs captured)`
+                              : "Interactive DAST — record a browser session, then scan what you visited"
+                          }
+                          className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                            recordingOpenId === d.id
+                              ? "border-rose-700/70 bg-rose-950/30 text-rose-200"
+                              : "border-gray-800 bg-gray-900/60 text-gray-300 hover:border-rose-700/70 hover:bg-rose-950/30 hover:text-rose-200"
+                          }`}
                         >
-                          <Radio className="h-4 w-4" />
+                          <Radio
+                            className={`h-3.5 w-3.5 ${
+                              d.activeRecordingUrls !== null && d.activeRecordingUrls !== undefined
+                                ? "text-rose-400 animate-pulse"
+                                : ""
+                            }`}
+                          />
+                          Interactive
                         </button>
-                        <button onClick={() => setEditDomain(d)} className="text-gray-600 hover:text-indigo-400" title="Edit domain">
-                          <Pencil className="h-4 w-4" />
+
+                        <button
+                          onClick={() => setPentestDomain(d)}
+                          title="Full Pentest — nuclei + nikto + testssl + targeted checks (~25 min)"
+                          className="flex items-center gap-1.5 rounded-md border border-gray-800 bg-gray-900/60 px-2.5 py-1.5 text-xs font-medium text-gray-300 hover:border-indigo-700/70 hover:bg-indigo-950/30 hover:text-indigo-200 transition-colors"
+                        >
+                          <Rocket className="h-3.5 w-3.5" /> Pentest
                         </button>
-                        <button onClick={() => del.mutate(d.id)} className="text-gray-600 hover:text-red-400" title="Remove domain">
-                          <Trash2 className="h-4 w-4" />
+
+                        {/* ── Divider ── */}
+                        <span className="mx-1 h-6 w-px bg-gray-800" aria-hidden />
+
+                        {/* ── Config chips: icon + label + status hint ── */}
+                        <button
+                          onClick={() => setAuthOpenId(authOpenId === d.id ? null : d.id)}
+                          title={d.hasAuthConfig ? "Scan credentials configured" : "No scan credentials set"}
+                          className={`flex items-center gap-1.5 rounded-md border px-2 py-1.5 text-xs transition-colors ${
+                            authOpenId === d.id
+                              ? "border-indigo-700/70 bg-indigo-950/30 text-indigo-200"
+                              : "border-gray-800 bg-gray-900/60 text-gray-400 hover:border-gray-600 hover:text-gray-200"
+                          }`}
+                        >
+                          {d.hasAuthConfig ? (
+                            <Lock className="h-3.5 w-3.5 text-indigo-400" />
+                          ) : (
+                            <LockOpen className="h-3.5 w-3.5 text-gray-600" />
+                          )}
+                          Auth
                         </button>
+
+                        <button
+                          onClick={() => setApiSpecOpenId(apiSpecOpenId === d.id ? null : d.id)}
+                          title={d.hasApiSpec ? "OpenAPI/Swagger spec imported" : "No API spec imported"}
+                          className={`flex items-center gap-1.5 rounded-md border px-2 py-1.5 text-xs transition-colors ${
+                            apiSpecOpenId === d.id
+                              ? "border-indigo-700/70 bg-indigo-950/30 text-indigo-200"
+                              : "border-gray-800 bg-gray-900/60 text-gray-400 hover:border-gray-600 hover:text-gray-200"
+                          }`}
+                        >
+                          <FileJson
+                            className={`h-3.5 w-3.5 ${
+                              d.hasApiSpec ? "text-indigo-400" : "text-gray-600"
+                            }`}
+                          />
+                          Spec
+                        </button>
+
+                        {/* ── Meta icons: housekeeping, faded ── */}
+                        <span className="ml-auto flex items-center gap-1">
+                          <button onClick={() => setEditDomain(d)} className="rounded p-1 text-gray-600 hover:text-indigo-400" title="Edit domain">
+                            <Pencil className="h-3.5 w-3.5" />
+                          </button>
+                          <button onClick={() => del.mutate(d.id)} className="rounded p-1 text-gray-600 hover:text-red-400" title="Remove domain">
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </span>
                       </div>
                     </td>
                   </tr>

@@ -20,6 +20,11 @@ const envSchema = z.object({
   SCAN_WORKSPACE_DIR: z.string().default("/tmp/scan_workspace"),
   OLLAMA_URL:   z.string().url().default("http://ollama:11434"),
   OLLAMA_MODEL: z.string().default("qwen2.5-coder:7b"),
+  // GitHub App (optional — enables PR checks & inline comments)
+  GITHUB_APP_ID:             z.string().optional(),
+  GITHUB_APP_PRIVATE_KEY:    z.string().optional(), // PEM contents (literal \n preserved)
+  GITHUB_APP_WEBHOOK_SECRET: z.string().optional(),
+  GITHUB_APP_SLUG:           z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);

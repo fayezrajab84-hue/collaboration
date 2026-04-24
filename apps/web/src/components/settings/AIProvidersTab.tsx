@@ -99,13 +99,13 @@ function ProviderCard({ type, existing }: { type: AIProviderType; existing: AIPr
           <Bot className="h-5 w-5 text-indigo-400" />
           <h3 className="font-medium text-white">{meta.label}</h3>
           {existing?.isDefault && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/20 px-2 py-0.5 text-xs font-medium text-amber-300">
-              <Star className="h-3 w-3" /> Default
+            <span className="inline-flex items-center gap-1 rounded-full border border-gray-700 bg-gray-800/60 px-2 py-0.5 text-xs font-medium text-gray-300">
+              <Star className="h-3 w-3 text-amber-400" /> Default
             </span>
           )}
           {existing && !existing.isDefault && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-teal-500/20 px-2 py-0.5 text-xs font-medium text-teal-300">
-              <Check className="h-3 w-3" /> Configured
+            <span className="inline-flex items-center gap-1 rounded-full border border-gray-700 bg-gray-800/60 px-2 py-0.5 text-xs font-medium text-gray-300">
+              <Check className="h-3 w-3 text-indigo-400" /> Configured
             </span>
           )}
         </div>
@@ -163,27 +163,27 @@ function ProviderCard({ type, existing }: { type: AIProviderType; existing: AIPr
           <button
             onClick={() => setDefault.mutate()}
             disabled={setDefault.isPending}
-            className="rounded border border-amber-700 px-3 py-1.5 text-xs text-amber-300 hover:bg-amber-900/30 disabled:opacity-40"
+            className="group rounded border border-gray-700 bg-gray-900/60 px-3 py-1.5 text-xs text-gray-300 hover:border-gray-600 hover:text-white disabled:opacity-40"
           >
-            <Star className="mr-1 inline h-3 w-3" /> Make default
+            <Star className="mr-1 inline h-3 w-3 text-gray-500 group-hover:text-amber-400" /> Make default
           </button>
         )}
         {existing && (
           <button
             onClick={() => test.mutate()}
             disabled={test.isPending}
-            className="rounded border border-teal-700 px-3 py-1.5 text-xs text-teal-300 hover:bg-teal-900/30 disabled:opacity-40"
+            className="group rounded border border-gray-700 bg-gray-900/60 px-3 py-1.5 text-xs text-gray-300 hover:border-gray-600 hover:text-white disabled:opacity-40"
           >
-            <Zap className="mr-1 inline h-3 w-3" /> {test.isPending ? "Testing…" : "Test"}
+            <Zap className="mr-1 inline h-3 w-3 text-gray-500 group-hover:text-indigo-400" /> {test.isPending ? "Testing…" : "Test"}
           </button>
         )}
         {existing && (
           <button
             onClick={() => remove.mutate()}
             disabled={remove.isPending}
-            className="ml-auto rounded border border-red-800 px-3 py-1.5 text-xs text-red-400 hover:bg-red-900/30 disabled:opacity-40"
+            className="group ml-auto rounded border border-gray-700 bg-gray-900/60 px-3 py-1.5 text-xs text-gray-400 hover:border-red-900/60 hover:text-red-400 disabled:opacity-40"
           >
-            <X className="mr-1 inline h-3 w-3" /> Remove
+            <X className="mr-1 inline h-3 w-3 text-gray-500 group-hover:text-red-400" /> Remove
           </button>
         )}
       </div>

@@ -29,9 +29,22 @@ class SCAScanner(BaseScanner):
         except json.JSONDecodeError:
             return findings
 
+        # ── Incremental mode — only emit findings for manifests the PR touched ──
+        # SCA vulnerabilities only change when a manifest (package.json, go.sum,
+        # requirements.txt, Gemfile.lock, pom.xml, …) changes. If the PR didn't
+        # touch any of them, short-circuit the per-result loop.
+        changed_set: set[str] | None = None
+        if request.changed_files:
+            changed_set = {p.lstrip("./") for p in request.changed_files}
+
         for result_item in data.get("Results", []):
             # Trivy reports the manifest file path at the result level (e.g. "pom.xml", "package.json")
             dep_file = result_item.get("Target", "") or None
+            if changed_set is not None and dep_file:
+                # Require an exact match on the manifest path or any parent lockfile
+                norm = dep_file.lstrip("./")
+                if norm not in changed_set:
+                    continue
             for vuln in result_item.get("Vulnerabilities", []):
                 cve_id = vuln.get("VulnerabilityID", "")
                 pkg_name = vuln.get("PkgName", "")

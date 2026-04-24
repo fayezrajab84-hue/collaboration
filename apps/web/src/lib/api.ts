@@ -113,6 +113,13 @@ export const domainsApi = {
     apiClient.post<TriggerScanResponse>(`/domains/${id}/recording/scan`).then((r) => r.data),
   recordingStop: (id: string) =>
     apiClient.post(`/domains/${id}/recording/stop`).then((r) => r.data),
+  recordingPromote: (id: string, depth: "STANDARD" | "AGGRESSIVE" = "STANDARD") =>
+    apiClient
+      .post<TriggerScanResponse & { urlCount: number }>(
+        `/domains/${id}/recording/promote`,
+        { depth },
+      )
+      .then((r) => r.data),
 };
 
 export interface RecordingSessionView {
@@ -130,6 +137,8 @@ export interface RecordingSessionView {
   lastActivityAt?: string;
   scanJobId?: string | null;
   scanJobStatus?: string | null;
+  promotedScanJobId?: string | null;
+  promotedScanJobStatus?: string | null;
 }
 
 export interface DomainAuthConfigView {
@@ -187,6 +196,14 @@ export const scansApi = {
   delete: (id: string) => apiClient.delete<{ success: boolean }>(`/scans/${id}`).then((r) => r.data),
   clearFailed: () => apiClient.delete<{ count: number }>("/scans", { params: { status: "FAILED" } }).then((r) => r.data),
   generateSummary: (id: string) => apiClient.post<{ queued: boolean }>(`/scans/${id}/summary`).then((r) => r.data),
+  diff: (id: string, compareTo?: string) =>
+    apiClient.get<{
+      scanA: { id: string; startedAt: string | null; completedAt: string | null; status: string } | null;
+      scanB: { id: string; startedAt: string | null; completedAt: string | null; status: string };
+      added:        Array<Pick<Finding, "id"|"title"|"severity"|"scanType"|"fingerprint"|"filePath"|"lineStart">>;
+      removed:      Array<Pick<Finding, "id"|"title"|"severity"|"scanType"|"fingerprint"|"filePath"|"lineStart">>;
+      unchangedCount: number;
+    }>(`/scans/${id}/diff`, { params: compareTo ? { compareTo } : {} }).then((r) => r.data),
 };
 
 // ── Findings ──────────────────────────────────────────────────────────────
@@ -233,6 +250,43 @@ export const findingsApi = {
       statusCounts: Array<{ status: string; _count: number }>;
       confidenceCounts: Array<{ confidence: string; _count: number }>;
     }>("/findings/summary/stats").then((r) => r.data),
+  topTargets: (limit = 5) =>
+    apiClient.get<Array<{
+      targetType: "REPOSITORY" | "CONTAINER" | "DOMAIN";
+      targetId:   string;
+      targetName: string;
+      count:      number;
+    }>>("/findings/summary/top-targets", { params: { limit } }).then((r) => r.data),
+  topRules: (limit = 5) =>
+    apiClient.get<Array<{
+      ruleId:   string;
+      scanType: string;
+      title:    string;
+      count:    number;
+    }>>("/findings/summary/top-rules", { params: { limit } }).then((r) => r.data),
+  // Bulk status update; `status` applies to all ids in one request
+  bulkUpdate: (ids: string[], status: "OPEN"|"ACKNOWLEDGED"|"FALSE_POSITIVE"|"FIXED"|"IGNORED") =>
+    apiClient.post<{ updated: number }>("/findings/bulk", { ids, status }).then((r) => r.data),
+  // Bulk create internal tickets from findings (skips findings already ticketed)
+  bulkCreateTickets: (ids: string[]) =>
+    apiClient.post<{ created: number; skipped: number }>("/findings/bulk-tickets", { ids }).then((r) => r.data),
+  // Per-sub-issue status change (merged SAST/DAST/PENTEST/SECRET only).
+  // Returns the updated map so callers can reconcile without a refetch.
+  updateSubStatus: (id: string, subIndex: number, status: "OPEN"|"ACKNOWLEDGED"|"FALSE_POSITIVE"|"FIXED"|"IGNORED") =>
+    apiClient.patch<{ id: string; subIndex: number; status: string; subStatus: Record<string, string> }>(
+      `/findings/${id}/sub/${subIndex}`,
+      { status },
+    ).then((r) => r.data),
+  // CSV export (returns the browser-facing URL so callers can trigger download)
+  exportCsvUrl: (params?: FindingFilterParams) => {
+    const usp = new URLSearchParams();
+    Object.entries(params ?? {}).forEach(([k, v]) => {
+      if (v === undefined || v === null || v === "") return;
+      if (Array.isArray(v)) v.forEach((x) => usp.append(k, String(x)));
+      else usp.append(k, String(v));
+    });
+    return `/api/findings/export.csv${usp.toString() ? `?${usp.toString()}` : ""}`;
+  },
   // Phase 6 — Finding groups
   groups: () =>
     apiClient.get<FindingGroup[]>("/findings/groups").then((r) => r.data),
@@ -450,4 +504,37 @@ export const aiProvidersApi = {
                      apiClient.delete(`/ai-providers/routings/${service}`).then((r) => r.data),
 
   usage: () => apiClient.get<AIUsageRollup>("/ai-providers/usage").then((r) => r.data),
+};
+
+// ── Admin (queues) ────────────────────────────────────────────────────────
+
+export interface QueueCounts {
+  waiting:   number;
+  active:    number;
+  completed: number;
+  failed:    number;
+  delayed:   number;
+  paused:    number;
+}
+
+export interface FailedJob {
+  id:           string;
+  name:         string;
+  attemptsMade: number;
+  failedReason: string | null;
+  timestamp:    number;
+  finishedOn:   number | null;
+  data:         unknown;
+  stacktrace:   string[] | null;
+}
+
+export const adminApi = {
+  listQueues: () =>
+    apiClient.get<Array<{ name: string; counts: QueueCounts }>>("/admin/queues").then((r) => r.data),
+  listFailed: (name: string, limit = 50) =>
+    apiClient.get<FailedJob[]>(`/admin/queues/${name}/failed`, { params: { limit } }).then((r) => r.data),
+  retryJob:   (name: string, jobId: string) =>
+    apiClient.post<{ ok: boolean }>(`/admin/queues/${name}/jobs/${jobId}/retry`).then((r) => r.data),
+  deleteJob:  (name: string, jobId: string) =>
+    apiClient.delete<{ ok: boolean }>(`/admin/queues/${name}/jobs/${jobId}`).then((r) => r.data),
 };

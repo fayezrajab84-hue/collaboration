@@ -56,7 +56,7 @@ export default function ChecksTab({ checks, emptyMessage }: Props) {
                       </span>
                     )}
                     {check.scanner && (
-                      <span className="rounded bg-indigo-950/50 px-1.5 py-0.5 text-xs text-indigo-400 ring-1 ring-indigo-900/60">
+                      <span className="rounded bg-gray-900/60 px-1.5 py-0.5 text-xs text-indigo-400 ring-1 ring-gray-800">
                         {check.scanner}
                       </span>
                     )}

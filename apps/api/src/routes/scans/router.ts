@@ -134,6 +134,103 @@ router.get("/:id", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// ── Diff two scans of the same target ────────────────────────────────────────
+// GET /scans/:id/diff            → compare against the immediately-previous
+//                                    COMPLETED scan of the same target
+// GET /scans/:id/diff?compareTo=X → compare against a specific scan
+//
+// "Added"    = fingerprints observed in B but not A (firstSeen > A.completedAt)
+// "Removed"  = fingerprints observed in A but not B (lastSeen  < B.startedAt)
+// "Unchanged"= fingerprints in both windows
+router.get("/:id/diff", async (req, res, next) => {
+  try {
+    const user = req.user as { id: string };
+    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    if (!member) { res.status(403).json({ error: "Forbidden" }); return; }
+
+    const scanB = await prisma.scanJob.findFirst({
+      where: { id: req.params["id"], orgId: member.orgId },
+    });
+    if (!scanB) { res.status(404).json({ error: "Scan not found" }); return; }
+    if (!scanB.startedAt) { res.status(409).json({ error: "Scan has not started" }); return; }
+
+    // Resolve scanA — either the explicit ?compareTo or the previous scan of the
+    // same target. Must share targetType + targetId and be COMPLETED before B started.
+    const targetMatch =
+      scanB.targetType === "REPOSITORY" ? { repositoryId: scanB.repositoryId }
+      : scanB.targetType === "CONTAINER" ? { containerId:  scanB.containerId }
+      : { domainId: scanB.domainId };
+
+    const compareToId = req.query["compareTo"] as string | undefined;
+    const scanA = compareToId
+      ? await prisma.scanJob.findFirst({ where: { id: compareToId, orgId: member.orgId, ...targetMatch } })
+      : await prisma.scanJob.findFirst({
+          where: {
+            orgId: member.orgId,
+            id: { not: scanB.id },
+            status: "COMPLETED",
+            completedAt: { lt: scanB.startedAt, not: null },
+            ...targetMatch,
+          },
+          orderBy: { completedAt: "desc" },
+        });
+    if (!scanA || !scanA.startedAt || !scanA.completedAt) {
+      res.status(404).json({ error: "No earlier scan available to compare against" });
+      return;
+    }
+
+    const windowEndB = scanB.completedAt ?? new Date();
+
+    // Fingerprint sets in each scan's window (target-scoped).
+    // "Present in X" = firstSeen <= X.completedAt AND lastSeen >= X.startedAt
+    const presentIn = async (sa: Date, sb: Date) => {
+      const rows = await prisma.finding.findMany({
+        where: {
+          orgId: member.orgId,
+          ...targetMatch,
+          firstSeen: { lte: sb },
+          lastSeen:  { gte: sa },
+        },
+        select: { fingerprint: true },
+      });
+      return new Set(rows.map((r) => r.fingerprint));
+    };
+
+    const [setA, setB] = await Promise.all([
+      presentIn(scanA.startedAt, scanA.completedAt),
+      presentIn(scanB.startedAt, windowEndB),
+    ]);
+
+    const addedFps     = [...setB].filter((fp) => !setA.has(fp));
+    const removedFps   = [...setA].filter((fp) => !setB.has(fp));
+    const unchangedFps = [...setA].filter((fp) =>  setB.has(fp));
+
+    // Hydrate added/removed with finding details (unchanged returns count only to
+    // keep payload small — the UI rarely needs the full list of stable findings).
+    const hydrate = (fps: string[]) =>
+      fps.length === 0 ? Promise.resolve([]) : prisma.finding.findMany({
+        where: { orgId: member.orgId, fingerprint: { in: fps } },
+        select: {
+          id: true, fingerprint: true, title: true, severity: true, scanType: true,
+          status: true, confidence: true, ruleId: true, cveId: true,
+          filePath: true, lineStart: true, firstSeen: true, lastSeen: true,
+        },
+        orderBy: [{ severity: "asc" }, { firstSeen: "desc" }],
+        take: 500,
+      });
+
+    const [added, removed] = await Promise.all([hydrate(addedFps), hydrate(removedFps)]);
+
+    res.json({
+      scanA: { id: scanA.id, startedAt: scanA.startedAt, completedAt: scanA.completedAt, scanTypes: scanA.scanTypes },
+      scanB: { id: scanB.id, startedAt: scanB.startedAt, completedAt: scanB.completedAt, scanTypes: scanB.scanTypes },
+      added,
+      removed,
+      unchangedCount: unchangedFps.length,
+    });
+  } catch (err) { next(err); }
+});
+
 // Cancel a scan job
 router.post("/:id/cancel", async (req, res, next) => {
   try {

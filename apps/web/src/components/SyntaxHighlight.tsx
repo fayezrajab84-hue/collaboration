@@ -10,6 +10,14 @@
  */
 import { Highlight, themes } from "prism-react-renderer";
 
+// Our Prism instance (with Java, Python, Go, Ruby, HCL, … grammars loaded).
+// Passed to <Highlight prism={…}> so prism-react-renderer uses this instance
+// instead of its vendored one which only ships with markup/css/clike/js/ts.
+// Without this override, non-web languages fall back to plain text — which
+// in the vsDark theme renders as a single light-blue tone ("no syntax
+// highlight, only blue").
+import prism from "../lib/prismSetup";
+
 // ── Language detection ────────────────────────────────────────────────────────
 
 const EXT_TO_LANG: Record<string, string> = {
@@ -142,6 +150,13 @@ export interface SyntaxHighlightProps {
   lineEnd?:   number | null;
   /** When true the component shrinks; suitable for the SubissuesPanel preview. */
   compact?: boolean;
+  /**
+   * Suppresses the amber vulnerable-line highlight. Use when the reported
+   * lineStart is approximate (e.g. Semgrep Community taint-mode findings
+   * where lineStart points at the taint source rather than the dangerous
+   * sink) — a single-line highlight there would mislead the developer.
+   */
+  suppressHighlight?: boolean;
 }
 
 export default function SyntaxHighlight({
@@ -150,17 +165,19 @@ export default function SyntaxHighlight({
   lineStart,
   lineEnd,
   compact = false,
+  suppressHighlight = false,
 }: SyntaxHighlightProps) {
   const language    = detectLanguage(filePath) as Parameters<typeof Highlight>[0]["language"];
   const parsedLines = parseLines(code.trimEnd(), lineStart ?? null);
   const cleanCode   = parsedLines.map((l) => l.code).join("\n");
 
   const isVuln = (no: number | null) =>
+    !suppressHighlight &&
     no != null && lineStart != null &&
     no >= lineStart && no <= (lineEnd ?? lineStart);
 
   return (
-    <Highlight theme={themes.vsDark} code={cleanCode} language={language}>
+    <Highlight prism={prism as Parameters<typeof Highlight>[0]["prism"]} theme={themes.vsDark} code={cleanCode} language={language}>
       {({ style, tokens, getLineProps, getTokenProps }) => (
         <div
           className={[

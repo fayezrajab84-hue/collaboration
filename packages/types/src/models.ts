@@ -89,6 +89,10 @@ export interface Domain {
   authorizedAt: Date | null;
   pentestDepth: PentestDepth;
   excludePaths: string[];
+  hasAuthConfig?: boolean;
+  hasApiSpec?: boolean;
+  /** url count when an ACTIVE recording exists for this domain; null otherwise */
+  activeRecordingUrls?: number | null;
 }
 
 export interface SubdomainDiscovery {

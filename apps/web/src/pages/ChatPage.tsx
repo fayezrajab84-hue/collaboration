@@ -128,7 +128,7 @@ function MessageBubble({ message }: { message: Message }) {
   return (
     <div className="flex justify-start">
       <div className="flex items-start gap-2.5 max-w-[85%]">
-        <div className="flex-shrink-0 mt-0.5 flex h-7 w-7 items-center justify-center rounded-full bg-indigo-950 border border-indigo-700">
+        <div className="flex-shrink-0 mt-0.5 flex h-7 w-7 items-center justify-center rounded-full border border-gray-800 bg-gray-900">
           <Sparkles className="h-3.5 w-3.5 text-indigo-400" />
         </div>
         <div className="rounded-2xl rounded-tl-sm border border-gray-800 bg-gray-900 px-4 py-3 space-y-1">
@@ -168,7 +168,7 @@ function WelcomeScreen({
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-6 py-12 text-center">
       {/* Icon */}
-      <div className="mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-indigo-950 border border-indigo-700 shadow-xl shadow-indigo-950/50">
+      <div className="mb-5 flex h-16 w-16 items-center justify-center rounded-2xl border border-gray-800 bg-gray-900">
         <Sparkles className="h-7 w-7 text-indigo-400" />
       </div>
 
@@ -180,21 +180,24 @@ function WelcomeScreen({
       {/* Stats pills */}
       {stats && stats.totalOpen > 0 && (
         <div className="mt-5 flex flex-wrap justify-center gap-2">
-          <span className="rounded-full bg-gray-800 px-3 py-1 text-xs text-gray-300">
+          <span className="rounded-full border border-gray-800 bg-gray-900/60 px-3 py-1 text-xs text-gray-300">
             {stats.totalOpen} open findings
           </span>
           {stats.critical > 0 && (
-            <span className="rounded-full bg-red-900/40 border border-red-700/50 px-3 py-1 text-xs text-red-300">
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-gray-800 bg-gray-900/60 px-3 py-1 text-xs text-red-300">
+              <span className="h-1.5 w-1.5 rounded-full bg-red-400" />
               {stats.critical} critical
             </span>
           )}
           {stats.high > 0 && (
-            <span className="rounded-full bg-orange-900/40 border border-orange-700/50 px-3 py-1 text-xs text-orange-300">
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-gray-800 bg-gray-900/60 px-3 py-1 text-xs text-orange-300">
+              <span className="h-1.5 w-1.5 rounded-full bg-orange-400" />
               {stats.high} high
             </span>
           )}
           {stats.medium > 0 && (
-            <span className="rounded-full bg-amber-900/40 border border-amber-700/50 px-3 py-1 text-xs text-amber-300">
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-gray-800 bg-gray-900/60 px-3 py-1 text-xs text-amber-300">
+              <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
               {stats.medium} medium
             </span>
           )}

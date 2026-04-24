@@ -16,8 +16,10 @@ import { backfillSnippetsForScanJob } from "../services/sastSnippetService.js";
 import { generateScanSummary } from "../services/scanSummaryService.js";
 import { scoreTarget } from "../services/riskScoringService.js";
 import { generateTargetReport } from "../services/reportHtmlService.js";
+import { resolvePolicy, evaluatePolicy } from "../services/policyService.js";
+import { markInProgress as markCheckInProgress, completeCheck } from "../services/prCheckService.js";
 
-const SCAN_TYPES: ScanType[] = ["SAST", "SCA", "SECRET", "IAC", "CONTAINER", "DAST", "DAST_INTERACTIVE", "PENTEST", "PENTEST_FULL"];
+const SCAN_TYPES: ScanType[] = ["SAST", "SCA", "SECRET", "IAC", "CONTAINER", "DAST", "PENTEST", "PENTEST_FULL"];
 
 async function processScanJob(payload: ScanJobPayload) {
   const { scanJobId, orgId, targetType, targetId, scanType, encryptedGitToken } = payload;
@@ -32,6 +34,10 @@ async function processScanJob(payload: ScanJobPayload) {
       data: { status: "RUNNING", startedAt: new Date() },
     });
     emitStatusChange(scanJobId, "RUNNING");
+    // Transition the GitHub Check Run (if any) to in_progress
+    markCheckInProgress(scanJobId).catch((err) =>
+      logger.warn("prCheck in-progress failed", { err: (err as Error).message })
+    );
   }
 
   // Decrypt git token if present (never log)
@@ -132,8 +138,18 @@ async function processScanJob(payload: ScanJobPayload) {
     pentest_depth: payload.pentestDepth ?? "STANDARD",
     auth_config: authConfig,  // decrypted, sent over internal Docker network only
     api_spec_urls: apiSpecUrls,
+    // "Promote recording to Full Pentest" plumbing — when set, the scanner's
+    // PENTEST_FULL orchestrator skips Playwright and pulls URLs from the live
+    // ZAP context. Harmless for other scan types (ignored by the Pydantic model).
+    recording_context_name: payload.recordingContextName,
+    recording_target_url:   payload.recordingTargetUrl,
     // Internal callback so scanner can report phase progress via SSE
     api_url: config.API_INTERNAL_URL ?? null,
+    // Tier 1 — incremental scanning (empty = full-tree scan)
+    changed_files:    payload.changedFiles    ?? [],
+    commit_sha:       payload.commitSha       ?? null,
+    base_commit_sha:  payload.baseCommitSha   ?? null,
+    pr_number:        payload.prNumber        ?? null,
   };
 
   // Route PENTEST_FULL to the dedicated pentest scanner if configured
@@ -142,12 +158,15 @@ async function processScanJob(payload: ScanJobPayload) {
       ? config.SCANNER_PENTEST_URL
       : config.SCANNER_URL;
 
-  // Call Python scanner service. DAST_INTERACTIVE scans skip the full /scan
-  // pipeline — they re-scan an existing ZAP context populated by browser proxy
-  // traffic, so we POST to /dast/recording/scan with the recorded context info.
+  // Call Python scanner service. DAST scans tied to a recording session skip
+  // the full /scan pipeline — they re-scan an existing ZAP context populated
+  // by browser proxy traffic, so we POST to /dast/recording/scan with the
+  // recorded context info. Interactive provenance is signalled by the
+  // presence of `recordingContextName` on the payload, NOT by scanType.
   let result: ScanResult;
   try {
-    const isInteractive = scanType === "DAST_INTERACTIVE";
+    const isInteractive =
+      scanType === "DAST" && Boolean(payload.recordingContextName);
     const endpoint = isInteractive ? "/dast/recording/scan" : "/scan";
     const body = isInteractive
       ? {
@@ -157,10 +176,18 @@ async function processScanJob(payload: ScanJobPayload) {
           targetUrl:   payload.recordingTargetUrl,
         }
       : scanRequest;
+    // Per-scan-type axios timeout. Pentest runs legitimately exceed an hour
+    // (ZAP active + Nuclei + Nikto + sqlmap + Dalfox across 50+ URLs at
+    // AGGRESSIVE depth). DAST can reach ~45 min; everything else is quick.
+    // These numbers MUST be <= the corresponding worker `lockDuration` below.
+    const timeoutMs =
+      scanType === "PENTEST_FULL"    ? 7_200_000 : // 2 h
+      scanType === "DAST"            ? 3_600_000 : // 1 h (covers interactive)
+                                       1_800_000;  // 30 min (SAST/SCA/SECRET/IAC/CONTAINER)
     const response = await axios.post<ScanResult>(
       `${scannerUrl}${endpoint}`,
       body,
-      { timeout: 2_700_000 } // 45 min — DAST active scan can run up to 27 min alone
+      { timeout: timeoutMs },
     );
     result = response.data;
   } catch (err) {
@@ -347,9 +374,42 @@ async function processScanJob(payload: ScanJobPayload) {
       highCount: severityCounts["HIGH"] ?? 0,
     });
 
-    // If this was an interactive recording scan, mark the linked
-    // RecordingSession as COMPLETED so the UI clears the SCANNING state.
-    if (scanType === "DAST_INTERACTIVE") {
+    // ── Policy evaluation + GitHub Check Run completion ─────────────────
+    // Only for PR-triggered scans; fire-and-forget so check failures don't
+    // block the rest of the finalize path (notifications, risk scoring, etc).
+    (async () => {
+      try {
+        const prCheck = await prisma.prCheckRun.findUnique({ where: { scanJobId } });
+        if (!prCheck || !jobRow.repositoryId) return;
+
+        const repo = await prisma.repository.findUnique({
+          where: { id: jobRow.repositoryId },
+          select: { policyId: true, orgId: true },
+        });
+        if (!repo) return;
+
+        const policy = await resolvePolicy(repo.orgId, jobRow.repositoryId, repo.policyId);
+        const findings = await prisma.finding.findMany({
+          where: { ...targetFilter, orgId: jobRow.orgId, lastSeen: { gte: windowStart } },
+        });
+        const baseCommitDate = prCheck.createdAt; // approximation — PR base commit time
+        const evaluation = evaluatePolicy(policy, findings, {
+          scanTypesRun: jobRow.scanTypes,
+          baseCommitDate,
+        });
+        await completeCheck(scanJobId, findings, evaluation);
+      } catch (err) {
+        logger.error("prCheck finalize failed", {
+          scanJobId, err: (err as Error).message,
+        });
+      }
+    })();
+
+    // If this was an interactive recording scan (DAST seeded from a ZAP
+    // recording context, or PENTEST_FULL promoted from a recording),
+    // mark the linked RecordingSession as COMPLETED so the UI clears
+    // the SCANNING state. Detected via payload, not scanType.
+    if (payload.recordingSessionId) {
       await prisma.recordingSession.updateMany({
         where: { scanJobId, status: { in: ["SCANNING", "ACTIVE"] } },
         data:  { status: "COMPLETED", endedAt: new Date() },
@@ -394,10 +454,24 @@ export function initWorkers() {
       {
         connection: bullRedis,
         concurrency: 2,
-        // DAST/PENTEST_FULL can run up to ~40 min (ZAP active scan 27 min +
-        // crawler + nuclei + nikto). Default lockDuration of 30s would mark
-        // long scans as stalled and re-deliver them, causing duplicate work.
-        lockDuration: 2_700_000, // 45 min — matches axios scanner timeout
+        // Per-scan-type lock duration. BullMQ marks a job stalled if the
+        // worker hasn't renewed its lock within this window; default 30s
+        // would kill any DAST/pentest run instantly. Values match the axios
+        // timeouts set in the scanner call above, plus 5 min of head-room
+        // for result processing (findingService upserts, notifications).
+        //
+        //   Pentest (ZAP+Nuclei+Nikto+sqlmap+Dalfox, AGGRESSIVE, 50+ URLs): 2 h 5 min
+        //   DAST crawl or interactive replay:                              1 h 5 min
+        //   Everything else (SAST/SCA/SECRET/IAC/CONTAINER):               35 min
+        lockDuration:
+          scanType === "PENTEST_FULL" ? 7_500_000 :
+          scanType === "DAST"         ? 3_900_000 :
+                                        2_100_000,
+        // Jobs that stall twice are terminal — re-delivery means duplicate
+        // scanner work (two Nuclei processes against the same target) which
+        // is worse than just failing cleanly. Default is 1; keep it but
+        // be explicit so future readers don't wonder.
+        maxStalledCount: 1,
       }
     );
 
@@ -409,8 +483,9 @@ export function initWorkers() {
         where: { id: scanJobId },
         data: { status: "FAILED", error: err.message, completedAt: new Date() },
       }).catch(() => {});
-      // Release the linked recording session so the UI clears.
-      if (scanType === "DAST_INTERACTIVE") {
+      // Release the linked recording session so the UI clears. Any interactive
+      // run (DAST or PENTEST_FULL) carries `recordingSessionId` on its payload.
+      if (job.data.recordingSessionId) {
         await prisma.recordingSession.updateMany({
           where: { scanJobId, status: { in: ["SCANNING", "ACTIVE"] } },
           data:  { status: "FAILED", endedAt: new Date(), errorMessage: err.message },

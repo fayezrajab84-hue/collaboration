@@ -24,6 +24,8 @@ import chatRouter from "./routes/chat/router.js";
 import reportsRouter from "./routes/reports/router.js";
 import suppressionsRouter from "./routes/suppressions/router.js";
 import aiProvidersRouter from "./routes/aiProviders/router.js";
+import adminRouter from "./routes/admin/router.js";
+import policiesRouter from "./routes/policies/router.js";
 
 import "./auth/passport.js"; // side-effect: registers passport strategies
 
@@ -99,6 +101,8 @@ app.use("/api/chat", apiLimiter, chatRouter);
 app.use("/api/reports", apiLimiter, reportsRouter);
 app.use("/api/suppressions", apiLimiter, suppressionsRouter);
 app.use("/api/ai-providers", apiLimiter, aiProvidersRouter);
+app.use("/api/admin", apiLimiter, adminRouter);
+app.use("/api/policies", apiLimiter, policiesRouter);
 
 // ── Error handler (must be last) ──────────────────────────────────────────
 app.use(errorHandler);

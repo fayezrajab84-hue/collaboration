@@ -46,7 +46,10 @@ const EMPTY_FORM: DomainAuthConfigInput = {
 
 export default function DomainAuthPanel({ domainId }: Props) {
   const qc = useQueryClient();
-  const [open, setOpen]       = useState(false);
+  // The outer Auth chip already controls whether this panel is rendered —
+  // default to open so the user isn't forced to click a second time to
+  // actually see the form.
+  const [open, setOpen]       = useState(true);
   const [authType, setAuthType] = useState<AuthTypeValue>("FORM");
   const [form, setForm]       = useState<DomainAuthConfigInput>(EMPTY_FORM);
 
@@ -108,8 +111,8 @@ export default function DomainAuthPanel({ domainId }: Props) {
           <Lock className="h-3.5 w-3.5 text-indigo-400" />
           <span className="text-xs font-medium text-gray-300">Scan Credentials</span>
           {hasConfig && (
-            <span className="flex items-center gap-1 rounded-full bg-teal-900/40 border border-teal-800/40 px-2 py-0.5 text-[10px] font-medium text-teal-300">
-              <ShieldCheck className="h-3 w-3" />
+            <span className="flex items-center gap-1 rounded-full border border-gray-700 bg-gray-800/60 px-2 py-0.5 text-[10px] font-medium text-gray-300">
+              <ShieldCheck className="h-3 w-3 text-indigo-400" />
               {existing.authType === "OAUTH2" ? "OAuth2" : "Configured"}
             </span>
           )}
@@ -306,7 +309,7 @@ export default function DomainAuthPanel({ domainId }: Props) {
                   <button
                     onClick={() => remove.mutate()}
                     disabled={remove.isPending}
-                    className="flex items-center gap-1.5 rounded border border-red-800/50 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-900/20 disabled:opacity-50"
+                    className="flex items-center gap-1.5 rounded border border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-400 hover:border-red-800/60 hover:text-red-300 disabled:opacity-50 transition-colors"
                   >
                     <ShieldOff className="h-3 w-3" />
                     {remove.isPending ? "Removing…" : "Remove"}
@@ -314,7 +317,7 @@ export default function DomainAuthPanel({ domainId }: Props) {
                 )}
 
                 {save.isSuccess && (
-                  <span className="text-[11px] text-teal-400">
+                  <span className="text-[11px] text-gray-400">
                     Saved — next scan will use these credentials
                   </span>
                 )}

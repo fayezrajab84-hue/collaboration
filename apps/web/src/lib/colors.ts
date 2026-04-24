@@ -50,12 +50,15 @@ export const SEVERITY_PILL: Record<string, string> = {
  * Ring-style badge (ChecksTab "severity dot" pill).
  * Background + text + ring-1 class (no border shorthand — uses ring instead).
  */
+// Neutral-chip-with-colored-dot — keeps severity legible without the pill
+// shouting. Background is a single shared gray so rows read as quiet; the
+// coloured dot + text-300 is the only severity cue.
 export const SEVERITY_RING: Record<string, { dot: string; badge: string; label: string }> = {
-  CRITICAL: { dot: "bg-red-500",    badge: "bg-red-950/60    text-red-400    ring-red-800/50",    label: "Critical" },
-  HIGH:     { dot: "bg-orange-500", badge: "bg-orange-950/60 text-orange-400 ring-orange-800/50", label: "High"     },
-  MEDIUM:   { dot: "bg-amber-500",  badge: "bg-amber-950/60  text-amber-400  ring-amber-800/50",  label: "Medium"   },
-  LOW:      { dot: "bg-sky-500",    badge: "bg-sky-950/60    text-sky-400    ring-sky-800/50",    label: "Low"      },
-  INFO:     { dot: "bg-gray-500",   badge: "bg-gray-800/60   text-gray-400   ring-gray-700/50",   label: "Info"     },
+  CRITICAL: { dot: "bg-red-400",    badge: "bg-gray-900/60 text-red-300    ring-gray-800",    label: "Critical" },
+  HIGH:     { dot: "bg-orange-400", badge: "bg-gray-900/60 text-orange-300 ring-gray-800",    label: "High"     },
+  MEDIUM:   { dot: "bg-amber-400",  badge: "bg-gray-900/60 text-amber-300  ring-gray-800",    label: "Medium"   },
+  LOW:      { dot: "bg-sky-400",    badge: "bg-gray-900/60 text-sky-300    ring-gray-800",    label: "Low"      },
+  INFO:     { dot: "bg-gray-500",   badge: "bg-gray-900/60 text-gray-400   ring-gray-800",    label: "Info"     },
 };
 
 /**
@@ -79,7 +82,8 @@ export const SEVERITY_TEXT: Record<string, string> = {
 export const SEVERITY_CHART: Record<string, string> = {
   CRITICAL: "#b91c1c",  // red-700
   HIGH:     "#c2410c",  // orange-700
-  MEDIUM:   "#a16207",  // yellow-700 (muted amber)
+  MEDIUM:   "#854d0e",  // yellow-800 — deep bronze, mutes the "gold dominance"
+                        //              when MEDIUM is the majority slice
   LOW:      "#0369a1",  // sky-700
   INFO:     "#64748b",  // slate-500
 };

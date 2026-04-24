@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from "recharts";
-import { ShieldAlert, GitBranch, Box, Globe, ArrowRight } from "lucide-react";
+import { ShieldAlert, GitBranch, Box, Globe, ArrowRight, Flame, Plus, Target } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import { findingsApi, reposApi, containersApi, domainsApi, scansApi } from "../lib/api";
 import { SEVERITY_CHART } from "../lib/colors";
@@ -50,6 +50,14 @@ export default function DashboardPage() {
     queryKey: ["findings", "recent"],
     queryFn: () => findingsApi.list({ limit: 5, page: 1 }),
   });
+  const { data: noisyTargets } = useQuery({
+    queryKey: ["findings", "top-targets"],
+    queryFn: () => findingsApi.topTargets(5),
+  });
+  const { data: noisyRules } = useQuery({
+    queryKey: ["findings", "top-rules"],
+    queryFn: () => findingsApi.topRules(5),
+  });
 
   const severityData = (stats?.severityCounts ?? []).map((s) => ({
     name: s.severity,
@@ -65,32 +73,46 @@ export default function DashboardPage() {
     <div className="p-6 space-y-6">
       <h1 className="text-3xl font-bold text-white">Dashboard</h1>
 
-      {/* Stats */}
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      {/* Stats — all clickable, route to filtered views */}
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
         <StatsCard
           label="Total Findings"
           value={totalFindings}
           icon={<ShieldAlert className="h-5 w-5" />}
+          onClick={() => navigate("/findings")}
+          hint={totalFindings > 0 ? "View all" : undefined}
         />
         <StatsCard
-          label="Critical / High"
-          value={`${criticalCount} / ${highCount}`}
+          label="Critical"
+          value={criticalCount}
           valueClassName="text-red-400"
-          icon={<ShieldAlert className="h-5 w-5" />}
+          icon={<ShieldAlert className="h-5 w-5 text-red-500/70" />}
+          onClick={() => navigate("/findings?severity=CRITICAL&status=OPEN")}
+          hint={criticalCount > 0 ? "Open & critical" : undefined}
+        />
+        <StatsCard
+          label="High"
+          value={highCount}
+          valueClassName="text-orange-400"
+          icon={<ShieldAlert className="h-5 w-5 text-orange-500/70" />}
+          onClick={() => navigate("/findings?severity=HIGH&status=OPEN")}
+          hint={highCount > 0 ? "Open & high" : undefined}
         />
         <StatsCard
           label="Repositories"
           value={repos?.length ?? 0}
           icon={<GitBranch className="h-5 w-5" />}
+          onClick={() => navigate("/repositories")}
         />
         <StatsCard
           label="Containers + Domains"
           value={(containers?.length ?? 0) + (domains?.length ?? 0)}
           icon={<Globe className="h-5 w-5" />}
+          onClick={() => navigate((containers?.length ?? 0) >= (domains?.length ?? 0) ? "/containers" : "/domains")}
         />
       </div>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         {/* Severity chart */}
         <div className="rounded-lg border border-gray-800 bg-gray-900 p-5">
           <h2 className="mb-4 text-sm font-semibold text-white">Findings by Severity</h2>
@@ -119,8 +141,65 @@ export default function DashboardPage() {
               </PieChart>
             </ResponsiveContainer>
           ) : (
-            <div className="flex h-48 items-center justify-center text-sm text-gray-500">
-              No findings yet — run a scan to get started.
+            <div className="flex h-48 flex-col items-center justify-center gap-3 text-center text-sm text-gray-500">
+              <ShieldAlert className="h-8 w-8 text-gray-700" />
+              <p>No findings yet.</p>
+              {(repos?.length ?? 0) + (containers?.length ?? 0) + (domains?.length ?? 0) === 0 ? (
+                <Link to="/repositories" className="inline-flex items-center gap-1 rounded bg-indigo-700 px-3 py-1.5 text-xs text-white hover:bg-indigo-600">
+                  <Plus className="h-3 w-3" /> Add your first target
+                </Link>
+              ) : (
+                <Link to="/scans" className="inline-flex items-center gap-1 rounded bg-indigo-700 px-3 py-1.5 text-xs text-white hover:bg-indigo-600">
+                  Start a scan <ArrowRight className="h-3 w-3" />
+                </Link>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Noisiest targets */}
+        <div className="rounded-lg border border-gray-800 bg-gray-900 p-5">
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="flex items-center gap-1.5 text-sm font-semibold text-white">
+              <Flame className="h-3.5 w-3.5 text-orange-400" />
+              Top Risk Targets
+            </h2>
+            <span className="text-[10px] uppercase tracking-wider text-gray-500">Open Critical + High</span>
+          </div>
+          {noisyTargets && noisyTargets.length > 0 ? (
+            <div className="space-y-1.5">
+              {noisyTargets.map((t) => {
+                const typeParam =
+                  t.targetType === "REPOSITORY" ? "repo"
+                  : t.targetType === "CONTAINER" ? "container"
+                  : "domain";
+                const icon =
+                  t.targetType === "REPOSITORY" ? <GitBranch className="h-3.5 w-3.5 text-gray-500" />
+                  : t.targetType === "CONTAINER" ? <Box className="h-3.5 w-3.5 text-gray-500" />
+                  : <Globe className="h-3.5 w-3.5 text-gray-500" />;
+                const maxCount = Math.max(...noisyTargets.map((n) => n.count));
+                const pct = Math.round((t.count / maxCount) * 100);
+                return (
+                  <Link
+                    key={`${t.targetType}:${t.targetId}`}
+                    to={`/findings?target=${typeParam}:${t.targetId}&status=OPEN`}
+                    className="group block rounded px-3 py-2 hover:bg-gray-800/60"
+                  >
+                    <div className="flex items-center gap-2">
+                      {icon}
+                      <span className="flex-1 min-w-0 truncate text-xs text-gray-300 group-hover:text-white">{t.targetName}</span>
+                      <span className="tabular-nums text-xs font-semibold text-orange-300">{t.count}</span>
+                    </div>
+                    <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-gray-800">
+                      <div className="h-full rounded-full bg-orange-500/70" style={{ width: `${Math.max(pct, 4)}%` }} />
+                    </div>
+                  </Link>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="flex h-48 items-center justify-center text-center text-sm text-gray-500">
+              No critical or high findings yet.
             </div>
           )}
         </div>
@@ -167,11 +246,62 @@ export default function DashboardPage() {
               ))}
             </div>
           ) : (
-            <div className="flex h-48 items-center justify-center text-sm text-gray-500">
-              No scans yet.
+            <div className="flex h-48 flex-col items-center justify-center gap-3 text-center text-sm text-gray-500">
+              <p>No scans yet.</p>
+              <Link to="/repositories" className="inline-flex items-center gap-1 rounded bg-indigo-700 px-3 py-1.5 text-xs text-white hover:bg-indigo-600">
+                <Plus className="h-3 w-3" /> Add a target
+              </Link>
             </div>
           )}
         </div>
+      </div>
+
+      {/* Top Noisy Rules — candidates for suppression/tuning */}
+      <div className="rounded-lg border border-gray-800 bg-gray-900 p-5">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="flex items-center gap-1.5 text-sm font-semibold text-white">
+            <Target className="h-3.5 w-3.5 text-indigo-400" />
+            Suppression Candidates
+          </h2>
+          <span className="text-[10px] uppercase tracking-wider text-gray-500">
+            Rules producing the most open Critical + High
+          </span>
+        </div>
+        {noisyRules && noisyRules.length > 0 ? (
+          <div className="space-y-1.5">
+            {(() => {
+              const maxCount = Math.max(...noisyRules.map((r) => r.count));
+              return noisyRules.map((r) => {
+                const pct = Math.round((r.count / maxCount) * 100);
+                return (
+                  <Link
+                    key={r.ruleId}
+                    to={`/findings?search=${encodeURIComponent(r.ruleId)}&status=OPEN`}
+                    className="group block rounded px-3 py-2 hover:bg-gray-800/60"
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className="shrink-0 rounded bg-gray-800 px-1.5 py-0.5 text-[10px] font-mono text-gray-400 group-hover:text-gray-200">
+                        {r.scanType}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-xs font-medium text-gray-200 group-hover:text-white">{r.title}</p>
+                        <p className="truncate text-[10px] font-mono text-gray-500">{r.ruleId}</p>
+                      </div>
+                      <span className="tabular-nums text-xs font-semibold text-indigo-300">{r.count}</span>
+                    </div>
+                    <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-gray-800">
+                      <div className="h-full rounded-full bg-indigo-500/70" style={{ width: `${Math.max(pct, 4)}%` }} />
+                    </div>
+                  </Link>
+                );
+              });
+            })()}
+          </div>
+        ) : (
+          <div className="flex h-32 items-center justify-center text-center text-sm text-gray-500">
+            No critical or high findings with a ruleId yet.
+          </div>
+        )}
       </div>
 
       {/* Recent findings — always visible */}
@@ -212,8 +342,11 @@ export default function DashboardPage() {
             </table>
           </div>
         ) : (
-          <div className="flex h-24 items-center justify-center text-sm text-gray-500">
-            No findings yet — run a scan to get started.
+          <div className="flex h-24 flex-col items-center justify-center gap-2 text-sm text-gray-500">
+            <p>No findings yet.</p>
+            <Link to="/repositories" className="inline-flex items-center gap-1 text-xs text-indigo-400 hover:text-indigo-300">
+              <Plus className="h-3 w-3" /> Add a target to get started
+            </Link>
           </div>
         )}
       </div>

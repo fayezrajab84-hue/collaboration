@@ -3,53 +3,35 @@
 function BreachLensLoginLogo() {
   return (
     <svg
-      viewBox="0 0 36 36"
+      viewBox="0 0 24 24"
       className="h-full w-full"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
       aria-label="BreachLens logo"
     >
-      <defs>
-        <filter id="lp-glow" x="-50%" y="-50%" width="200%" height="200%">
-          <feGaussianBlur stdDeviation="1.4" result="blur" />
-          <feMerge>
-            <feMergeNode in="blur" />
-            <feMergeNode in="SourceGraphic" />
-          </feMerge>
-        </filter>
-        <radialGradient id="lp-glass" cx="38%" cy="32%" r="70%">
-          <stop offset="0%" stopColor="#818cf8" stopOpacity="0.28" />
-          <stop offset="100%" stopColor="#3730a3" stopOpacity="0.07" />
-        </radialGradient>
-      </defs>
-
-      {/* Outer lens body */}
-      <circle cx="18" cy="18" r="15.5" stroke="#6366f1" strokeWidth="1.4" fill="url(#lp-glass)" />
-
-      {/* Aperture ring */}
-      <circle cx="18" cy="18" r="9.5" stroke="#4f46e5" strokeWidth="0.7" fill="none" opacity="0.55" />
-
-      {/* 6 aperture blades */}
-      <path d="M 27.36 19.65 A 9.5 9.5 0 0 1 24.11 25.28" stroke="#818cf8" strokeWidth="2.1" strokeLinecap="round" opacity="0.65" />
-      <path d="M 21.25 26.93 A 9.5 9.5 0 0 1 14.75 26.93" stroke="#818cf8" strokeWidth="2.1" strokeLinecap="round" opacity="0.65" />
-      <path d="M 11.89 25.28 A 9.5 9.5 0 0 1  8.64 19.65" stroke="#818cf8" strokeWidth="2.1" strokeLinecap="round" opacity="0.65" />
-      <path d="M  8.64 16.35 A 9.5 9.5 0 0 1 11.89 10.72" stroke="#818cf8" strokeWidth="2.1" strokeLinecap="round" opacity="0.65" />
-      <path d="M 14.75  9.07 A 9.5 9.5 0 0 1 21.25  9.07" stroke="#818cf8" strokeWidth="2.1" strokeLinecap="round" opacity="0.65" />
-      <path d="M 24.11 10.72 A 9.5 9.5 0 0 1 27.36 16.35" stroke="#818cf8" strokeWidth="2.1" strokeLinecap="round" opacity="0.65" />
-
-      {/* Scope crosshair */}
-      <line x1="18" y1="3"    x2="18" y2="13.5" stroke="#6366f1" strokeWidth="1.1" strokeLinecap="round" opacity="0.8" />
-      <line x1="18" y1="22.5" x2="18" y2="33"   stroke="#6366f1" strokeWidth="1.1" strokeLinecap="round" opacity="0.8" />
-      <line x1="3"  y1="18"   x2="13.5" y2="18" stroke="#6366f1" strokeWidth="1.1" strokeLinecap="round" opacity="0.8" />
-      <line x1="22.5" y1="18" x2="33"   y2="18" stroke="#6366f1" strokeWidth="1.1" strokeLinecap="round" opacity="0.8" />
-
-      {/* Central focal point */}
-      <g filter="url(#lp-glow)">
-        <circle cx="18" cy="18" r="3.6" fill="#3730a3" stroke="#6366f1" strokeWidth="0.8" />
-        <circle cx="18" cy="18" r="1.9" fill="#6366f1" />
+      <path
+        d="M 4 3.5 H 20 V 12 C 20 18 16 21 12 22.8 C 8 21 4 18 4 12 Z"
+        fill="#4f46e5"
+        stroke="#a5b4fc"
+        strokeWidth="0.9"
+        strokeLinejoin="round"
+      />
+      <circle cx="12" cy="11" r="4.2" fill="#ffffff" />
+      <g stroke="#e0e7ff" strokeWidth="0.9" strokeLinecap="round">
+        <line x1="12"    y1="5.3"   x2="12"    y2="6.6"  />
+        <line x1="12"    y1="15.4"  x2="12"    y2="16.7" />
+        <line x1="6.3"   y1="11"    x2="7.6"   y2="11"   />
+        <line x1="16.4"  y1="11"    x2="17.7"  y2="11"   />
+        <line x1="7.7"   y1="6.7"   x2="8.65"  y2="7.65" />
+        <line x1="15.35" y1="14.35" x2="16.3"  y2="15.3" />
       </g>
-      {/* Lens glint */}
-      <circle cx="19.2" cy="16.8" r="0.75" fill="#c7d2fe" opacity="0.72" />
+      <path
+        d="M 13.1 6.2 L 9.3 11.7 L 11.9 11.7 L 10.6 16.7 L 14.9 10.4 L 12.3 10.4 Z"
+        fill="#ffffff"
+        stroke="#4f46e5"
+        strokeWidth="0.35"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }

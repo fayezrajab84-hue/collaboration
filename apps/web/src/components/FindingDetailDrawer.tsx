@@ -2307,7 +2307,7 @@ export default function FindingDetailDrawer({ finding, onClose }: Props) {
   const isMerged        = rawOut?.merged === true && finding.scanType === "SAST" && Array.isArray(rawOut?.locations);
   const isScaMerged     = rawOut?.merged === true && (finding.scanType === "SCA" || finding.scanType === "CONTAINER") && Array.isArray(rawOut?.cves);
   const isDastMerged    = rawOut?.merged === true
-    && ["DAST", "DAST_INTERACTIVE", "PENTEST", "PENTEST_FULL"].includes(finding.scanType)
+    && ["DAST", "PENTEST", "PENTEST_FULL"].includes(finding.scanType)
     && Array.isArray(rawOut?.occurrences);
   const isSecretMerged  = rawOut?.merged === true
     && finding.scanType === "SECRET"
@@ -2739,7 +2739,7 @@ export default function FindingDetailDrawer({ finding, onClose }: Props) {
           )}
 
           {/* Single URL — non-merged DAST/Pentest finding with a URL */}
-          {!isDastMerged && ["DAST", "DAST_INTERACTIVE", "PENTEST", "PENTEST_FULL"].includes(finding.scanType) && finding.filePath && (
+          {!isDastMerged && ["DAST", "PENTEST", "PENTEST_FULL"].includes(finding.scanType) && finding.filePath && (
             <div>
               <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-gray-500">Affected URL</h3>
               <a

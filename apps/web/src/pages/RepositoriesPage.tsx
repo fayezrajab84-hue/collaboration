@@ -28,7 +28,10 @@ function ScanButton({ repoId }: { repoId: string }) {
     onError: (err: Error) => toast.error(err.message || "Failed to queue scan"),
   });
 
-  const displayStatus = status ?? (scan.isPending ? "PENDING" : null);
+  // Only show status when it's something to act on — COMPLETED next to a
+  // "2h ago" timestamp is noise.
+  const rawStatus = status ?? (scan.isPending ? "PENDING" : null);
+  const displayStatus = rawStatus && rawStatus !== "COMPLETED" ? rawStatus : null;
 
   return (
     <div className="flex items-center gap-2">
@@ -304,7 +307,7 @@ export default function RepositoriesPage() {
                 <th className="px-4 py-3 font-medium">Issues</th>
                 <th className="px-4 py-3 font-medium">AI Risk</th>
                 <th className="px-4 py-3 font-medium">Last Scanned</th>
-                <th className="px-4 py-3 font-medium">Actions</th>
+                <th className="px-4 py-3 font-medium" aria-label="Actions"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-800 bg-gray-900/50">

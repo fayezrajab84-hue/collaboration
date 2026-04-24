@@ -1,7 +1,11 @@
 import prisma from "../db.js";
 import { scanQueues, type ScanJobPayload } from "../queues/definitions.js";
 import { decrypt } from "./encryptionService.js";
+import { createQueuedCheck } from "./prCheckService.js";
+import { logger } from "../logger.js";
 import type { ScanType } from "@devsecops/types";
+
+type ScanTrigger = "MANUAL" | "PUSH" | "PULL_REQUEST" | "SCHEDULED";
 
 interface TriggerScanOptions {
   orgId: string;
@@ -16,11 +20,17 @@ interface TriggerScanOptions {
   selectedSubdomains?: string[];
   pentestDepth?: "STANDARD" | "AGGRESSIVE";
   domainAuthConfigId?: string;
-  // DAST_INTERACTIVE — recorded ZAP context to active-scan against
+  // Interactive provenance — recorded ZAP context to active-scan against
   recordingContextId?: string;
   recordingContextName?: string;
   recordingTargetUrl?: string;
   recordingSessionId?: string;
+  // Tier 1 — PR / incremental
+  triggerType?:   ScanTrigger;
+  commitSha?:     string;
+  baseCommitSha?: string;
+  prNumber?:      number;
+  changedFiles?:  string[];
 }
 
 export async function triggerScan(opts: TriggerScanOptions) {
@@ -38,6 +48,12 @@ export async function triggerScan(opts: TriggerScanOptions) {
       totalScans: scanTypes.length,
       completedScans: 0,
       status: "PENDING",
+      triggerType:   opts.triggerType   ?? "MANUAL",
+      commitSha:     opts.commitSha     ?? null,
+      baseCommitSha: opts.baseCommitSha ?? null,
+      branch:        opts.branch        ?? null,
+      prNumber:      opts.prNumber      ?? null,
+      changedFiles:  opts.changedFiles  ?? [],
     },
   });
 
@@ -63,6 +79,10 @@ export async function triggerScan(opts: TriggerScanOptions) {
       recordingContextName: opts.recordingContextName,
       recordingTargetUrl:   opts.recordingTargetUrl,
       recordingSessionId:   opts.recordingSessionId,
+      changedFiles:         opts.changedFiles,
+      commitSha:            opts.commitSha,
+      baseCommitSha:        opts.baseCommitSha,
+      prNumber:             opts.prNumber,
     };
 
     const queue = scanQueues[scanType];
@@ -78,6 +98,35 @@ export async function triggerScan(opts: TriggerScanOptions) {
     where: { id: scanJob.id },
     data: { bullJobIds },
   });
+
+  // ── PR check run — register a queued GitHub check as soon as a PR scan fires
+  // Fire-and-forget: GitHub App may not be configured or repo may not have the
+  // App installed; prCheckService handles both cases silently.
+  if (
+    opts.triggerType === "PULL_REQUEST" &&
+    opts.prNumber &&
+    opts.commitSha &&
+    opts.baseCommitSha &&
+    targetType === "REPOSITORY"
+  ) {
+    const repo = await prisma.repository.findUnique({
+      where: { id: targetId },
+      select: { githubAppInstallationId: true, fullName: true },
+    });
+    if (repo?.githubAppInstallationId) {
+      const [owner, name] = repo.fullName.split("/");
+      if (owner && name) createQueuedCheck({
+        scanJobId: scanJob.id,
+        repositoryId: targetId,
+        installationId: repo.githubAppInstallationId,
+        owner,
+        repo: name,
+        prNumber: opts.prNumber,
+        headSha:  opts.commitSha,
+        baseSha:  opts.baseCommitSha,
+      }).catch((err) => logger.warn("prCheck create failed", { err: (err as Error).message }));
+    }
+  }
 
   return {
     scanJobId: scanJob.id,

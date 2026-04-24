@@ -678,7 +678,7 @@ export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: n
       ...(iac.length    ? mergeIacFindings(iac,       orgId, targetId) : []),
       ...other,
     ];
-  } else if (scanType === "DAST" || scanType === "DAST_INTERACTIVE" || scanType === "PENTEST" || scanType === "PENTEST_FULL") {
+  } else if (scanType === "DAST" || scanType === "PENTEST" || scanType === "PENTEST_FULL") {
     findings = mergeDastFindings(rawFindings, orgId, targetId, scanType);
   } else if (scanType === "SECRET") {
     findings = mergeSecretFindings(rawFindings, orgId, targetId);
@@ -756,6 +756,10 @@ export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: n
         // `undefined` means "don't touch" so manual FALSE_POSITIVE / IGNORED
         // and still-OPEN / ACKNOWLEDGED rows are preserved as-is.
         ...(shouldReopen ? { status: "OPEN" as const, resolvedAt: null } : {}),
+        // Reset the absence counter every time the fingerprint is re-observed —
+        // even a single hit means the scanner still sees the issue, so any
+        // past near-misses should not count toward auto-close.
+        absenceCount: 0,
         // Always refresh these so re-scans reflect updated CVE data
         title:        f.title,
         description:  f.description,
@@ -855,6 +859,19 @@ export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: n
     : targetType === "CONTAINER" ? { containerId: targetId }
     : { domainId: targetId };
 
+  // DAST-family scanners (ZAP, nuclei, nikto, testssl, sqlmap) have genuine
+  // between-run variance from crawl-depth differences, rate-limits, expired
+  // auth tokens, plugin updates, network flakiness, etc. A single absent
+  // scan is NOT reliable proof of remediation. For these types we increment
+  // an absence counter and only mark FIXED after `ABSENCE_THRESHOLD`
+  // consecutive misses. Deterministic scanners (SAST/SCA/SECRET/IAC/
+  // CONTAINER) keep the original single-miss behaviour.
+  const DAST_FAMILY = new Set<ScanType>([
+    "DAST", "PENTEST", "PENTEST_FULL",
+  ]);
+  const ABSENCE_THRESHOLD = 2;
+  const isFlaky = DAST_FAMILY.has(scanType);
+
   let fixedCount = 0;
   if (fingerprints.length === 0) {
     logger.warn(
@@ -862,6 +879,41 @@ export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: n
       "as unreliable signal, previous findings left OPEN",
       { orgId, scanType, targetType, targetId },
     );
+  } else if (isFlaky) {
+    // Step 1: bump absenceCount on every OPEN/ACKNOWLEDGED finding in scope
+    // that's missing from this run. Uses atomic increment so concurrent
+    // re-scans can't race.
+    await prisma.finding.updateMany({
+      where: {
+        orgId,
+        scanType,
+        ...targetFilter,
+        status:      { in: ["OPEN", "ACKNOWLEDGED"] },
+        fingerprint: { notIn: fingerprints },
+      },
+      data: { absenceCount: { increment: 1 } },
+    });
+
+    // Step 2: close only those that have now reached the threshold.
+    const res = await prisma.finding.updateMany({
+      where: {
+        orgId,
+        scanType,
+        ...targetFilter,
+        status:       { in: ["OPEN", "ACKNOWLEDGED"] },
+        fingerprint:  { notIn: fingerprints },
+        absenceCount: { gte: ABSENCE_THRESHOLD },
+      },
+      data: {
+        status:     "FIXED",
+        resolvedAt: new Date(),
+      },
+    });
+    fixedCount = res.count;
+
+    logger.info("[findings] DAST-family auto-fix gated by absence counter", {
+      scanType, closed: fixedCount, threshold: ABSENCE_THRESHOLD,
+    });
   } else {
     const res = await prisma.finding.updateMany({
       where: {
