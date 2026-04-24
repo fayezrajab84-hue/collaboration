@@ -16,7 +16,6 @@ class ScanType(str, Enum):
     IAC = "IAC"
     CONTAINER = "CONTAINER"
     DAST = "DAST"
-    DAST_INTERACTIVE = "DAST_INTERACTIVE"
     PENTEST = "PENTEST"
     PENTEST_FULL = "PENTEST_FULL"
 
@@ -118,8 +117,25 @@ class ScanRequest(BaseModel):
     # Used by DAST (seed ZAP + Nuclei) and Full Pentest vuln phase.
     api_spec_urls: list[str] = []
 
+    # When set, PENTEST_FULL skips its Playwright crawl phase and instead pulls
+    # the URL list out of the live ZAP context with this name. Populated by the
+    # API worker for the "Promote recording to Full Pentest" flow — the user
+    # already clicked through the app in their browser while proxied through
+    # ZAP, so the recorded URLs are the authoritative scope and re-crawling
+    # would just re-discover an unauthenticated subset.
+    recording_context_name: Optional[str] = None
+    recording_target_url:   Optional[str] = None
+
     # Internal callback URL for phase progress reporting (e.g. http://api:3000)
     api_url: Optional[str] = None
+
+    # Tier 1 — incremental scanning. When non-empty, repo scanners restrict
+    # analysis to these paths (relative to the repo root). PR webhooks populate
+    # this via the GitHub App files-API. Empty = full repo scan (legacy / push).
+    changed_files: list[str] = []
+    commit_sha:     Optional[str] = None
+    base_commit_sha: Optional[str] = None
+    pr_number:       Optional[int] = None
 
 
 class ReconRequest(BaseModel):

@@ -279,7 +279,7 @@ class InteractiveDASTSession:
                 continue
 
             fingerprint = helper.compute_fingerprint(
-                request.org_id, request.target_id, ScanType.DAST_INTERACTIVE,
+                request.org_id, request.target_id, ScanType.DAST,
                 alert_id, url, None,
             )
 
@@ -316,7 +316,7 @@ class InteractiveDASTSession:
                 title=alert.get("alert", "ZAP Alert (interactive)"),
                 description=alert.get("description", ""),
                 severity=severity,
-                scan_type=ScanType.DAST_INTERACTIVE,
+                scan_type=ScanType.DAST,
                 scanner="zap-interactive",
                 cwe_id=f"CWE-{alert.get('cweid', '')}" if alert.get("cweid") else None,
                 remediation=alert.get("solution", ""),

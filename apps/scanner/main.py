@@ -241,7 +241,7 @@ async def dast_recording_scan(payload: dict) -> ScanResult:
         )
         return ScanResult(
             scan_job_id=scan_request.scan_job_id,
-            scan_type=ScanType.DAST_INTERACTIVE,
+            scan_type=ScanType.DAST,
             scanner="zap-interactive",
             success=True,
             findings=findings,
@@ -250,7 +250,7 @@ async def dast_recording_scan(payload: dict) -> ScanResult:
     except Exception as exc:
         return ScanResult(
             scan_job_id=scan_request.scan_job_id,
-            scan_type=ScanType.DAST_INTERACTIVE,
+            scan_type=ScanType.DAST,
             scanner="zap-interactive",
             success=False,
             findings=[],
