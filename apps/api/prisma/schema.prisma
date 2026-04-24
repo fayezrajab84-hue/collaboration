@@ -34,7 +34,6 @@ enum ScanType {
   IAC
   CONTAINER
   DAST
-  DAST_INTERACTIVE   // Active scan seeded from a user-recorded ZAP proxy session
   PENTEST
   PENTEST_FULL
 }
@@ -145,6 +144,27 @@ enum AuthType {
   OAUTH2  // exchange client credentials / ROPC for a Bearer token
 }
 
+// ── Scan trigger + PR-check integration ──────────────────────────────────────
+// Separates how a scan was initiated from what it scanned. PR scans fan out to
+// PrCheckRun which tracks the GitHub Check Run row so we can update it from the
+// worker as the scan progresses / completes.
+enum ScanTrigger {
+  MANUAL          // user clicked "Scan" in the UI or hit POST /scan
+  PUSH            // default-branch push webhook
+  PULL_REQUEST    // PR open / sync / reopen
+  SCHEDULED       // cron
+}
+
+// Policy rules: each row is one gate that contributes to the PR check decision.
+// `config` is rule-type-specific — validated in code, not in the DB.
+enum PolicyRuleType {
+  SEVERITY_THRESHOLD    // config: { severity: Severity }       → fail if any OPEN finding ≥ severity
+  BLOCK_ON_NEW_ONLY     // config: {}                           → qualifier: scope thresholds to PR-new findings
+  SLA_DAYS              // config: { severity, days }           → fail if OPEN finding at severity older than N days
+  IGNORE_DEV_DEPS       // config: {}                           → strip SCA findings in devDependencies
+  SCAN_TYPE_REQUIRED    // config: { scanTypes: ScanType[] }    → fail if any required type didn't run successfully
+}
+
 // ── Models ────────────────────────────────────────────────────────────────
 
 model User {
@@ -183,6 +203,7 @@ model Organization {
   aiServiceRoutings AIServiceRouting[]
   aiCallLogs      AICallLog[]
   recordings      RecordingSession[]
+  policies        Policy[]
 }
 
 model OrganizationMember {
@@ -207,6 +228,13 @@ model Repository {
   language      String?
   webhookId     Int?
   webhookSecret  String?   // AES-256-GCM encrypted
+  // Set when the GitHub App is installed on the owner + has this repo in scope.
+  // Required for posting PR Check Runs + inline review comments. Nullable so
+  // platform keeps working for repos added via the legacy PAT webhook path.
+  githubAppInstallationId Int?
+  // Optional per-repo policy override. When null, policyService falls back to
+  // the org's Policy with isDefault=true.
+  policyId                String?
   lastScannedAt  DateTime?
   aiRiskScore    Int?      // 0-100
   aiRiskReason   String?
@@ -214,9 +242,13 @@ model Repository {
   addedAt        DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
-  org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  scans    ScanJob[]
-  findings Finding[]
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  policy      Policy?      @relation(fields: [policyId], references: [id], onDelete: SetNull)
+  scans       ScanJob[]
+  findings    Finding[]
+  prCheckRuns PrCheckRun[]
+
+  @@index([orgId, githubAppInstallationId])
 }
 
 model Container {
@@ -277,15 +309,17 @@ model RecordingSession {
   urlCount        Int             @default(0)             // last polled count of recorded URLs
   alertCount      Int             @default(0)             // last polled passive-scan alert count
   lastActivityAt  DateTime        @default(now())         // bumped each time we see new URLs (for idle auto-stop)
-  scanJobId       String?                                 // populated when user kicks off the active scan
+  scanJobId       String?                                 // populated when user kicks off the active scan (interactive DAST)
+  promotedScanJobId String?                               // populated when user "Promotes to Full Pentest" (PENTEST_FULL, independent of scanJobId)
   startedAt       DateTime        @default(now())
   endedAt         DateTime?
   errorMessage    String?
 
-  domain    Domain        @relation(fields: [domainId], references: [id], onDelete: Cascade)
-  org       Organization  @relation(fields: [orgId],    references: [id], onDelete: Cascade)
-  startedBy User          @relation(fields: [startedById], references: [id])
-  scanJob   ScanJob?      @relation(fields: [scanJobId],  references: [id])
+  domain          Domain   @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  org             Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  startedBy       User     @relation(fields: [startedById], references: [id])
+  scanJob         ScanJob? @relation("RecordingInteractiveScan", fields: [scanJobId],         references: [id])
+  promotedScanJob ScanJob? @relation("RecordingPromotedScan",    fields: [promotedScanJobId], references: [id])
 
   @@index([orgId, status])
   @@index([domainId, startedAt])
@@ -365,6 +399,17 @@ model ScanJob {
   startedAt      DateTime?
   completedAt    DateTime?
   error          String?
+  // Trigger metadata (PR scans, push scans, scheduled scans). `triggerType`
+  // stays MANUAL for the legacy "user clicked Scan" flow so existing rows
+  // don't need backfilling.
+  triggerType    ScanTrigger @default(MANUAL)
+  commitSha      String?     // head SHA actually scanned
+  baseCommitSha  String?     // PR base SHA (used for diffing new vs existing findings)
+  branch         String?
+  prNumber       Int?        // GitHub PR number when triggerType = PULL_REQUEST
+  // Non-empty → incremental scan. Scanners use this list to limit Semgrep
+  // --include / Trivy / Checkov / TruffleHog targets. Empty/null → full scan.
+  changedFiles   String[]    @default([])
   // Severity counts
   criticalCount  Int        @default(0)
   highCount      Int        @default(0)
@@ -383,10 +428,13 @@ model ScanJob {
   domain     Domain?      @relation(fields: [domainId], references: [id])
   findings   Finding[]
   reports    Report[]
-  recordings RecordingSession[]
+  recordings         RecordingSession[] @relation("RecordingInteractiveScan")
+  promotedRecordings RecordingSession[] @relation("RecordingPromotedScan")
+  prCheckRun         PrCheckRun?
 
   @@index([orgId, status])
   @@index([orgId, createdAt])
+  @@index([repositoryId, prNumber])
 }
 
 model Finding {
@@ -432,6 +480,16 @@ model Finding {
   // AI fix suggestion — unified diff
   aiFixSuggestion   String?   @db.Text
   aiFixSuggestedAt  DateTime?
+  // Snooze — finding is hidden until this timestamp passes (reopens automatically).
+  // Set by the /snooze PR command; independent of status, which may still be OPEN.
+  snoozedUntil      DateTime?
+  // Auto-fix absence counter for flaky scanners (DAST/PENTEST family).
+  // Incremented each time a scan of the finding's own scanType completes
+  // without re-observing this fingerprint; reset to 0 on re-observation.
+  // We only mark status=FIXED once this crosses a threshold (see
+  // findingService.upsertFindings) to avoid false closures from a single
+  // flaky ZAP / nuclei / nikto run.
+  absenceCount      Int       @default(0)
 
   org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   scanJob    ScanJob      @relation(fields: [scanJobId], references: [id])
@@ -613,4 +671,82 @@ model AICallLog {
   @@index([orgId, createdAt])
   @@index([orgId, service, createdAt])
   @@index([orgId, providerType, createdAt])
+}
+
+// ── Policy engine ────────────────────────────────────────────────────────────
+// A Policy is the org's configuration for "what blocks a PR / fails a scan".
+// Resolution: repo.policyId → first Policy whose repoIds contains repo.id →
+// org's isDefault=true policy → no policy (conclusion = neutral, never fails).
+model Policy {
+  id          String   @id @default(cuid())
+  orgId       String
+  name        String
+  description String?
+  // Exactly one default per org enforced in application code (no unique
+  // partial index in Prisma yet — trade-off for cross-DB portability).
+  isDefault   Boolean  @default(false)
+  isActive    Boolean  @default(true)
+  // Scope — empty arrays mean "applies to all repos / all branches".
+  // repoIds overrides branchPatterns: if a repo is explicitly listed here or
+  // references this policy via repository.policyId, branchPatterns are ignored.
+  repoIds        String[] @default([])
+  branchPatterns String[] @default([])    // glob patterns e.g. ["main", "release/*"]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  org          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  rules        PolicyRule[]
+  repositories Repository[]   // repos that reference this policy via policyId
+
+  @@index([orgId, isActive])
+  @@index([orgId, isDefault])
+}
+
+model PolicyRule {
+  id       String         @id @default(cuid())
+  policyId String
+  type     PolicyRuleType
+  // Config shape varies by type (validated by policyService):
+  //   SEVERITY_THRESHOLD → { severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" }
+  //   BLOCK_ON_NEW_ONLY  → {}
+  //   SLA_DAYS           → { severity: Severity, days: number }
+  //   IGNORE_DEV_DEPS    → {}
+  //   SCAN_TYPE_REQUIRED → { scanTypes: ScanType[] }
+  config   Json           @default("{}")
+  createdAt DateTime      @default(now())
+
+  policy Policy @relation(fields: [policyId], references: [id], onDelete: Cascade)
+
+  @@index([policyId])
+}
+
+// ── GitHub Check Run tracking ────────────────────────────────────────────────
+// One row per (ScanJob on a PR). Lets us PATCH the same check_run.id to push
+// in_progress / completed updates, and correlate later webhook events (user
+// dismissing an annotation, re-requesting the check, etc.) back to our scan.
+model PrCheckRun {
+  id           String   @id @default(cuid())
+  scanJobId    String   @unique
+  repositoryId String
+  prNumber     Int
+  headSha      String
+  baseSha      String
+  // GitHub check_run.id is a 64-bit int. Prisma maps this to bigint in Postgres.
+  checkRunId   BigInt
+  // Mirrors the GitHub Check Run fields so we can query our state without an
+  // API call. Status: queued | in_progress | completed. Conclusion: success |
+  // failure | neutral | cancelled | timed_out | action_required.
+  status       String   @default("queued")
+  conclusion   String?
+  // How many inline review comments we posted (capped to avoid PR spam). Used
+  // to decide whether to post a summary comment on subsequent syncs.
+  commentsPosted Int    @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  scanJob    ScanJob    @relation(fields: [scanJobId],    references: [id], onDelete: Cascade)
+  repository Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+
+  @@index([repositoryId, prNumber])
+  @@index([repositoryId, headSha])
 }

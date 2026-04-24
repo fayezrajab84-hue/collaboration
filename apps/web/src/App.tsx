@@ -13,6 +13,7 @@ import ScansPage from "./pages/ScansPage";
 import SettingsPage from "./pages/SettingsPage";
 import ChatPage from "./pages/ChatPage";
 import ReportPage from "./pages/ReportPage";
+import AdminQueuesPage from "./pages/AdminQueuesPage";
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth();
@@ -63,6 +64,7 @@ function AppRoutes() {
         <Route path="settings" element={<SettingsPage />} />
         <Route path="chat" element={<ChatPage />} />
         <Route path="report" element={<ReportPage />} />
+        <Route path="admin/queues" element={<AdminQueuesPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>

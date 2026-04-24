@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Settings, Github, AlertTriangle } from "lucide-react";
+import { Settings, Github, ShieldCheck } from "lucide-react";
 import { integrationsApi, aiProvidersApi } from "../lib/api";
 import { useAuth } from "../hooks/useAuth";
 import { useToast } from "../hooks/useToast";
 import AIProvidersTab from "../components/settings/AIProvidersTab";
+import PoliciesTab from "../components/settings/PoliciesTab";
 
-type Tab = "github" | "ai" | "jira" | "slack" | "teams";
+type Tab = "github" | "ai" | "policies" | "jira" | "slack" | "teams";
 
 function SaveButton({ isPending, saved }: { isPending: boolean; saved: boolean }) {
   return (
@@ -366,9 +367,10 @@ function TeamsTab() {
 }
 
 const TABS: { id: Tab; label: string }[] = [
-  { id: "github", label: "GitHub" },
-  { id: "ai",     label: "AI Providers" },
-  { id: "jira",   label: "Jira" },
+  { id: "github",   label: "GitHub" },
+  { id: "ai",       label: "AI Providers" },
+  { id: "policies", label: "Policies" },
+  { id: "jira",     label: "Jira" },
   { id: "slack",  label: "Slack" },
   { id: "teams",  label: "Microsoft Teams" },
 ];
@@ -384,11 +386,12 @@ export default function SettingsPage() {
   const { data: aiProviders = [] } = useQuery({ queryKey: ["ai-providers"], queryFn: aiProvidersApi.list, retry: false });
 
   const connected: Record<Tab, boolean> = {
-    github: true,   // GitHub is always connected (OAuth session)
-    ai:     aiProviders.length > 0,
-    jira:   !!jiraData,
-    slack:  !!slackData,
-    teams:  !!teamsData,
+    github:   true,   // GitHub is always connected (OAuth session)
+    ai:       aiProviders.length > 0,
+    policies: false,  // No "connected" dot for policies
+    jira:     !!jiraData,
+    slack:    !!slackData,
+    teams:    !!teamsData,
   };
 
   return (
@@ -424,16 +427,17 @@ export default function SettingsPage() {
 
         {/* Content panel */}
         <div className="flex-1 rounded-xl border border-gray-800 bg-gray-900 p-6">
-          <div className="mb-4 flex items-center gap-2 rounded-lg border border-amber-900/50 bg-amber-950/30 px-3 py-2">
-            <AlertTriangle className="h-3.5 w-3.5 text-amber-500 shrink-0" />
-            <p className="text-xs text-amber-400">
+          <div className="mb-4 flex items-center gap-2 rounded-lg border border-gray-800 bg-gray-900/40 px-3 py-2">
+            <ShieldCheck className="h-3.5 w-3.5 text-indigo-400 shrink-0" />
+            <p className="text-xs text-gray-400">
               All credentials are encrypted at rest using AES-256-GCM before storage.
             </p>
           </div>
 
-          {activeTab === "github" && <GitHubTab />}
-          {activeTab === "ai"     && <AIProvidersTab />}
-          {activeTab === "jira"   && <JiraTab />}
+          {activeTab === "github"   && <GitHubTab />}
+          {activeTab === "ai"       && <AIProvidersTab />}
+          {activeTab === "policies" && <PoliciesTab />}
+          {activeTab === "jira"     && <JiraTab />}
           {activeTab === "slack"  && <SlackTab />}
           {activeTab === "teams"  && <TeamsTab />}
         </div>
