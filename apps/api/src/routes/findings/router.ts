@@ -65,40 +65,75 @@ router.get("/", async (req, res, next) => {
     const limit = Math.min(100, parseInt(q["limit"] as string || "25"));
     const skip = (page - 1) * limit;
 
+    // Multi-select filters arrive as either:
+    //   - repeated keys:   ?severity=HIGH&severity=LOW          (axios default)
+    //   - comma-separated: ?severity=HIGH,LOW                   (human-readable URL)
+    //   - single value:    ?severity=HIGH                       (legacy)
+    // Normalise all three shapes into a string[] before handing to Prisma's `in`.
+    const multi = (v: unknown): string[] | null => {
+      if (v == null || v === "") return null;
+      const arr = Array.isArray(v) ? v : [v];
+      const flat = arr
+        .flatMap((x) => (typeof x === "string" ? x.split(",") : []))
+        .map((s) => s.trim())
+        .filter(Boolean);
+      return flat.length ? flat : null;
+    };
+
     const where: Record<string, unknown> = { orgId: member.orgId };
-    if (q["severity"])   where["severity"]      = { in: [q["severity"]].flat() };
-    if (q["scanType"])   where["scanType"]       = { in: [q["scanType"]].flat() };
-    if (q["status"])     where["status"]         = { in: [q["status"]].flat() };
-    if (q["confidence"]) where["confidence"]     = { in: [q["confidence"]].flat() };
-    if (q["repoId"])     where["repositoryId"]   = q["repoId"];
-    if (q["containerId"]) where["containerId"]   = q["containerId"];
-    if (q["domainId"])   where["domainId"]       = q["domainId"];
+    const sev  = multi(q["severity"]);
+    const sct  = multi(q["scanType"]);
+    const sts  = multi(q["status"]);
+    const conf = multi(q["confidence"]);
+    if (sev)  where["severity"]   = { in: sev };
+    if (sct)  where["scanType"]   = { in: sct };
+    if (sts)  where["status"]     = { in: sts };
+    if (conf) where["confidence"] = { in: conf };
+    // Multiple composite predicates below (target OR, search OR, AI OR) need
+    // to be ANDed together. Using an AND array avoids clobbering `where.OR`.
+    const andClauses: Array<Record<string, unknown>> = [];
+
+    // Target filters — each supports multi-select. Across target types we OR
+    // (a finding with a matching repo OR container OR domain qualifies).
+    const repoIds      = multi(q["repoId"]);
+    const containerIds = multi(q["containerId"]);
+    const domainIds    = multi(q["domainId"]);
+    const targetOr: Array<Record<string, unknown>> = [];
+    if (repoIds)      targetOr.push({ repositoryId: { in: repoIds } });
+    if (containerIds) targetOr.push({ containerId:  { in: containerIds } });
+    if (domainIds)    targetOr.push({ domainId:     { in: domainIds } });
+    if (targetOr.length === 1)      andClauses.push(targetOr[0]);
+    else if (targetOr.length > 1)   andClauses.push({ OR: targetOr });
+
     if (q["search"]) {
-      where["OR"] = [
+      andClauses.push({ OR: [
         { title:       { contains: q["search"] as string, mode: "insensitive" } },
         { description: { contains: q["search"] as string, mode: "insensitive" } },
         { cveId:       { contains: q["search"] as string, mode: "insensitive" } },
-      ];
+      ]});
     }
 
-    // AI triage filter — matches on aiAnalysedAt / aiFixSuggestedAt presence.
-    // Values: analysed | fix_ready | triaged (both) | untriaged (neither)
-    switch (q["ai"]) {
-      case "analysed":  where["aiAnalysedAt"]     = { not: null }; break;
-      case "fix_ready": where["aiFixSuggestedAt"] = { not: null }; break;
-      case "triaged":
-        where["AND"] = [
-          { aiAnalysedAt:     { not: null } },
-          { aiFixSuggestedAt: { not: null } },
-        ];
-        break;
-      case "untriaged":
-        where["AND"] = [
-          { aiAnalysedAt:     null },
-          { aiFixSuggestedAt: null },
-        ];
-        break;
+    // AI triage filter — multi-select OR of state predicates.
+    //   analysed   → aiAnalysedAt IS NOT NULL
+    //   fix_ready  → aiFixSuggestedAt IS NOT NULL
+    //   triaged    → both IS NOT NULL
+    //   untriaged  → both IS NULL
+    const aiStates = multi(q["ai"]);
+    if (aiStates) {
+      const aiOr: Array<Record<string, unknown>> = [];
+      for (const s of aiStates) {
+        switch (s) {
+          case "analysed":  aiOr.push({ aiAnalysedAt: { not: null } }); break;
+          case "fix_ready": aiOr.push({ aiFixSuggestedAt: { not: null } }); break;
+          case "triaged":   aiOr.push({ AND: [{ aiAnalysedAt: { not: null } }, { aiFixSuggestedAt: { not: null } }] }); break;
+          case "untriaged": aiOr.push({ AND: [{ aiAnalysedAt: null }, { aiFixSuggestedAt: null }] }); break;
+        }
+      }
+      if (aiOr.length === 1)     andClauses.push(aiOr[0]);
+      else if (aiOr.length > 1)  andClauses.push({ OR: aiOr });
     }
+
+    if (andClauses.length) where["AND"] = andClauses;
 
     // Suppression filter — hide suppressed findings unless ?includeSuppressed=true
     const includeSuppressed = q["includeSuppressed"] === "true";
@@ -337,30 +372,62 @@ router.get("/export.csv", async (req, res, next) => {
 
     const q = req.query;
     const where: Record<string, unknown> = { orgId: member.orgId };
-    if (q["severity"])    where["severity"]     = { in: [q["severity"]].flat() };
-    if (q["scanType"])    where["scanType"]     = { in: [q["scanType"]].flat() };
-    if (q["status"])      where["status"]       = { in: [q["status"]].flat() };
-    if (q["confidence"])  where["confidence"]   = { in: [q["confidence"]].flat() };
-    if (q["repoId"])      where["repositoryId"] = q["repoId"];
-    if (q["containerId"]) where["containerId"]  = q["containerId"];
-    if (q["domainId"])    where["domainId"]     = q["domainId"];
+    // Same multi-value handling as the list endpoint (repeated keys / comma-separated / single)
+    const multi = (v: unknown): string[] | null => {
+      if (v == null || v === "") return null;
+      const arr = Array.isArray(v) ? v : [v];
+      const flat = arr
+        .flatMap((x) => (typeof x === "string" ? x.split(",") : []))
+        .map((s) => s.trim())
+        .filter(Boolean);
+      return flat.length ? flat : null;
+    };
+    const sev  = multi(q["severity"]);
+    const sct  = multi(q["scanType"]);
+    const sts  = multi(q["status"]);
+    const conf = multi(q["confidence"]);
+    if (sev)  where["severity"]   = { in: sev };
+    if (sct)  where["scanType"]   = { in: sct };
+    if (sts)  where["status"]     = { in: sts };
+    if (conf) where["confidence"] = { in: conf };
+    const andClauses: Array<Record<string, unknown>> = [];
+
+    // Target filters — multi-select with OR across target types
+    const repoIds      = multi(q["repoId"]);
+    const containerIds = multi(q["containerId"]);
+    const domainIds    = multi(q["domainId"]);
+    const targetOr: Array<Record<string, unknown>> = [];
+    if (repoIds)      targetOr.push({ repositoryId: { in: repoIds } });
+    if (containerIds) targetOr.push({ containerId:  { in: containerIds } });
+    if (domainIds)    targetOr.push({ domainId:     { in: domainIds } });
+    if (targetOr.length === 1)     andClauses.push(targetOr[0]);
+    else if (targetOr.length > 1)  andClauses.push({ OR: targetOr });
+
     if (q["search"]) {
-      where["OR"] = [
+      andClauses.push({ OR: [
         { title:       { contains: q["search"] as string, mode: "insensitive" } },
         { description: { contains: q["search"] as string, mode: "insensitive" } },
         { cveId:       { contains: q["search"] as string, mode: "insensitive" } },
-      ];
+      ]});
     }
-    switch (q["ai"]) {
-      case "analysed":  where["aiAnalysedAt"]     = { not: null }; break;
-      case "fix_ready": where["aiFixSuggestedAt"] = { not: null }; break;
-      case "triaged":
-        where["AND"] = [{ aiAnalysedAt: { not: null } }, { aiFixSuggestedAt: { not: null } }];
-        break;
-      case "untriaged":
-        where["AND"] = [{ aiAnalysedAt: null }, { aiFixSuggestedAt: null }];
-        break;
+
+    // AI triage — multi-select OR of state predicates
+    const aiStates = multi(q["ai"]);
+    if (aiStates) {
+      const aiOr: Array<Record<string, unknown>> = [];
+      for (const s of aiStates) {
+        switch (s) {
+          case "analysed":  aiOr.push({ aiAnalysedAt: { not: null } }); break;
+          case "fix_ready": aiOr.push({ aiFixSuggestedAt: { not: null } }); break;
+          case "triaged":   aiOr.push({ AND: [{ aiAnalysedAt: { not: null } }, { aiFixSuggestedAt: { not: null } }] }); break;
+          case "untriaged": aiOr.push({ AND: [{ aiAnalysedAt: null }, { aiFixSuggestedAt: null }] }); break;
+        }
+      }
+      if (aiOr.length === 1)     andClauses.push(aiOr[0]);
+      else if (aiOr.length > 1)  andClauses.push({ OR: aiOr });
     }
+
+    if (andClauses.length) where["AND"] = andClauses;
     if (q["includeSuppressed"] !== "true") {
       const suppressed = await activeSuppressedFingerprints(member.orgId);
       if (suppressed.size > 0) where["fingerprint"] = { notIn: Array.from(suppressed) };
@@ -553,7 +620,7 @@ router.post("/bulk-tickets", requireRole("SECURITY"), async (req, res, next) => 
 // (SAST/DAST/PENTEST/SECRET) are allowed. SCA/CONTAINER/IAC stay
 // parent-level: one upstream action resolves every sub-issue at once.
 const SUB_ACTION_SCAN_TYPES = new Set([
-  "SAST", "DAST", "DAST_INTERACTIVE", "PENTEST_FULL", "SECRET",
+  "SAST", "DAST", "PENTEST_FULL", "SECRET",
 ]);
 const SUB_STATUS = ["OPEN", "ACKNOWLEDGED", "FALSE_POSITIVE", "FIXED", "IGNORED"] as const;
 const subStatusSchema = z.object({ status: z.enum(SUB_STATUS) });

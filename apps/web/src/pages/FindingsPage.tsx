@@ -1,7 +1,7 @@
-import { useState } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useState, useEffect } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
-import { ShieldAlert, Search, Globe, Layers, Sparkles, ChevronDown, ChevronRight, KeyRound, Bot, Wrench, X, EyeOff } from "lucide-react";
+import { ShieldAlert, Search, Globe, Layers, Sparkles, ChevronDown, ChevronRight, ChevronsUpDown, ArrowUp, ArrowDown, KeyRound, Bot, Wrench, X, EyeOff, Eye, Download, CheckSquare, CheckCircle2, ShieldOff, RotateCcw, Ticket as TicketIcon } from "lucide-react";
 import { findingsApi, reposApi, containersApi, domainsApi, suppressionsApi } from "../lib/api";
 import type { Finding, FindingGroup } from "@devsecops/types";
 import SeverityBadge from "../components/SeverityBadge";
@@ -9,26 +9,93 @@ import ConfidenceBadge from "../components/ConfidenceBadge";
 import FindingStatusBadge from "../components/FindingStatusBadge";
 import FindingDetailDrawer from "../components/FindingDetailDrawer";
 import TargetTag from "../components/TargetTag";
+import MultiSelect from "../components/MultiSelect";
 import { formatRelative } from "../lib/utils";
 import { SEVERITY_BADGE } from "../lib/colors";
+import { useDebouncedValue } from "../hooks/useDebouncedValue";
+
+type SortField = "severity" | "firstSeen" | "lastSeen" | "title" | "scanType" | "status" | "confidence";
+type SortOrder = "asc" | "desc";
+const PAGE_SIZES = [25, 50, 100] as const;
 
 const SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"];
-const SCAN_TYPES = ["SAST", "SCA", "SECRET", "IAC", "CONTAINER", "DAST", "PENTEST", "PENTEST_FULL"];
+// Label overrides for scan-type dropdown (internal enum → human-friendly)
+const SCAN_TYPE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "SAST",             label: "SAST" },
+  { value: "SCA",              label: "SCA" },
+  { value: "SECRET",           label: "Secrets" },
+  { value: "IAC",              label: "IaC" },
+  { value: "CONTAINER",        label: "Container" },
+  { value: "DAST",             label: "DAST" },
+  { value: "PENTEST_FULL",     label: "Pentest" },
+];
 const STATUSES = ["OPEN", "ACKNOWLEDGED", "FALSE_POSITIVE", "FIXED", "IGNORED"];
 const CONFIDENCES = ["CONFIRMED", "LIKELY", "POSSIBLE"];
+// AI triage filter values — matched server-side against aiAnalysedAt/aiFixSuggestedAt
+const AI_FILTERS: Array<{ value: string; label: string }> = [
+  { value: "triaged",   label: "AI: Triaged (analysis + fix)" },
+  { value: "analysed",  label: "AI: Analysed" },
+  { value: "fix_ready", label: "AI: Fix ready" },
+  { value: "untriaged", label: "AI: Untriaged" },
+];
 
-// Encode target filter as "repo:<id>", "container:<id>", or "domain:<id>"
-function parseTarget(val: string) {
+// Encode each target filter value as "repo:<id>" / "container:<id>" / "domain:<id>".
+// Multi-select: the URL holds comma-separated values; split into per-type arrays
+// so the server can apply OR across target types.
+function parseTargets(val: string) {
   if (!val) return {};
-  const [type, id] = val.split(":");
-  if (type === "repo") return { repoId: id };
-  if (type === "container") return { containerId: id };
-  if (type === "domain") return { domainId: id };
-  return {};
+  const repoIds: string[] = [];
+  const containerIds: string[] = [];
+  const domainIds: string[] = [];
+  for (const raw of val.split(",")) {
+    const token = raw.trim();
+    if (!token) continue;
+    const [type, id] = token.split(":");
+    if (!id) continue;
+    if (type === "repo")      repoIds.push(id);
+    else if (type === "container") containerIds.push(id);
+    else if (type === "domain")    domainIds.push(id);
+  }
+  const out: Record<string, string> = {};
+  if (repoIds.length)      out["repoId"]      = repoIds.join(",");
+  if (containerIds.length) out["containerId"] = containerIds.join(",");
+  if (domainIds.length)    out["domainId"]    = domainIds.join(",");
+  return out;
 }
 
 // SEV_COLOR alias — uses canonical SEVERITY_BADGE from colors.ts
 const SEV_COLOR = SEVERITY_BADGE;
+
+// ── Sortable column header ────────────────────────────────────────────────────
+function SortTh({
+  field, label, sort, sortOrder, toggle,
+}: {
+  field: SortField;
+  label: string;
+  sort: SortField | null;
+  sortOrder: SortOrder | null;
+  toggle: (f: SortField) => void;
+}) {
+  const active = sort === field;
+  return (
+    <th className="px-4 py-3 font-medium">
+      <button
+        onClick={() => toggle(field)}
+        className={`group inline-flex items-center gap-1 rounded px-0.5 py-0.5 text-xs font-medium transition-colors ${
+          active ? "text-indigo-300" : "text-gray-500 hover:text-gray-300"
+        }`}
+      >
+        <span>{label}</span>
+        {active
+          ? (sortOrder === "asc"
+              ? <ArrowUp className="h-3 w-3" />
+              : <ArrowDown className="h-3 w-3" />)
+          : <ChevronsUpDown className="h-3 w-3 opacity-40 group-hover:opacity-80" />
+        }
+      </button>
+    </th>
+  );
+}
 
 // ── Finding Groups View (Phase 6) ─────────────────────────────────────────────
 
@@ -174,14 +241,45 @@ export default function FindingsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const tab        = (searchParams.get("tab") as "list" | "groups") ?? "list";
-  const severity   = searchParams.get("severity")   ?? "";
-  const scanType   = searchParams.get("scanType")   ?? "";
-  const status     = searchParams.get("status")     ?? "";
-  const confidence = searchParams.get("confidence") ?? "";
-  const search     = searchParams.get("search")     ?? "";
+  // Multi-select filters stored as comma-separated values in the URL so links
+  // remain shareable; the server splits and parses them via `multi()`.
+  const parseMulti = (v: string) => v.split(",").map((s) => s.trim()).filter(Boolean);
+  const severity   = parseMulti(searchParams.get("severity")   ?? "");
+  const scanType   = parseMulti(searchParams.get("scanType")   ?? "");
+  const status     = parseMulti(searchParams.get("status")     ?? "");
+  const confidence = parseMulti(searchParams.get("confidence") ?? "");
+  const aiFilter   = parseMulti(searchParams.get("ai") ?? "");
+  const aiFilterKey = aiFilter.join(",");
+  // Stable primitives for dep arrays — arrays produced above are new every render
+  const severityKey   = severity.join(",");
+  const scanTypeKey   = scanType.join(",");
+  const statusKey     = status.join(",");
+  const confidenceKey = confidence.join(",");
+  const urlSearch  = searchParams.get("search")     ?? "";
   const target     = searchParams.get("target")     ?? "";
   const includeSuppressed = searchParams.get("includeSuppressed") === "true";
   const page       = parseInt(searchParams.get("page") ?? "1", 10);
+  const pageSize   = (() => {
+    const parsed = parseInt(searchParams.get("pageSize") ?? "25", 10);
+    return (PAGE_SIZES as readonly number[]).includes(parsed) ? parsed : 25;
+  })();
+  const sort       = (searchParams.get("sort") as SortField | null) ?? null;
+  const sortOrder  = (searchParams.get("sortOrder") as SortOrder | null) ?? null;
+
+  // Local-state search that updates the input instantly but debounces the URL
+  // write — previously every keystroke forced a Prisma query + history push.
+  const [searchDraft, setSearchDraft] = useState(urlSearch);
+  const debouncedSearch = useDebouncedValue(searchDraft, 300);
+  useEffect(() => { setSearchDraft(urlSearch); }, [urlSearch]);
+  useEffect(() => {
+    if (debouncedSearch === urlSearch) return;
+    setSearchParams((prev) => {
+      if (debouncedSearch) prev.set("search", debouncedSearch); else prev.delete("search");
+      prev.delete("page");
+      return prev;
+    });
+  }, [debouncedSearch]); // eslint-disable-line react-hooks/exhaustive-deps
+  const search = urlSearch; // used for the Prisma filter via URL
 
   const setFilter = (key: string, value: string) => {
     setSearchParams((prev) => {
@@ -191,8 +289,33 @@ export default function FindingsPage() {
     });
   };
 
+  // Multi-select filter setter — joins with commas so all selections live in one URL key
+  const setMultiFilter = (key: string, values: string[]) => {
+    setFilter(key, values.join(","));
+  };
+
   const setTab = (t: "list" | "groups") => setFilter("tab", t === "list" ? "" : t);
   const setPage = (p: number) => setFilter("page", p > 1 ? String(p) : "");
+  const setPageSize = (size: number) => setFilter("pageSize", size === 25 ? "" : String(size));
+
+  // Sort: clicking the same column toggles asc→desc→clear; new column → desc
+  const toggleSort = (field: SortField) => {
+    setSearchParams((prev) => {
+      const cur = prev.get("sort");
+      const curOrder = prev.get("sortOrder");
+      if (cur !== field) {
+        prev.set("sort", field);
+        prev.set("sortOrder", "desc");
+      } else if (curOrder === "desc") {
+        prev.set("sortOrder", "asc");
+      } else {
+        prev.delete("sort");
+        prev.delete("sortOrder");
+      }
+      prev.delete("page");
+      return prev;
+    });
+  };
 
   // URL-driven finding selection — ?id=<findingId> makes the link shareable
   const selectedId = searchParams.get("id");
@@ -224,23 +347,77 @@ export default function FindingsPage() {
   });
   const suppressedFingerprints = new Set((activeSuppressions ?? []).map((s) => s.fingerprint));
 
-  const targetFilter = parseTarget(target);
+  const targetFilter = parseTargets(target);
+
+  // ── Bulk selection ──────────────────────────────────────────────────────
+  // Page-local selection state (cleared on filter/page change to avoid stale IDs).
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  useEffect(() => { setSelected(new Set()); }, [severityKey, scanTypeKey, statusKey, confidenceKey, aiFilterKey, search, target, page, pageSize, includeSuppressed]);
+  const queryClient = useQueryClient();
+
+  const bulkMutation = useMutation({
+    mutationFn: ({ ids, status: s }: { ids: string[]; status: "OPEN"|"ACKNOWLEDGED"|"FALSE_POSITIVE"|"FIXED"|"IGNORED" }) =>
+      findingsApi.bulkUpdate(ids, s),
+    onSuccess: () => {
+      setSelected(new Set());
+      queryClient.invalidateQueries({ queryKey: ["findings"] });
+    },
+  });
+  const applyBulk = (s: "OPEN"|"ACKNOWLEDGED"|"FALSE_POSITIVE"|"FIXED"|"IGNORED") => {
+    if (selected.size === 0) return;
+    bulkMutation.mutate({ ids: Array.from(selected), status: s });
+  };
+
+  // Bulk-create tickets from current selection. Skips findings that already
+  // have a ticket; shows a toast-like inline banner on completion.
+  const [bulkTicketMsg, setBulkTicketMsg] = useState<string | null>(null);
+  const bulkTicketMutation = useMutation({
+    mutationFn: (ids: string[]) => findingsApi.bulkCreateTickets(ids),
+    onSuccess: (res) => {
+      setSelected(new Set());
+      setBulkTicketMsg(
+        `Created ${res.created} ticket${res.created !== 1 ? "s" : ""}${
+          res.skipped > 0 ? ` — skipped ${res.skipped} (already ticketed or not found)` : ""
+        }`,
+      );
+      queryClient.invalidateQueries({ queryKey: ["findings"] });
+      queryClient.invalidateQueries({ queryKey: ["tickets"] });
+      setTimeout(() => setBulkTicketMsg(null), 5000);
+    },
+  });
+  const createTicketsForSelected = () => {
+    if (selected.size === 0) return;
+    bulkTicketMutation.mutate(Array.from(selected));
+  };
+  const toggleRow = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
 
   // Check whether any filters are active (to distinguish "no results" from "nothing scanned yet")
-  const hasActiveFilters = !!(severity || scanType || status || confidence || search || target);
+  const hasActiveFilters = !!(
+    severity.length || scanType.length || status.length || confidence.length ||
+    aiFilter.length || search || target
+  );
 
   const { data, isLoading } = useQuery({
-    queryKey: ["findings", { severity, scanType, status, confidence, search, target, page, includeSuppressed }],
+    queryKey: ["findings", { severityKey, scanTypeKey, statusKey, confidenceKey, aiFilterKey, search, target, page, pageSize, sort, sortOrder, includeSuppressed }],
     queryFn: () =>
       findingsApi.list({
-        severity: severity || undefined,
-        scanType: (scanType || undefined) as never,
-        status: (status || undefined) as never,
-        confidence: (confidence || undefined) as never,
+        // Multi-select: send comma-joined values — server splits via `multi()`.
+        severity: severityKey || undefined,
+        scanType: (scanTypeKey || undefined) as never,
+        status: (statusKey || undefined) as never,
+        confidence: (confidenceKey || undefined) as never,
         search: search || undefined,
         ...targetFilter,
         page,
-        limit: 25,
+        limit: pageSize,
+        ...(aiFilterKey ? { ai: aiFilterKey as never } : {}),
+        ...(sort ? { sort: sort as never, sortOrder: (sortOrder ?? "desc") as never } : {}),
         ...(includeSuppressed ? { includeSuppressed: "true" as never } : {}),
       } as never),
   });
@@ -288,64 +465,59 @@ export default function FindingsPage() {
           <input
             className="rounded bg-gray-800 pl-8 pr-3 py-1.5 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 w-48"
             placeholder="Search findings…"
-            value={search}
-            onChange={(e) => setFilter("search", e.target.value)}
+            value={searchDraft}
+            onChange={(e) => setSearchDraft(e.target.value)}
           />
         </div>
 
-        {/* Target filter */}
-        <select
-          value={target}
-          onChange={(e) => setFilter("target", e.target.value)}
-          className="rounded bg-gray-800 px-3 py-1.5 text-sm text-gray-300 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-        >
-          <option value="">All targets</option>
-          {repos && repos.length > 0 && (
-            <optgroup label="Repositories">
-              {repos.map((r) => (
-                <option key={r.id} value={`repo:${r.id}`}>{r.fullName}</option>
-              ))}
-            </optgroup>
-          )}
-          {containers && containers.length > 0 && (
-            <optgroup label="Containers">
-              {containers.map((c) => (
-                <option key={c.id} value={`container:${c.id}`}>{c.imageRef}</option>
-              ))}
-            </optgroup>
-          )}
-          {domains && domains.length > 0 && (
-            <optgroup label="Domains">
-              {domains.map((d) => (
-                <option key={d.id} value={`domain:${d.id}`}>{d.domain}</option>
-              ))}
-            </optgroup>
-          )}
-        </select>
+        {/* Target filter — multi-select across repos, containers and domains.
+            Labels prefixed so mixed-type selection is legible in the chip. */}
+        <MultiSelect
+          label="Targets"
+          options={[
+            ...(repos       ?? []).map((r) => ({ value: `repo:${r.id}`,      label: `Repo · ${r.fullName}` })),
+            ...(containers  ?? []).map((c) => ({ value: `container:${c.id}`, label: `Container · ${c.imageRef}` })),
+            ...(domains     ?? []).map((d) => ({ value: `domain:${d.id}`,    label: `Domain · ${d.domain}` })),
+          ]}
+          value={parseMulti(target)}
+          onChange={(v) => setMultiFilter("target", v)}
+        />
 
-        <select value={severity} onChange={(e) => setFilter("severity", e.target.value)}
-          className="rounded bg-gray-800 px-3 py-1.5 text-sm text-gray-300 focus:outline-none focus:ring-1 focus:ring-indigo-500">
-          <option value="">All severities</option>
-          {SEVERITIES.map((s) => <option key={s}>{s}</option>)}
-        </select>
+        <MultiSelect
+          label="Severities"
+          options={SEVERITIES.map((s) => ({ value: s, label: s }))}
+          value={severity}
+          onChange={(v) => setMultiFilter("severity", v)}
+        />
 
-        <select value={scanType} onChange={(e) => setFilter("scanType", e.target.value)}
-          className="rounded bg-gray-800 px-3 py-1.5 text-sm text-gray-300 focus:outline-none focus:ring-1 focus:ring-indigo-500">
-          <option value="">All types</option>
-          {SCAN_TYPES.map((t) => <option key={t}>{t}</option>)}
-        </select>
+        <MultiSelect
+          label="Types"
+          options={SCAN_TYPE_OPTIONS}
+          value={scanType}
+          onChange={(v) => setMultiFilter("scanType", v)}
+        />
 
-        <select value={status} onChange={(e) => setFilter("status", e.target.value)}
-          className="rounded bg-gray-800 px-3 py-1.5 text-sm text-gray-300 focus:outline-none focus:ring-1 focus:ring-indigo-500">
-          <option value="">All statuses</option>
-          {STATUSES.map((s) => <option key={s}>{s}</option>)}
-        </select>
+        <MultiSelect
+          label="Statuses"
+          options={STATUSES.map((s) => ({ value: s, label: s }))}
+          value={status}
+          onChange={(v) => setMultiFilter("status", v)}
+        />
 
-        <select value={confidence} onChange={(e) => setFilter("confidence", e.target.value)}
-          className="rounded bg-gray-800 px-3 py-1.5 text-sm text-gray-300 focus:outline-none focus:ring-1 focus:ring-indigo-500">
-          <option value="">All confidence</option>
-          {CONFIDENCES.map((c) => <option key={c}>{c}</option>)}
-        </select>
+        <MultiSelect
+          label="Confidence"
+          options={CONFIDENCES.map((c) => ({ value: c, label: c }))}
+          value={confidence}
+          onChange={(v) => setMultiFilter("confidence", v)}
+        />
+
+        <MultiSelect
+          label="AI triage"
+          options={AI_FILTERS}
+          value={aiFilter}
+          onChange={(v) => setMultiFilter("ai", v)}
+          title="Filter by AI triage state"
+        />
 
         {/* Show suppressed toggle */}
         <label
@@ -392,32 +564,129 @@ export default function FindingsPage() {
           </button>
         )}
 
+        {/* Export CSV — respects all current filters */}
+        <a
+          href={findingsApi.exportCsvUrl({
+            severity: severityKey || undefined,
+            scanType: (scanTypeKey || undefined) as never,
+            status:   (statusKey   || undefined) as never,
+            confidence: (confidenceKey || undefined) as never,
+            search:   search   || undefined,
+            ...targetFilter,
+            ...(aiFilterKey ? { ai: aiFilterKey as never } : {}),
+            ...(includeSuppressed ? { includeSuppressed: "true" as never } : {}),
+          } as never)}
+          className="flex items-center gap-1.5 rounded bg-gray-800 px-2.5 py-1.5 text-xs text-gray-300 hover:bg-gray-700 hover:text-white"
+          title="Export current filter as CSV (max 10 000 rows)"
+        >
+          <Download className="h-3 w-3" /> Export CSV
+        </a>
+
         {data && (
           <span className="ml-auto text-xs text-gray-500">{data.total.toLocaleString()} finding{data.total !== 1 ? "s" : ""}</span>
         )}
       </div>
+
+      {/* Bulk action toolbar — appears only when rows are selected */}
+      {selected.size > 0 && (
+        <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-indigo-800/60 bg-indigo-950/40 px-3 py-2">
+          <CheckSquare className="h-4 w-4 text-indigo-400" />
+          <span className="text-xs font-medium text-indigo-200">
+            {selected.size} selected
+          </span>
+          <span className="text-xs text-gray-500">— mark as:</span>
+          {/* Neutral-chip style — icons only (no colour), so the toolbar stays
+              calm and doesn't compete with severity badges in the table below. */}
+          {([
+            ["ACKNOWLEDGED",   "Acknowledged",   Eye],
+            ["FALSE_POSITIVE", "False Positive", ShieldOff],
+            ["IGNORED",        "Ignored",        EyeOff],
+            ["FIXED",          "Fixed",          CheckCircle2],
+            ["OPEN",           "Re-open",        RotateCcw],
+          ] as const).map(([value, label, Icon]) => (
+            <button
+              key={value}
+              onClick={() => applyBulk(value)}
+              disabled={bulkMutation.isPending}
+              className="inline-flex items-center gap-1.5 rounded border border-gray-700/60 bg-gray-800/70 px-2.5 py-1 text-xs text-gray-200 hover:border-gray-600 hover:bg-gray-800 disabled:opacity-50"
+            >
+              <Icon className="h-3 w-3 text-gray-400" />
+              {label}
+            </button>
+          ))}
+          <span className="text-xs text-gray-600">|</span>
+          <button
+            onClick={createTicketsForSelected}
+            disabled={bulkTicketMutation.isPending}
+            className="inline-flex items-center gap-1.5 rounded border border-indigo-800/70 bg-indigo-900/40 px-2.5 py-1 text-xs text-indigo-200 hover:border-indigo-700 hover:bg-indigo-900/60 disabled:opacity-50"
+            title="Create one internal ticket per selected finding (findings already ticketed are skipped)"
+          >
+            <TicketIcon className="h-3 w-3 text-gray-400" />
+            {bulkTicketMutation.isPending ? "Creating…" : "Create Tickets"}
+          </button>
+          <button
+            onClick={() => setSelected(new Set())}
+            className="ml-auto flex items-center gap-1 rounded px-2 py-1 text-xs text-gray-400 hover:text-gray-200"
+          >
+            <X className="h-3 w-3" /> Clear
+          </button>
+        </div>
+      )}
+
+      {/* Bulk-ticket success banner */}
+      {bulkTicketMsg && (
+        <div className="mb-3 flex items-center gap-2 rounded-lg border border-emerald-800/60 bg-emerald-950/40 px-3 py-2 text-xs text-emerald-200">
+          <TicketIcon className="h-3.5 w-3.5" />
+          {bulkTicketMsg}
+        </div>
+      )}
 
       {/* Table */}
       <div className="flex-1 overflow-auto rounded-lg border border-gray-800">
         <table className="w-full text-sm">
           <thead className="sticky top-0 border-b border-gray-800 bg-gray-900">
             <tr className="text-left text-xs text-gray-500">
-              <th className="px-4 py-3 font-medium">Severity</th>
-              <th className="px-4 py-3 font-medium">Title</th>
+              <th className="w-10 px-3 py-3">
+                <input
+                  type="checkbox"
+                  className="h-3.5 w-3.5 accent-indigo-500"
+                  aria-label="Select all on page"
+                  title="Select / deselect all rows on this page"
+                  checked={!!(data?.data.length && data.data.every((f) => selected.has(f.id)))}
+                  ref={(el) => {
+                    if (el && data?.data.length) {
+                      const some = data.data.some((f) => selected.has(f.id));
+                      const all  = data.data.every((f) => selected.has(f.id));
+                      el.indeterminate = some && !all;
+                    }
+                  }}
+                  onChange={(e) => {
+                    if (!data?.data) return;
+                    setSelected((prev) => {
+                      const next = new Set(prev);
+                      if (e.target.checked) data.data.forEach((f) => next.add(f.id));
+                      else data.data.forEach((f) => next.delete(f.id));
+                      return next;
+                    });
+                  }}
+                />
+              </th>
+              <SortTh field="severity"   label="Severity"   sort={sort} sortOrder={sortOrder} toggle={toggleSort} />
+              <SortTh field="title"      label="Title"      sort={sort} sortOrder={sortOrder} toggle={toggleSort} />
               <th className="px-4 py-3 font-medium">Target</th>
-              <th className="px-4 py-3 font-medium">Type</th>
-              <th className="px-4 py-3 font-medium">Confidence</th>
+              <SortTh field="scanType"   label="Type"       sort={sort} sortOrder={sortOrder} toggle={toggleSort} />
+              <SortTh field="confidence" label="Confidence" sort={sort} sortOrder={sortOrder} toggle={toggleSort} />
               <th className="px-4 py-3 font-medium">AI</th>
-              <th className="px-4 py-3 font-medium">Status</th>
-              <th className="px-4 py-3 font-medium">First Seen</th>
+              <SortTh field="status"     label="Status"     sort={sort} sortOrder={sortOrder} toggle={toggleSort} />
+              <SortTh field="firstSeen"  label="First Seen" sort={sort} sortOrder={sortOrder} toggle={toggleSort} />
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-800 bg-gray-900/50">
             {isLoading ? (
-              <tr><td colSpan={7} className="py-12 text-center text-gray-500">Loading…</td></tr>
+              <tr><td colSpan={9} className="py-12 text-center text-gray-500">Loading…</td></tr>
             ) : data?.data.length === 0 ? (
               <tr>
-                <td colSpan={8} className="py-12 text-center">
+                <td colSpan={9} className="py-12 text-center">
                   <ShieldAlert className="mx-auto mb-2 h-8 w-8 text-gray-700" />
                   {hasActiveFilters ? (
                     <>
@@ -443,7 +712,16 @@ export default function FindingsPage() {
               data?.data.map((f) => {
                 const isSuppressed = suppressedFingerprints.has(f.fingerprint);
                 return (
-                <tr key={f.id} className={`cursor-pointer hover:bg-gray-800/40 ${selectedId === f.id ? "bg-indigo-950/20" : ""} ${isSuppressed ? "opacity-60" : ""}`} onClick={() => openFinding(f)}>
+                <tr key={f.id} className={`cursor-pointer hover:bg-gray-800/40 ${selectedId === f.id ? "bg-indigo-950/20" : ""} ${selected.has(f.id) ? "bg-indigo-950/30" : ""} ${isSuppressed ? "opacity-60" : ""}`} onClick={() => openFinding(f)}>
+                  <td className="w-10 px-3 py-3" onClick={(e) => e.stopPropagation()}>
+                    <input
+                      type="checkbox"
+                      className="h-3.5 w-3.5 accent-indigo-500"
+                      checked={selected.has(f.id)}
+                      onChange={() => toggleRow(f.id)}
+                      aria-label={`Select ${f.title}`}
+                    />
+                  </td>
                   <td className="px-4 py-3"><SeverityBadge severity={f.severity} /></td>
                   <td className="px-4 py-3 max-w-sm">
                     <div className="flex items-center gap-2 min-w-0">
@@ -536,18 +814,34 @@ export default function FindingsPage() {
         </table>
       </div>
 
-      {/* Pagination */}
-      {data && data.totalPages > 1 && (
-        <div className="mt-4 flex items-center justify-end gap-2">
-          <button onClick={() => setPage(Math.max(1, page - 1))} disabled={page === 1}
-            className="rounded bg-gray-800 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-700 disabled:opacity-40">
-            Previous
-          </button>
-          <span className="text-xs text-gray-500">Page {page} of {data.totalPages}</span>
-          <button onClick={() => setPage(Math.min(data.totalPages, page + 1))} disabled={page === data.totalPages}
-            className="rounded bg-gray-800 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-700 disabled:opacity-40">
-            Next
-          </button>
+      {/* Pagination + page size */}
+      {data && (
+        <div className="mt-4 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-xs text-gray-500">
+            <span>Rows per page</span>
+            <select
+              value={pageSize}
+              onChange={(e) => setPageSize(parseInt(e.target.value, 10))}
+              className="rounded bg-gray-800 px-2 py-1 text-xs text-gray-300 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            >
+              {PAGE_SIZES.map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </div>
+          {data.totalPages > 1 ? (
+            <div className="flex items-center gap-2">
+              <button onClick={() => setPage(Math.max(1, page - 1))} disabled={page === 1}
+                className="rounded bg-gray-800 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-700 disabled:opacity-40">
+                Previous
+              </button>
+              <span className="text-xs text-gray-500">Page {page} of {data.totalPages}</span>
+              <button onClick={() => setPage(Math.min(data.totalPages, page + 1))} disabled={page === data.totalPages}
+                className="rounded bg-gray-800 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-700 disabled:opacity-40">
+                Next
+              </button>
+            </div>
+          ) : (
+            <span className="text-xs text-gray-600">Single page</span>
+          )}
         </div>
       )}
 
