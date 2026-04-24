@@ -97,7 +97,18 @@ class IACScanner(BaseScanner):
 
             # check_name is Checkov's human-readable rule description, e.g.
             # "Ensure all data stored in the Launch configuration EBS is securely encrypted"
-            check_name = check.get("check_name") or check_id
+            # Some checks (custom policies, secrets framework, older Checkov versions)
+            # omit check_name or set it equal to check_id — fall back through the
+            # Bridgecrew name / description fields, and only use the raw rule ID as a
+            # last resort so the finding title isn't just "CKV_AWS_20".
+            raw_name = (check.get("check_name") or "").strip()
+            if not raw_name or raw_name == check_id:
+                raw_name = (
+                    (check.get("bc_check_name") or "").strip()
+                    or (check.get("description")   or "").strip()
+                    or (check.get("short_description") or "").strip()
+                )
+            check_name = raw_name or check_id
 
             # Build a concise title: human name is enough — no need to prefix the rule ID
             # (rule_id is stored separately and shown in the drawer)

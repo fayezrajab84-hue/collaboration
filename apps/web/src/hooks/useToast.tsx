@@ -43,9 +43,9 @@ const ToastContext = createContext<ToastContextValue | null>(null);
 const DEFAULT_DURATION = 4000;
 
 const KIND_STYLE: Record<ToastKind, { icon: typeof Info; cls: string }> = {
-  success: { icon: CheckCircle2, cls: "border-teal-700/60 bg-teal-950/90 text-teal-100"      },
-  error:   { icon: AlertCircle,  cls: "border-red-700/60   bg-red-950/90   text-red-100"     },
-  info:    { icon: Info,         cls: "border-indigo-700/60 bg-indigo-950/90 text-indigo-100" },
+  success: { icon: CheckCircle2, cls: "border-indigo-700/60 bg-indigo-950/90 text-indigo-100" },
+  error:   { icon: AlertCircle,  cls: "border-red-700/60    bg-red-950/90    text-red-100"     },
+  info:    { icon: Info,         cls: "border-gray-700/60   bg-gray-900/95   text-gray-200"    },
 };
 
 export function ToastProvider({ children }: { children: ReactNode }) {

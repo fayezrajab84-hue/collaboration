@@ -48,12 +48,56 @@ def _classify_scan_type(check_id: str, metadata: dict) -> ScanType:
     return ScanType.SAST
 
 
+def _prefix_with_line_numbers(snippet: str, start_line: int | None, end_line: int | None) -> str:
+    """Prefix every snippet line with ``"{N}: "`` using the real 1-based line numbers.
+
+    Semgrep's ``extra.lines`` is meant to be ``start.line``→``end.line``, but in
+    practice it often pads to a complete statement/element (e.g. a Java/HTML
+    match on an attribute returns the whole enclosing tag). When that happens
+    the snippet has MORE lines than ``end.line - start.line + 1``, so naively
+    numbering from ``start_line`` shifts the gutter (and the
+    vulnerable-line highlight) by the pad amount.
+
+    Strategy: if the snippet is larger than expected, count backwards from
+    ``end_line`` so the last line is labelled ``end_line`` and the highlight
+    still lands on the real matched line. Falls back to ``start_line`` when
+    we can't determine better.
+
+    The ``"N: "`` format mirrors ``_read_snippet`` so the frontend's
+    SyntaxHighlight parser recovers the numbers in both cases.
+    """
+    if not snippet:
+        return snippet
+    lines = snippet.split("\n")
+    # Drop a trailing blank line — semgrep occasionally adds one
+    if lines and lines[-1] == "":
+        lines = lines[:-1]
+    if not lines:
+        return snippet
+
+    # Decide the first-line number
+    if start_line is None:
+        return snippet  # nothing sensible to anchor to
+    expected = (end_line - start_line + 1) if (end_line and end_line >= start_line) else len(lines)
+    if len(lines) > expected and end_line:
+        first = max(1, end_line - len(lines) + 1)
+    else:
+        first = start_line
+
+    return "\n".join(f"{first + i}: {line}" for i, line in enumerate(lines))
+
+
 def _read_snippet(file_path: str, line_num: int | None, context: int = 2) -> str | None:
     """Read ±context lines around line_num from a local file.
 
     Used as a fallback when Semgrep returns the "requires login" Pro paywall
     placeholder instead of the matched lines (common for `generic.secrets.*`
     rules in the community engine).
+
+    Emits each line with a ``"{N}: {content}"`` prefix so the frontend
+    SyntaxHighlight parser recovers the real 1-based line numbers — otherwise
+    the gutter would show shifted numbers and the vulnerable-line highlight
+    would land on a context row instead of the matched line.
     """
     if not line_num:
         return None
@@ -62,7 +106,11 @@ def _read_snippet(file_path: str, line_num: int | None, context: int = 2) -> str
             lines = fh.readlines()
         start = max(0, line_num - context - 1)
         end   = min(len(lines), line_num + context)
-        return "".join(lines[start:end]).rstrip()[:1000]
+        out = "\n".join(
+            f"{start + i + 1}: {lines[start + i].rstrip()}"
+            for i in range(end - start)
+        )
+        return out[:1200]
     except Exception:
         return None
 
@@ -119,15 +167,31 @@ class SASTScanner(BaseScanner):
             metadata   = item.get("extra", {}).get("metadata", {})
             raw_snippet = item.get("extra", {}).get("lines", "") or ""
             # "requires login" is a Semgrep Pro paywall placeholder — not real code.
-            # When Semgrep withholds the lines (common for generic.secrets.* rules
-            # in the community engine), read them off the cloned repo instead so
-            # the developer still sees the actual code.
-            snippet = "" if raw_snippet.strip().lower() == "requires login" else raw_snippet
+            # When Semgrep withholds the lines (common for taint-mode and
+            # generic.secrets.* rules in the community engine), read them off
+            # the cloned repo instead so the developer still sees the actual
+            # code — BUT mark the location as approximate, because for
+            # taint-mode rules the reported `start.line` is the taint *source*
+            # (e.g. the decode call) rather than the dangerous *sink*. Without
+            # the Pro dataflow_trace we cannot point to the exact sink, so
+            # the frontend should avoid highlighting a single misleading line.
+            is_paywalled = raw_snippet.strip().lower() == "requires login"
+            snippet = "" if is_paywalled else raw_snippet
+            location_approximate = False
             if not snippet and path:
                 local_path = f"{repo_dir}/{path}" if not path.startswith(repo_dir) else path
                 disk_snippet = _read_snippet(local_path, line_start)
                 if disk_snippet:
-                    snippet = disk_snippet
+                    snippet = disk_snippet  # already "N: " prefixed
+                    # Only the paywalled case produces an approximate location;
+                    # other fallbacks (empty extra.lines on a non-taint rule)
+                    # still have trustworthy start/end coordinates.
+                    if is_paywalled:
+                        location_approximate = True
+            elif snippet:
+                # Annotate raw extra.lines with true line numbers so the gutter
+                # matches GitHub (Semgrep often pads to full statements/tags).
+                snippet = _prefix_with_line_numbers(snippet, line_start, line_end)
 
             # Classify the finding into the correct scan type based on rule ID
             scan_type   = _classify_scan_type(check_id, metadata)
@@ -166,12 +230,13 @@ class SASTScanner(BaseScanner):
                 raw_output=item,
                 confidence=confidence,
                 evidence={
-                    "rule_id":            check_id,
-                    "file":               path,
-                    "line":               line_start,
-                    "snippet":            snippet[:300] if snippet else "",
-                    "semgrep_confidence": semgrep_confidence or "not set",
-                    "classified_as":      scan_type.value,
+                    "rule_id":              check_id,
+                    "file":                 path,
+                    "line":                 line_start,
+                    "snippet":              snippet[:300] if snippet else "",
+                    "semgrep_confidence":   semgrep_confidence or "not set",
+                    "classified_as":        scan_type.value,
+                    "location_approximate": location_approximate,
                 },
             ))
 

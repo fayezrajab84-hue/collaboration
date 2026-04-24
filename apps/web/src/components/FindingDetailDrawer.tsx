@@ -3,7 +3,7 @@ import {
   X, ChevronDown, ChevronUp, ShieldCheck, Loader2,
   Sparkles, RefreshCw, AlertTriangle, Wrench, BookOpen, Info,
   CheckCircle2, XCircle, HelpCircle, Link, Check, GitCommit, Layers,
-  Code2, ExternalLink, Copy, Globe, KeyRound,
+  Code2, ExternalLink, Copy, Globe, KeyRound, Eye, EyeOff, ShieldOff, RotateCcw, MoreHorizontal,
 } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Finding, FpAnalysis } from "@devsecops/types";
@@ -477,12 +477,14 @@ function HttpExchangeBlock({
 }
 
 interface DastSubissuesPanelProps {
-  rawOut:      DastMergedRawOutput;
-  findingId:   string;
-  onViewCode?: (occ: DastOccurrence) => void;
+  rawOut:            DastMergedRawOutput;
+  findingId:         string;
+  onViewCode?:       (occ: DastOccurrence) => void;
+  subStatus:         Record<string, string>;
+  onSubStatusChange: (m: Record<string, string>) => void;
 }
 
-function DastSubissuesPanel({ rawOut, findingId, onViewCode }: DastSubissuesPanelProps) {
+function DastSubissuesPanel({ rawOut, findingId, onViewCode, subStatus, onSubStatusChange }: DastSubissuesPanelProps) {
   const [expanded, setExpanded] = useState(false);
   const LIMIT = 10;
   const all   = rawOut.occurrences ?? [];
@@ -579,9 +581,9 @@ function DastSubissuesPanel({ rawOut, findingId, onViewCode }: DastSubissuesPane
                 />
               )}
 
-              {/* View Code + AI Analysis button */}
-              {onViewCode && (
-                <div className="mt-2 flex justify-end">
+              {/* Action row: View Code + AI Analysis + sub-status menu */}
+              <div className="mt-2 flex items-center justify-end gap-2">
+                {onViewCode && (
                   <button
                     onClick={() => onViewCode(occ)}
                     className="inline-flex items-center gap-1.5 rounded-md border border-indigo-700/40 bg-indigo-900/20 px-2.5 py-1 text-[10px] font-medium text-indigo-300 hover:bg-indigo-900/40 hover:text-indigo-200 transition-colors"
@@ -589,8 +591,14 @@ function DastSubissuesPanel({ rawOut, findingId, onViewCode }: DastSubissuesPane
                     <Sparkles className="h-3 w-3" />
                     View Evidence + AI Analysis
                   </button>
-                </div>
-              )}
+                )}
+                <SubStatusMenu
+                  findingId={findingId}
+                  subIndex={i}
+                  current={readSubStatus(subStatus, i)}
+                  onChanged={onSubStatusChange}
+                />
+              </div>
             </div>
           );
         })}
@@ -637,14 +645,27 @@ function cleanSecretPath(p: string | null): string | null {
 }
 
 /**
- * Strip legacy "42: code" line-number prefixes written by an older version of
- * the scanner. New scans emit clean code; this handles historical data.
+ * Ensure every snippet line carries an ``"N: "`` line-number prefix.
+ *
+ * New secret scans already emit the prefix (see secrets.py::_read_snippet).
+ * Legacy findings scanned before that change have unprefixed snippets — for
+ * those we synthesise prefixes assuming the standard ±2 context capture, so
+ * the first line is ``lineStart - 2``. Without this fix the UI numbers the
+ * gutter from ``lineStart`` forward and the vulnerable-line highlight lands
+ * on the leading context row instead of the secret itself.
  */
-function stripSecretLinePrefixes(snippet: string): string {
+function ensureLineNumberPrefix(snippet: string, lineStart: number | null): string {
+  if (!lineStart) return snippet;
   const lines = snippet.split("\n");
-  const allHavePrefix = lines.every((l) => l.trim() === "" || /^\s*\d+:\s?/.test(l));
-  if (!allHavePrefix) return snippet;
-  return lines.map((l) => l.replace(/^\s*\d+:\s?/, "")).join("\n");
+  // Already prefixed — leave untouched (new-format scans).
+  if (lines.length > 0 && /^\s*\d+:/.test(lines[0] ?? "")) return snippet;
+  // Drop a trailing blank line if present so numbering stays tight.
+  while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  if (lines.length === 0) return snippet;
+  // secrets.py captures context=2 → first line is lineStart-2 (but never <1).
+  const context = 2;
+  const firstLine = Math.max(1, lineStart - context);
+  return lines.map((l, i) => `${firstLine + i}: ${l}`).join("\n");
 }
 
 /**
@@ -656,6 +677,9 @@ function stripSecretLinePrefixes(snippet: string): string {
  *    regex that replaces token-looking values with  ••••••••
  *  - Patterns covered: JWT (eyJ…), AWS keys (AKIA…), quoted/unquoted values
  *    after = or : that look like credentials (20+ non-space chars).
+ *
+ * Operates on N:-prefixed lines — the regex replacements only match
+ * credential-shaped tokens, so the leading ``"N: "`` is untouched.
  */
 function redactSecretLine(snippet: string, lineStart: number | null): string {
   if (!lineStart) return snippet;
@@ -684,11 +708,16 @@ function redactSecretLine(snippet: string, lineStart: number | null): string {
 }
 
 interface SecretSubissuesPanelProps {
-  rawOut:   SecretMergedRawOutput;
-  repoInfo: { fullName: string; defaultBranch: string } | null;
+  rawOut:            SecretMergedRawOutput;
+  repoInfo:          { fullName: string; defaultBranch: string } | null;
+  findingId:         string;
+  subStatus:         Record<string, string>;
+  onSubStatusChange: (m: Record<string, string>) => void;
+  /** Opens the Code + AI Analysis modal for this occurrence (redacted snippet). */
+  onViewCode?:       (occ: SecretOccurrence, ghUrl: string | null, redactedSnippet: string | null) => void;
 }
 
-function SecretSubissuesPanel({ rawOut, repoInfo }: SecretSubissuesPanelProps) {
+function SecretSubissuesPanel({ rawOut, repoInfo, findingId, subStatus, onSubStatusChange, onViewCode }: SecretSubissuesPanelProps) {
   const [expanded, setExpanded] = useState(false);
   const LIMIT = 10;
   const all   = rawOut.occurrences ?? [];
@@ -699,8 +728,8 @@ function SecretSubissuesPanel({ rawOut, repoInfo }: SecretSubissuesPanelProps) {
 
       {/* ── Header ──────────────────────────────────────────────────── */}
       <div className="flex items-center gap-2 border-b border-gray-700 bg-gray-800/70 px-4 py-2.5">
-        <KeyRound className="h-3.5 w-3.5 text-amber-400" />
-        <span className="text-xs font-semibold uppercase tracking-wider text-amber-300">
+        <KeyRound className="h-3.5 w-3.5 text-indigo-400" />
+        <span className="text-xs font-semibold uppercase tracking-wider text-indigo-300">
           Affected Files
         </span>
         <span className="ml-1 rounded-full bg-gray-700 px-2 py-0.5 text-xs font-bold text-gray-200">
@@ -734,9 +763,12 @@ function SecretSubissuesPanel({ rawOut, repoInfo }: SecretSubissuesPanelProps) {
             ? `https://github.com/${repoInfo.fullName}/blob/${repoInfo.defaultBranch}/${cleanedPath}${occ.lineStart ? `#L${occ.lineStart}` : ""}`
             : null;
 
-          // Clean + redact snippet: strip legacy N: prefixes, then hide secret value
-          const rawSnippet   = occ.snippet ? stripSecretLinePrefixes(occ.snippet) : null;
-          const safeSnippet  = rawSnippet   ? redactSecretLine(rawSnippet, occ.lineStart) : null;
+          // Guarantee line-number prefixes are present (synthesised for legacy
+          // findings scanned before secrets.py emitted them), then redact the
+          // secret value. SyntaxHighlight reads the prefixes for gutter
+          // numbers + vulnerable-line highlight.
+          const withNumbers  = occ.snippet ? ensureLineNumberPrefix(occ.snippet, occ.lineStart) : null;
+          const safeSnippet  = withNumbers ? redactSecretLine(withNumbers, occ.lineStart) : null;
 
           return (
             <div key={i} className="px-4 py-3 hover:bg-gray-800/20 transition-colors">
@@ -782,17 +814,55 @@ function SecretSubissuesPanel({ rawOut, repoInfo }: SecretSubissuesPanelProps) {
                 <span className="text-gray-600 italic">secret value redacted</span>
               </div>
 
-              {/* Code snippet — secret line is redacted */}
+              {/* Code snippet — secret line is redacted. Routed through
+                  SyntaxHighlight so it matches the SAST/IAC design: language
+                  detection from filePath, Prism token coloring, real line
+                  numbers from the scanner's `N:` prefix, and the secret line
+                  is highlighted via lineStart. */}
               {safeSnippet ? (
-                <pre className="overflow-x-auto rounded-lg border border-amber-900/30 bg-gray-950 px-3 py-2 font-mono text-[10px] leading-relaxed text-gray-300 whitespace-pre-wrap">
-                  {safeSnippet.slice(0, 800)}
-                </pre>
+                <SyntaxHighlight
+                  code={safeSnippet}
+                  filePath={cleanedPath}
+                  lineStart={occ.lineStart}
+                  lineEnd={occ.lineStart}
+                  compact
+                />
               ) : (
                 <div className="flex items-center gap-1.5 rounded-lg border border-gray-700/40 bg-gray-900/50 px-3 py-2 text-[10px] text-gray-600">
                   <Code2 className="h-3 w-3" />
                   <span>Code snippet unavailable — view on GitHub</span>
                 </div>
               )}
+
+              {/* Actions row — matches SAST sub-issues: GitHub link, AI modal, status */}
+              <div className="mt-2 flex items-center gap-3">
+                {githubUrl && (
+                  <button
+                    onClick={() => window.open(githubUrl, "gh-subissue", "width=1200,height=780,scrollbars=yes")}
+                    className="flex items-center gap-1 text-[11px] text-gray-200 hover:text-white transition-colors"
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                    View on GitHub
+                  </button>
+                )}
+                {onViewCode && (
+                  <button
+                    onClick={() => onViewCode(occ, githubUrl, safeSnippet)}
+                    className="flex items-center gap-1.5 rounded-md border border-indigo-700/40 bg-indigo-900/30 px-2 py-0.5 text-[11px] font-semibold text-indigo-300 hover:bg-indigo-800/50 hover:text-indigo-100 transition-colors"
+                  >
+                    <Sparkles className="h-3 w-3" />
+                    View Code + AI Analysis
+                  </button>
+                )}
+                <div className="ml-auto">
+                  <SubStatusMenu
+                    findingId={findingId}
+                    subIndex={i}
+                    current={readSubStatus(subStatus, i)}
+                    onChanged={onSubStatusChange}
+                  />
+                </div>
+              </div>
             </div>
           );
         })}
@@ -850,8 +920,8 @@ function IacResourcesPanel({ rawOut, repoInfo, onViewCode }: IacResourcesPanelPr
 
       {/* ── Header ──────────────────────────────────────────────────── */}
       <div className="flex items-center gap-2 border-b border-gray-700 bg-gray-800/70 px-4 py-2.5">
-        <Layers className="h-3.5 w-3.5 text-violet-400" />
-        <span className="text-xs font-semibold uppercase tracking-wider text-violet-300">
+        <Layers className="h-3.5 w-3.5 text-indigo-400" />
+        <span className="text-xs font-semibold uppercase tracking-wider text-indigo-300">
           Failing Resources
         </span>
         <span className="ml-1 rounded-full bg-gray-700 px-2 py-0.5 text-xs font-bold text-gray-200">
@@ -884,44 +954,37 @@ function IacResourcesPanel({ rawOut, repoInfo, onViewCode }: IacResourcesPanelPr
             ? `https://github.com/${repoInfo.fullName}/blob/${repoInfo.defaultBranch}/${cleanedPath}${res.lineStart ? `#L${res.lineStart}` : ""}`
             : null;
 
-          // IAC snippets use "N: code" format (Checkov line numbers) — strip for display
-          const rawSnippet = res.snippet ?? null;
-          const lines = rawSnippet ? rawSnippet.split("\n") : [];
-          const allHavePrefix = lines.length > 0 && lines.every((l) => l.trim() === "" || /^\s*\d+:\s?/.test(l));
-          const displaySnippet = allHavePrefix
-            ? lines.map((l) => l.replace(/^\s*\d+:\s?/, "")).join("\n")
-            : rawSnippet;
+          // Both Checkov and Semgrep-IAC emit snippets in "N: code" format —
+          // feed them straight into <SyntaxHighlight>, which parses the prefix
+          // to render the gutter + highlight the vulnerable line (same as SAST).
+          const rawSnippet = res.snippet?.trim() ?? null;
+          const cleanSnippet = rawSnippet && !/^requires?\s+login$/i.test(rawSnippet) ? rawSnippet : null;
+          const numberedSnippet = cleanSnippet
+            ? ensureSastSnippetLineNumbers(cleanSnippet, res.lineStart, res.lineEnd)
+            : null;
+
+          const filename  = cleanedPath?.split("/").pop() ?? "unknown";
+          const lineLabel = res.lineStart
+            ? `Line ${res.lineStart}${res.lineEnd && res.lineEnd !== res.lineStart ? `–${res.lineEnd}` : ""} in ${filename}`
+            : null;
 
           return (
-            <div key={i} className="px-4 py-3 hover:bg-gray-800/20 transition-colors">
+            <div key={i} className="p-4 hover:bg-gray-800/20 transition-colors">
 
-              {/* Resource name + severity */}
+              {/* File path + severity pill */}
               <div className="mb-1 flex items-start justify-between gap-3">
                 <div className="flex min-w-0 flex-col gap-0.5">
                   {res.resource && (
-                    <p className="font-mono text-[11px] font-semibold text-violet-300">
+                    <p className="font-mono text-[11px] font-semibold text-indigo-300">
                       {res.resource}
                     </p>
                   )}
-                  <div className="flex items-center gap-1.5">
-                    <p className="min-w-0 break-all font-mono text-[10px] leading-relaxed text-gray-500">
-                      {cleanedPath ?? "—"}
-                      {res.lineStart != null && (
-                        <span>:{res.lineStart}{res.lineEnd && res.lineEnd !== res.lineStart ? `–${res.lineEnd}` : ""}</span>
-                      )}
-                    </p>
-                    {githubUrl && (
-                      <a
-                        href={githubUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        title="View on GitHub"
-                        className="shrink-0 text-gray-600 hover:text-blue-400 transition-colors"
-                      >
-                        <ExternalLink className="h-3 w-3" />
-                      </a>
-                    )}
-                  </div>
+                  <p
+                    className="break-all font-mono text-[11px] leading-relaxed text-gray-300"
+                    title={cleanedPath ?? ""}
+                  >
+                    {cleanedPath ?? "unknown file"}
+                  </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
                   {res.checkType && (
@@ -930,30 +993,54 @@ function IacResourcesPanel({ rawOut, repoInfo, onViewCode }: IacResourcesPanelPr
                     </span>
                   )}
                   <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${SEV_BADGE[sev] ?? SEV_BADGE.INFO}`}>
-                    {sev.charAt(0) + sev.slice(1).toLowerCase()}
+                    • {sev.charAt(0) + sev.slice(1).toLowerCase()}
                   </span>
                 </div>
               </div>
 
-              {/* Code snippet */}
-              {displaySnippet && (
-                <pre className="mt-2 overflow-x-auto rounded-lg border border-gray-700/60 bg-gray-950 px-3 py-2 font-mono text-[10px] leading-relaxed text-gray-300 whitespace-pre-wrap">
-                  {displaySnippet.slice(0, 600)}
-                </pre>
+              {/* Line label */}
+              {lineLabel && (
+                <div className="mb-2">
+                  <p className="text-[11px] text-indigo-400">{lineLabel}</p>
+                </div>
               )}
 
-              {/* View Code + AI Analysis button */}
-              {onViewCode && (
-                <div className="mt-2 flex justify-end">
+              {/* Code snippet — Prism-tokenised, same as SAST */}
+              {numberedSnippet ? (
+                <SyntaxHighlight
+                  code={numberedSnippet}
+                  filePath={res.filePath}
+                  lineStart={res.lineStart}
+                  lineEnd={res.lineEnd}
+                  compact
+                />
+              ) : githubUrl ? (
+                <p className="text-[11px] text-gray-500">
+                  No code preview — use <span className="text-indigo-400">View on GitHub</span> to see the source
+                </p>
+              ) : null}
+
+              {/* Actions row — match SAST layout */}
+              <div className="mt-2 flex items-center gap-3">
+                {githubUrl && (
+                  <button
+                    onClick={() => window.open(githubUrl, "gh-subissue", "width=1200,height=780,scrollbars=yes")}
+                    className="flex items-center gap-1 text-[11px] text-gray-200 hover:text-white transition-colors"
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                    View on GitHub
+                  </button>
+                )}
+                {onViewCode && (
                   <button
                     onClick={() => onViewCode(res, githubUrl)}
-                    className="inline-flex items-center gap-1.5 rounded-md border border-violet-700/40 bg-violet-900/20 px-2.5 py-1 text-[10px] font-medium text-violet-300 hover:bg-violet-900/40 hover:text-violet-200 transition-colors"
+                    className="flex items-center gap-1.5 rounded-md border border-indigo-700/40 bg-indigo-900/30 px-2 py-0.5 text-[11px] font-semibold text-indigo-300 hover:bg-indigo-800/50 hover:text-indigo-100 transition-colors"
                   >
                     <Sparkles className="h-3 w-3" />
                     View Code + AI Analysis
                   </button>
-                </div>
-              )}
+                )}
+              </div>
             </div>
           );
         })}
@@ -983,27 +1070,59 @@ interface CodeEvidenceProps {
   lineEnd:    number | null;
   githubUrl:  string | null;
   onAnalyse:  () => void;
+  /**
+   * True when the reported `lineStart` is a taint source rather than the
+   * dangerous sink (Semgrep Community behaviour for paywalled taint rules).
+   * Suppresses the single-line amber highlight and surfaces a warning chip,
+   * so the developer knows to review the whole surrounding block.
+   */
+  locationApproximate?: boolean;
 }
 
-function CodeEvidencePanel({ snippet, filePath, lineStart, lineEnd, githubUrl, onAnalyse }: CodeEvidenceProps) {
+/**
+ * Ensure every snippet line carries an ``"N: "`` line-number prefix for
+ * SAST/IAC-style findings.
+ *
+ * New scans already emit prefixes (see sast.py::_prefix_with_line_numbers).
+ * For legacy findings scanned before that change, synthesise them using the
+ * same heuristic as the scanner:
+ *  - If the snippet has more lines than ``lineEnd - lineStart + 1``, Semgrep
+ *    padded to a full statement/element → count backwards from ``lineEnd`` so
+ *    the last row is labelled ``lineEnd`` and the vulnerable-line highlight
+ *    lands on the real matched line.
+ *  - Otherwise start numbering from ``lineStart``.
+ */
+function ensureSastSnippetLineNumbers(
+  snippet: string,
+  lineStart: number | null,
+  lineEnd: number | null,
+): string {
+  if (!lineStart) return snippet;
+  const lines = snippet.split("\n");
+  // Already prefixed — leave untouched (new-format scans).
+  if (lines.length > 0 && /^\s*\d+:/.test(lines[0] ?? "")) return snippet;
+  while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  if (lines.length === 0) return snippet;
+
+  const expected = lineEnd && lineEnd >= lineStart ? lineEnd - lineStart + 1 : lines.length;
+  const firstLine =
+    lineEnd && lines.length > expected
+      ? Math.max(1, lineEnd - lines.length + 1)
+      : lineStart;
+
+  return lines.map((l, i) => `${firstLine + i}: ${l}`).join("\n");
+}
+
+function CodeEvidencePanel({ snippet, filePath, lineStart, lineEnd, githubUrl, onAnalyse, locationApproximate = false }: CodeEvidenceProps) {
   const [copied, setCopied] = useState(false);
 
-  // Attach line numbers: if snippet already has "N: code" lines keep them,
-  // otherwise prefix starting from lineStart.
-  const lines = snippet ? snippet.split("\n") : [];
-  const alreadyNumbered = lines.length > 0 && /^\s*\d+:/.test(lines[0] ?? "");
-
-  const numbered = alreadyNumbered
-    ? lines.map((l) => {
-        const m = l.match(/^\s*(\d+):\s?(.*)/s);
-        return { no: m ? parseInt(m[1]) : null, code: m ? m[2] : l };
-      })
-    : lines.map((l, i) => ({ no: lineStart != null ? lineStart + i : null, code: l }));
-
-  // Which line numbers are in the "vulnerable" range
-  const isVulnerable = (no: number | null) =>
-    no != null && lineStart != null &&
-    no >= lineStart && no <= (lineEnd ?? lineStart);
+  // Line parsing, "N: code" prefix detection, and vulnerable-line highlighting
+  // are all handled inside <SyntaxHighlight>; no local bookkeeping needed.
+  // Legacy (pre-prefix) snippets get N: prefixes synthesised here so the
+  // gutter + highlight still match GitHub for unprefixed rawOutput.
+  const numberedSnippet = snippet
+    ? ensureSastSnippetLineNumbers(snippet, lineStart, lineEnd)
+    : null;
 
   const filename = filePath.split("/").pop() ?? filePath;
 
@@ -1036,6 +1155,17 @@ function CodeEvidencePanel({ snippet, filePath, lineStart, lineEnd, githubUrl, o
             L{lineStart}{lineEnd && lineEnd !== lineStart ? `–${lineEnd}` : ""}
           </span>
         )}
+        {/* Approximate-location chip — Semgrep Community returned only the
+            taint source, so the exact sink is somewhere in this block. */}
+        {locationApproximate && (
+          <span
+            title="Semgrep Community withheld the exact sink location (taint-mode rule). The reported line is the taint source; the dangerous sink is within the shown context block."
+            className="shrink-0 inline-flex items-center gap-1 rounded-full border border-gray-700 bg-gray-800/70 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-gray-300"
+          >
+            <AlertTriangle className="h-2.5 w-2.5" />
+            Approx
+          </span>
+        )}
         {/* Copy — only when snippet is present */}
         {snippet && (
           <button
@@ -1051,7 +1181,7 @@ function CodeEvidencePanel({ snippet, filePath, lineStart, lineEnd, githubUrl, o
           <button
             onClick={openGitHub}
             title="View vulnerable line on GitHub"
-            className="flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium text-gray-400 hover:bg-gray-700 hover:text-gray-100 transition-colors"
+            className="flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium text-gray-200 hover:bg-gray-700 hover:text-white transition-colors"
           >
             <ExternalLink className="h-3 w-3" />
             <span>View on GitHub</span>
@@ -1060,43 +1190,25 @@ function CodeEvidencePanel({ snippet, filePath, lineStart, lineEnd, githubUrl, o
         {/* View Code + AI Analysis → opens full two-panel modal */}
         <button
           onClick={onAnalyse}
-          className="flex items-center gap-1.5 rounded-md border border-indigo-700/40 bg-indigo-900/30 px-2.5 py-1 text-[11px] font-semibold text-indigo-300 hover:bg-indigo-800/50 hover:text-indigo-100 transition-colors"
+          className="flex items-center gap-1.5 rounded-md border border-indigo-700/40 bg-indigo-900/30 px-2 py-0.5 text-[11px] font-semibold text-indigo-300 hover:bg-indigo-800/50 hover:text-indigo-100 transition-colors"
         >
           <Sparkles className="h-3 w-3" />
           <span>View Code + AI Analysis</span>
         </button>
       </div>
 
-      {/* Code block — only when snippet is available */}
-      {snippet ? (
-        <div className="overflow-x-auto bg-gray-950">
-          <table className="w-full border-collapse font-mono text-[12px] leading-5">
-            <tbody>
-              {numbered.map((row, i) => {
-                const vuln = isVulnerable(row.no);
-                return (
-                  <tr
-                    key={i}
-                    className={vuln ? "bg-amber-500/10 border-l-2 border-amber-400" : ""}
-                  >
-                    {/* Line number gutter */}
-                    <td
-                      className={`select-none pr-3 pl-3 text-right align-top w-[3rem] ${
-                        vuln ? "text-amber-400/80" : "text-gray-600"
-                      }`}
-                    >
-                      {row.no ?? ""}
-                    </td>
-                    {/* Code */}
-                    <td className={`pr-4 py-0.5 whitespace-pre ${vuln ? "text-amber-100" : "text-gray-300"}`}>
-                      {row.code}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+      {/* Code block — only when snippet is available.
+          SyntaxHighlight handles Prism-based token coloring, line-number
+          gutter, and vulnerable-line highlight consistently with the
+          Sub-issues panel and the Code + AI Analysis modal. */}
+      {numberedSnippet ? (
+        <SyntaxHighlight
+          code={numberedSnippet}
+          filePath={filePath}
+          lineStart={lineStart}
+          lineEnd={lineEnd}
+          suppressHighlight={locationApproximate}
+        />
       ) : (
         /* No snippet stored — show a hint row */
         <div className="flex items-center gap-2 bg-gray-900/60 px-3 py-2.5">
@@ -1149,21 +1261,21 @@ function ScaSubissuesPanel({
       {/* ── How do I fix it? ─────────────────────────────────────────── */}
       {fixVer && (
         <div className="border-b border-gray-700 bg-gray-800/40 px-4 py-3">
-          <div className="mb-1.5 flex items-center gap-2">
-            <Wrench className="h-3.5 w-3.5 text-teal-400" />
-            <span className="text-xs font-semibold uppercase tracking-wider text-teal-300">
+          <div className="mb-1 flex items-center gap-1.5">
+            <Wrench className="h-3 w-3 text-gray-500" />
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">
               How do I fix it?
             </span>
           </div>
-          <p className="text-sm text-gray-300 leading-relaxed">
+          <p className="text-xs text-gray-300 leading-relaxed">
             Update{" "}
-            <code className="rounded bg-gray-800 px-1.5 py-0.5 font-mono text-indigo-300">
+            <code className="rounded bg-gray-800 px-1.5 py-0.5 font-mono text-gray-200">
               {pkg}
             </code>{" "}
             from{" "}
-            <code className="font-mono text-gray-400">{ver}</code>
+            <code className="rounded bg-gray-800 px-1.5 py-0.5 font-mono text-gray-400">{ver}</code>
             {" "}to{" "}
-            <code className="font-mono text-teal-400">{fixVer}</code>
+            <code className="rounded bg-gray-800 px-1.5 py-0.5 font-mono font-semibold text-gray-100">{fixVer}</code>
             {" "}to resolve all {allCves.length} {allCves.length === 1 ? "vulnerability" : "vulnerabilities"}.
           </p>
         </div>
@@ -1236,7 +1348,7 @@ function ScaSubissuesPanel({
               <div className="shrink-0 flex items-center gap-1.5 pt-0.5 text-xs">
                 <span className="font-mono text-gray-500">{ver}</span>
                 <span className="text-gray-600">→</span>
-                <span className={`font-mono font-semibold ${rowFix ? "text-teal-400" : "text-gray-600"}`}>
+                <span className={`font-mono font-semibold ${rowFix ? "text-gray-100" : "text-gray-600"}`}>
                   {rowFix ?? "no fix"}
                 </span>
               </div>
@@ -1262,18 +1374,138 @@ function ScaSubissuesPanel({
   );
 }
 
+// ── Sub-issue status menu ─────────────────────────────────────────────────────
+//
+// Dropdown + current-status chip for a single sub-issue inside a merged
+// finding. Reused by SAST / DAST / SECRET panels. Only rendered for scan
+// types where each sub-issue is a genuinely independent fix — SCA/CONTAINER/
+// IAC panels don't mount it because one upstream action resolves every
+// sub-issue at once.
+type SubStatus = "OPEN" | "ACKNOWLEDGED" | "FALSE_POSITIVE" | "FIXED" | "IGNORED";
+
+const SUB_STATUS_META: Record<SubStatus, { label: string; chip: string; Icon: React.ComponentType<{ className?: string }> }> = {
+  OPEN:           { label: "Open",           chip: "bg-gray-800 text-gray-400 border-gray-700",       Icon: RotateCcw },
+  ACKNOWLEDGED:   { label: "Acknowledged",   chip: "bg-gray-800 text-gray-300 border-gray-700",       Icon: Eye },
+  FALSE_POSITIVE: { label: "False Positive", chip: "bg-gray-800 text-gray-300 border-gray-700",       Icon: ShieldOff },
+  IGNORED:        { label: "Ignored",        chip: "bg-gray-800 text-gray-500 border-gray-700",       Icon: EyeOff },
+  FIXED:          { label: "Fixed",          chip: "bg-gray-800 text-gray-300 border-gray-700",       Icon: CheckCircle2 },
+};
+
+const SUB_ACTIONS: SubStatus[] = ["ACKNOWLEDGED", "FALSE_POSITIVE", "IGNORED", "FIXED", "OPEN"];
+
+function SubStatusMenu({
+  findingId, subIndex, current, onChanged,
+}: {
+  findingId: string;
+  subIndex:  number;
+  current:   SubStatus;
+  onChanged: (nextMap: Record<string, string>) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const meta = SUB_STATUS_META[current];
+  const CurrentIcon = meta.Icon;
+
+  // Close on outside click — simple approach via a transparent backdrop layer.
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      const el = (e.target as HTMLElement).closest?.("[data-sub-menu-root]");
+      if (!el) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  async function apply(next: SubStatus) {
+    if (busy || next === current) { setOpen(false); return; }
+    setBusy(true);
+    try {
+      const res = await findingsApi.updateSubStatus(findingId, subIndex, next);
+      onChanged(res.subStatus);
+    } finally {
+      setBusy(false);
+      setOpen(false);
+    }
+  }
+
+  return (
+    <div data-sub-menu-root className="relative inline-flex">
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
+        disabled={busy}
+        className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold transition-colors hover:brightness-125 disabled:opacity-50 ${meta.chip}`}
+        title={`Sub-issue status: ${meta.label}`}
+      >
+        {busy
+          ? <Loader2 className="h-3 w-3 animate-spin" />
+          : <CurrentIcon className="h-3 w-3" />}
+        {meta.label}
+        <ChevronDown className="h-2.5 w-2.5 opacity-60" />
+      </button>
+
+      {open && (
+        <div className="absolute right-0 top-full z-20 mt-1 w-44 overflow-hidden rounded-lg border border-gray-700 bg-gray-900 shadow-xl">
+          {SUB_ACTIONS.map((action) => {
+            const aMeta = SUB_STATUS_META[action];
+            const AIcon = aMeta.Icon;
+            const isCurrent = action === current;
+            return (
+              <button
+                key={action}
+                onClick={(e) => { e.stopPropagation(); apply(action); }}
+                disabled={isCurrent}
+                className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[11px] transition-colors ${
+                  isCurrent
+                    ? "bg-gray-800/50 text-gray-500 cursor-default"
+                    : "text-gray-200 hover:bg-gray-800"
+                }`}
+              >
+                <AIcon className="h-3 w-3 text-gray-400" />
+                <span className="flex-1">{action === "OPEN" ? "Re-open" : aMeta.label}</span>
+                {isCurrent && <Check className="h-3 w-3 text-indigo-400" />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Helper: pull `rawOutput.subStatus[index]` with OPEN as the default. */
+function readSubStatus(subStatusMap: Record<string, string> | undefined, i: number): SubStatus {
+  const v = subStatusMap?.[String(i)];
+  return (v as SubStatus) ?? "OPEN";
+}
+
 // ── Subissues Panel (merged SAST findings) ────────────────────────────────────
 
 function SubissuesPanel({
+  findingId,
   locations,
   repoFullName,
   defaultBranch,
   onViewCode,
+  originalIndexOf,
+  subStatus,
+  onSubStatusChange,
+  locationApproximate = false,
 }: {
-  locations:      SastLocation[];
-  repoFullName?:  string | null;
-  defaultBranch?: string | null;
-  onViewCode:     (loc: SastLocation, ghUrl: string | null) => void;
+  findingId:            string;
+  locations:            SastLocation[];
+  repoFullName?:        string | null;
+  defaultBranch?:       string | null;
+  onViewCode:           (loc: SastLocation, ghUrl: string | null) => void;
+  originalIndexOf:      (loc: SastLocation) => number;
+  subStatus:            Record<string, string>;
+  onSubStatusChange:    (m: Record<string, string>) => void;
+  /** True when the parent finding is a Semgrep-Community taint rule where the
+   *  reported line is the taint source, not the dangerous sink. Each
+   *  sub-location inherits this flag — they're instances of the same rule. */
+  locationApproximate?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const LIMIT = 5;
@@ -1344,22 +1576,39 @@ function SubissuesPanel({
                 </span>
               </div>
 
-              {/* Line label */}
-              {lineLabel && (
-                <p className="mb-2 text-[11px] text-indigo-400">{lineLabel}</p>
+              {/* Line label + per-location approximate chip */}
+              {(lineLabel || locationApproximate) && (
+                <div className="mb-2 flex flex-wrap items-center gap-2">
+                  {lineLabel && (
+                    <p className="text-[11px] text-indigo-400">{lineLabel}</p>
+                  )}
+                  {locationApproximate && (
+                    <span
+                      title="Semgrep Community withheld the exact sink location (taint-mode rule). The reported line is the taint source; the dangerous sink is within the shown context block."
+                      className="inline-flex items-center gap-1 rounded-full border border-gray-700 bg-gray-800/70 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-gray-300"
+                    >
+                      <AlertTriangle className="h-2.5 w-2.5" />
+                      Approx
+                    </span>
+                  )}
+                </div>
               )}
 
               {/* Code snippet — skip Semgrep "requires login" placeholder */}
               {(() => {
                 const s = loc.snippet?.trim();
                 const clean = s && !/^requires?\s+login$/i.test(s) ? s : null;
-                return clean ? (
+                // Synthesise line-number prefixes for legacy (pre-prefix)
+                // findings so the gutter + highlight match GitHub.
+                const numbered = clean ? ensureSastSnippetLineNumbers(clean, loc.lineStart, loc.lineEnd) : null;
+                return numbered ? (
                   <SyntaxHighlight
-                    code={clean}
+                    code={numbered}
                     filePath={loc.filePath}
                     lineStart={loc.lineStart}
                     lineEnd={loc.lineEnd}
                     compact
+                    suppressHighlight={locationApproximate}
                   />
                 ) : ghUrl ? (
                   <p className="text-[11px] text-gray-500">
@@ -1373,7 +1622,7 @@ function SubissuesPanel({
                 {ghUrl && (
                   <button
                     onClick={() => window.open(ghUrl, "gh-subissue", "width=1200,height=780,scrollbars=yes")}
-                    className="flex items-center gap-1 text-[11px] text-indigo-400 hover:text-indigo-300 transition-colors"
+                    className="flex items-center gap-1 text-[11px] text-gray-200 hover:text-white transition-colors"
                   >
                     <ExternalLink className="h-3 w-3" />
                     View on GitHub
@@ -1386,6 +1635,14 @@ function SubissuesPanel({
                   <Sparkles className="h-3 w-3" />
                   View Code + AI Analysis
                 </button>
+                <div className="ml-auto">
+                  <SubStatusMenu
+                    findingId={findingId}
+                    subIndex={originalIndexOf(loc)}
+                    current={readSubStatus(subStatus, originalIndexOf(loc))}
+                    onChanged={onSubStatusChange}
+                  />
+                </div>
               </div>
             </div>
           );
@@ -1433,10 +1690,13 @@ interface CodeAnalysisModalProps {
   githubUrl:        string | null;
   repoInfo:         { fullName: string; defaultBranch: string } | null;
   locationOverride?: LocationOverride | null;  // when set, code panel shows this location
+  /** Propagated from the drawer — taint-source-only findings suppress the
+   *  single-line amber highlight and surface a warning chip instead. */
+  locationApproximate?: boolean;
   onClose:          () => void;
 }
 
-function CodeAnalysisModal({ finding, snippet, githubUrl, repoInfo, locationOverride, onClose }: CodeAnalysisModalProps) {
+function CodeAnalysisModal({ finding, snippet, githubUrl, repoInfo, locationOverride, locationApproximate = false, onClose }: CodeAnalysisModalProps) {
   const qc = useQueryClient();
   const f  = finding as Finding & {
     aiAnalysis?:      AIAnalysis;
@@ -1496,7 +1756,13 @@ function CodeAnalysisModal({ finding, snippet, githubUrl, repoInfo, locationOver
       <div className="relative z-10 flex h-[92vh] w-full max-w-6xl overflow-hidden rounded-2xl border border-gray-700 bg-gray-900 shadow-2xl">
 
         {/* ── Left panel — AI info ──────────────────────────────────────── */}
-        <div className="flex w-[36%] shrink-0 flex-col overflow-y-auto border-r border-gray-700 p-5 space-y-4">
+        {/* Wrap the scrollable column in its own container with `min-h-0` so
+            `overflow-y-auto` actually kicks in inside the parent flex row —
+            without it, flex items default to `min-height: auto` which prevents
+            the inner `overflow-y-auto` from scrolling and the AI Autotriage
+            Summary visibly clips. */}
+        <div className="flex w-[36%] shrink-0 flex-col border-r border-gray-700 min-h-0">
+          <div className="flex-1 min-h-0 overflow-y-auto p-5 space-y-4">
 
           {/* Finding title + meta */}
           <div className="space-y-2">
@@ -1536,26 +1802,30 @@ function CodeAnalysisModal({ finding, snippet, githubUrl, repoInfo, locationOver
                   Analysing…
                 </div>
               ) : shownAnalysis ? (
-                <div className="space-y-3 text-xs">
-                  <p className="text-gray-300 leading-relaxed">{shownAnalysis.summary}</p>
-                  <div>
-                    <p className="mb-1 font-semibold text-amber-400">Impact</p>
-                    <p className="text-gray-400 leading-relaxed">{shownAnalysis.impact}</p>
+                <div className="space-y-2.5 text-xs">
+                  <div className="rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-2">
+                    <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-gray-400">What this is</p>
+                    <p className="text-gray-300 leading-relaxed">{shownAnalysis.summary}</p>
+                  </div>
+                  <div className="rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-2">
+                    <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-gray-400">Business impact</p>
+                    <p className="text-gray-300 leading-relaxed">{shownAnalysis.impact}</p>
                   </div>
                   {shownAnalysis.remediation?.length > 0 && (
-                    <div>
-                      <p className="mb-1.5 font-semibold text-teal-400">How to fix</p>
+                    <div className="rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-2">
+                      <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-gray-400">How to fix it</p>
                       <ol className="space-y-1.5">
                         {shownAnalysis.remediation.map((step, i) => (
-                          <li key={i} className="flex gap-2 text-gray-400">
-                            <span className="shrink-0 font-bold text-teal-500">{i + 1}.</span>
+                          <li key={i} className="flex gap-2 text-gray-300">
+                            <span className="shrink-0 font-semibold text-gray-500">{i + 1}.</span>
                             {step}
                           </li>
                         ))}
                       </ol>
                     </div>
                   )}
-                  <div className="rounded bg-gray-900/70 px-2.5 py-2 text-gray-500 italic">
+                  <div className="rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-2 text-gray-400 italic">
+                    <p className="mb-1 not-italic text-[11px] font-semibold uppercase tracking-wider text-gray-400">Risk context</p>
                     {shownAnalysis.risk_context}
                   </div>
                 </div>
@@ -1568,6 +1838,7 @@ function CodeAnalysisModal({ finding, snippet, githubUrl, repoInfo, locationOver
                 </button>
               )}
             </div>
+          </div>
           </div>
         </div>
 
@@ -1590,10 +1861,20 @@ function CodeAnalysisModal({ finding, snippet, githubUrl, repoInfo, locationOver
                 sub-location
               </span>
             )}
+            {/* Approximate-location chip — parity with the drawer */}
+            {locationApproximate && (
+              <span
+                title="Semgrep Community withheld the exact sink location (taint-mode rule). The reported line is the taint source; the dangerous sink is within the shown context block."
+                className="shrink-0 inline-flex items-center gap-1 rounded-full border border-gray-700 bg-gray-800/70 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-gray-300"
+              >
+                <AlertTriangle className="h-2.5 w-2.5" />
+                Approx
+              </span>
+            )}
             {/* Generating AutoFix pill */}
             {suggestFix.isPending && (
-              <span className="flex items-center gap-1.5 rounded-full border border-teal-800/40 bg-teal-950/40 px-2.5 py-1 text-[11px] font-medium text-teal-300">
-                <Loader2 className="h-3 w-3 animate-spin" />
+              <span className="flex items-center gap-1.5 rounded-full border border-gray-700 bg-gray-800/70 px-2.5 py-1 text-[11px] font-medium text-gray-300">
+                <Loader2 className="h-3 w-3 animate-spin text-gray-400" />
                 Generating AutoFix…
               </span>
             )}
@@ -1621,30 +1902,31 @@ function CodeAnalysisModal({ finding, snippet, githubUrl, repoInfo, locationOver
                   filePath={codeFilePath}
                   lineStart={codeLineStart}
                   lineEnd={codeLineEnd}
+                  suppressHighlight={locationApproximate}
                 />
 
                 {/* ── Inline AutoFix ──────────────────────────────── */}
                 {shownFix && (
                   <div className="px-4 py-4">
-                    <div className="overflow-hidden rounded-xl border border-teal-800/50">
+                    <div className="overflow-hidden rounded-xl border border-gray-700">
                       {/* AutoFix header */}
-                      <div className="flex items-center gap-3 bg-teal-950/50 px-4 py-2.5 border-b border-teal-800/40">
-                        <span className="rounded bg-teal-900/60 px-2 py-0.5 text-[11px] font-bold text-teal-300">
+                      <div className="flex items-center gap-3 border-b border-gray-800 bg-gray-800/60 px-4 py-2.5">
+                        <span className="rounded border border-gray-700 bg-gray-900/60 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-gray-300">
                           AutoFix
                         </span>
-                        <span className="text-[11px] text-teal-400/80 truncate">
+                        <span className="truncate text-[11px] text-gray-500">
                           AI-generated patch for {(finding.title as string).toLowerCase()}
                         </span>
                         {/* Auto badge when pre-generated by background triage worker */}
                         {!localFix && (finding as Record<string, unknown>)["aiFixSuggestedAt"] && (
-                          <span title="Pre-generated automatically after scan" className="shrink-0 inline-flex items-center gap-1 rounded-full bg-indigo-900/50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-300 border border-indigo-800/50">
+                          <span title="Pre-generated automatically after scan" className="shrink-0 inline-flex items-center gap-1 rounded-full border border-indigo-800/50 bg-indigo-900/40 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-300">
                             <Sparkles className="h-2.5 w-2.5" /> Auto
                           </span>
                         )}
                         <button
                           onClick={() => suggestFix.mutate(true)}
                           disabled={suggestFix.isPending}
-                          className="ml-auto flex items-center gap-1 rounded px-2 py-0.5 text-[11px] text-teal-500 hover:text-teal-300 transition-colors disabled:opacity-40"
+                          className="ml-auto flex items-center gap-1 rounded px-2 py-0.5 text-[11px] text-gray-400 transition-colors hover:bg-gray-800 hover:text-gray-200 disabled:opacity-40"
                         >
                           <RefreshCw className={`h-3 w-3 ${suggestFix.isPending ? "animate-spin" : ""}`} />
                           Regenerate
@@ -1658,9 +1940,9 @@ function CodeAnalysisModal({ finding, snippet, githubUrl, repoInfo, locationOver
                 {/* Placeholder while fix is generating */}
                 {suggestFix.isPending && !shownFix && (
                   <div className="px-4 py-4">
-                    <div className="flex items-center gap-3 rounded-xl border border-teal-800/30 bg-teal-950/20 px-4 py-4">
-                      <Loader2 className="h-4 w-4 animate-spin text-teal-400" />
-                      <span className="text-sm text-teal-400">Generating AutoFix patch…</span>
+                    <div className="flex items-center gap-3 rounded-xl border border-gray-700 bg-gray-800/40 px-4 py-4">
+                      <Loader2 className="h-4 w-4 animate-spin text-gray-400" />
+                      <span className="text-sm text-gray-300">Generating AutoFix patch…</span>
                     </div>
                   </div>
                 )}
@@ -1719,35 +2001,35 @@ function AIAnalysisPanel({
         </div>
       </div>
 
-      <div className="space-y-4 p-4">
+      <div className="space-y-2.5 p-4">
         {/* Summary */}
-        <div>
-          <div className="mb-1.5 flex items-center gap-1.5">
-            <Info className="h-3.5 w-3.5 text-blue-400" />
-            <span className="text-xs font-semibold text-blue-300">What this is</span>
+        <div className="rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-2">
+          <div className="mb-1 flex items-center gap-1.5">
+            <Info className="h-3 w-3 text-gray-500" />
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">What this is</span>
           </div>
-          <p className="text-sm text-gray-300 leading-relaxed">{analysis.summary}</p>
+          <p className="text-xs text-gray-300 leading-relaxed">{analysis.summary}</p>
         </div>
 
         {/* Impact */}
-        <div>
-          <div className="mb-1.5 flex items-center gap-1.5">
-            <AlertTriangle className="h-3.5 w-3.5 text-amber-400" />
-            <span className="text-xs font-semibold text-amber-300">Business impact</span>
+        <div className="rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-2">
+          <div className="mb-1 flex items-center gap-1.5">
+            <AlertTriangle className="h-3 w-3 text-gray-500" />
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">Business impact</span>
           </div>
-          <p className="text-sm text-gray-300 leading-relaxed">{analysis.impact}</p>
+          <p className="text-xs text-gray-300 leading-relaxed">{analysis.impact}</p>
         </div>
 
         {/* Remediation steps */}
-        <div>
-          <div className="mb-2 flex items-center gap-1.5">
-            <Wrench className="h-3.5 w-3.5 text-teal-400" />
-            <span className="text-xs font-semibold text-teal-300">How to fix it</span>
+        <div className="rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-2">
+          <div className="mb-1.5 flex items-center gap-1.5">
+            <Wrench className="h-3 w-3 text-gray-500" />
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">How to fix it</span>
           </div>
           <ol className="space-y-1.5">
             {analysis.remediation.map((step, i) => (
-              <li key={i} className="flex gap-2.5 text-sm text-gray-300">
-                <span className="mt-0.5 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full bg-teal-900/50 text-[10px] font-bold text-teal-400">
+              <li key={i} className="flex gap-2 text-xs text-gray-300">
+                <span className="mt-0.5 flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full border border-gray-700 bg-gray-800 text-[10px] font-semibold text-gray-400">
                   {i + 1}
                 </span>
                 <span className="leading-relaxed">{step}</span>
@@ -1757,10 +2039,10 @@ function AIAnalysisPanel({
         </div>
 
         {/* Risk context */}
-        <div className="rounded-lg bg-gray-900/60 px-3 py-2.5">
-          <div className="mb-1.5 flex items-center gap-1.5">
-            <BookOpen className="h-3.5 w-3.5 text-gray-400" />
-            <span className="text-xs font-semibold text-gray-400">Risk context</span>
+        <div className="rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-2">
+          <div className="mb-1 flex items-center gap-1.5">
+            <BookOpen className="h-3 w-3 text-gray-500" />
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">Risk context</span>
           </div>
           <p className="text-xs text-gray-400 leading-relaxed">{analysis.risk_context}</p>
         </div>
@@ -1804,30 +2086,33 @@ const VERDICT_CFG = {
   LIKELY_FP: {
     icon: CheckCircle2,
     label: "Likely False Positive",
-    color: "text-teal-400",
-    bg:    "border-teal-800/40 bg-teal-950/20",
-    headerBg: "border-b border-teal-800/30",
+    color: "text-gray-300",
+    accent: "text-teal-400",
+    bg:    "border-gray-700 bg-gray-900/40",
+    headerBg: "border-b border-gray-800",
   },
   LIKELY_REAL: {
     icon: XCircle,
     label: "Likely Real Threat",
-    color: "text-red-400",
-    bg:    "border-red-800/40 bg-red-950/20",
-    headerBg: "border-b border-red-800/30",
+    color: "text-gray-300",
+    accent: "text-red-400",
+    bg:    "border-gray-700 bg-gray-900/40",
+    headerBg: "border-b border-gray-800",
   },
   UNCERTAIN: {
     icon: HelpCircle,
     label: "Uncertain — Needs Review",
-    color: "text-amber-400",
-    bg:    "border-amber-800/40 bg-amber-950/20",
-    headerBg: "border-b border-amber-800/30",
+    color: "text-gray-300",
+    accent: "text-amber-400",
+    bg:    "border-gray-700 bg-gray-900/40",
+    headerBg: "border-b border-gray-800",
   },
 } as const;
 
 const CONF_COLOR: Record<string, string> = {
-  HIGH:   "text-white bg-gray-700",
-  MEDIUM: "text-gray-300 bg-gray-800",
-  LOW:    "text-gray-500 bg-gray-800",
+  HIGH:   "text-gray-200 bg-gray-800 border border-gray-700",
+  MEDIUM: "text-gray-300 bg-gray-800 border border-gray-700",
+  LOW:    "text-gray-500 bg-gray-800 border border-gray-700",
 };
 
 function FpPanel({
@@ -1875,23 +2160,23 @@ function FpPanel({
         {/* Verdict row */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <VerdictIcon className={`h-5 w-5 ${cfg.color}`} />
-            <span className={`text-sm font-semibold ${cfg.color}`}>{cfg.label}</span>
+            <VerdictIcon className={`h-4 w-4 ${cfg.accent}`} />
+            <span className={`text-xs font-semibold ${cfg.color}`}>{cfg.label}</span>
           </div>
-          <span className={`rounded px-2 py-0.5 text-[11px] font-semibold ${CONF_COLOR[analysis.confidence]}`}>
+          <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${CONF_COLOR[analysis.confidence]}`}>
             {analysis.confidence} confidence
           </span>
         </div>
 
         {/* Reasoning */}
-        <p className="text-sm text-gray-300 leading-relaxed">{analysis.reasoning}</p>
+        <p className="text-xs text-gray-300 leading-relaxed">{analysis.reasoning}</p>
 
         {/* Indicators */}
         {analysis.indicators.length > 0 && (
           <ul className="space-y-1">
             {analysis.indicators.map((ind, i) => (
               <li key={i} className="flex items-start gap-2 text-xs text-gray-400">
-                <span className={`mt-0.5 h-1.5 w-1.5 flex-shrink-0 rounded-full ${cfg.color}`} />
+                <span className={`mt-1 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-gray-600`} />
                 {ind}
               </li>
             ))}
@@ -1903,9 +2188,9 @@ function FpPanel({
           <button
             onClick={onMarkFp}
             disabled={isMarkingFp}
-            className="flex w-full items-center justify-center gap-2 rounded-lg bg-teal-900/40 border border-teal-800/50 px-3 py-2 text-xs font-semibold text-teal-300 hover:bg-teal-900/60 disabled:opacity-50 transition-colors"
+            className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-gray-700 bg-gray-800/70 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50 transition-colors"
           >
-            <CheckCircle2 className="h-3.5 w-3.5" />
+            <CheckCircle2 className="h-3.5 w-3.5 text-gray-400" />
             {isMarkingFp ? "Ignoring…" : "Accept AI verdict — Ignore this finding"}
           </button>
         )}
@@ -2043,6 +2328,14 @@ export default function FindingDetailDrawer({ finding, onClose }: Props) {
   const secretOccurrences: SecretOccurrence[] = isSecretMerged ? (rawOut!.occurrences as unknown as SecretOccurrence[]) : [];
   const iacResources: IacResource[] = isIacMerged ? (rawOut as unknown as IacMergedRawOutput).resources : [];
 
+  // Per-sub-issue status map. Starts as whatever's persisted in rawOutput;
+  // menu actions bump it optimistically via setSubStatus without a refetch.
+  const persistedSubStatus = (rawOut as unknown as { subStatus?: Record<string, string> } | undefined)?.subStatus ?? {};
+  const [subStatus, setSubStatus] = useState<Record<string, string>>(persistedSubStatus);
+  // Reset when a different finding is opened
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { setSubStatus(persistedSubStatus); }, [finding.id]);
+
   // ── Build GitHub URL ──────────────────────────────────────────────────────
   const repoInfo = finding.repository ?? null;
   const githubUrl = (() => {
@@ -2081,6 +2374,53 @@ export default function FindingDetailDrawer({ finding, onClose }: Props) {
       return trimmed;
     }
     return null;
+  })();
+
+  // ── Detect approximate locations ─────────────────────────────────────────
+  // Taint-mode Semgrep Community findings arrive with extra.lines == "requires
+  // login" and no dataflow_trace. The scanner falls back to reading ±2 lines
+  // off disk, but the reported start.line is the taint *source* — not the
+  // dangerous sink — so highlighting a single line would mislead the user.
+  //
+  // The finding may come in two shapes:
+  //   • Plain SAST   — rawOutput is the Semgrep item itself (extra, start, …)
+  //   • Merged SAST  — rawOutput is { merged, locations[], primary, … } where
+  //                    `primary` is the Semgrep item and each `locations[i]`
+  //                    also carries its own snippet.
+  //
+  // Any of these signals marks the finding as approximate:
+  //   1. evidence.location_approximate === true            (new scans)
+  //   2. rawOutput.evidence.location_approximate === true  (nested variant)
+  //   3. rawOutput.extra.lines        == "requires login"  (legacy, plain)
+  //   4. rawOutput.primary.extra.lines == "requires login" (legacy, merged)
+  //   5. rawOutput.locations[*].snippet == "requires login" (merged per-loc)
+  const locationApproximate = (() => {
+    const raw = finding.rawOutput as Record<string, unknown> | undefined;
+    const isPaywallString = (s: unknown) =>
+      typeof s === "string" && /^requires?\s+login$/i.test(s.trim());
+
+    // (1) top-level evidence flag (flat shape)
+    const evTop = (finding as Record<string, unknown>)["evidence"] as Record<string, unknown> | undefined;
+    if (evTop?.["location_approximate"] === true) return true;
+
+    // (2) nested evidence flag
+    const evNested = raw?.["evidence"] as Record<string, unknown> | undefined;
+    if (evNested?.["location_approximate"] === true) return true;
+
+    // (3) plain Semgrep item — extra.lines
+    const extra = raw?.["extra"] as Record<string, unknown> | undefined;
+    if (isPaywallString(extra?.["lines"])) return true;
+
+    // (4) merged Semgrep item — primary.extra.lines
+    const primary  = raw?.["primary"] as Record<string, unknown> | undefined;
+    const pExtra   = primary?.["extra"] as Record<string, unknown> | undefined;
+    if (isPaywallString(pExtra?.["lines"])) return true;
+
+    // (5) merged per-location snippets are the paywall placeholder
+    const locs = raw?.["locations"] as Array<Record<string, unknown>> | undefined;
+    if (Array.isArray(locs) && locs.some((l) => isPaywallString(l?.["snippet"]))) return true;
+
+    return false;
   })();
 
   // ── AI analysis — prefer locally-fetched over DB-cached ──────────────────
@@ -2243,11 +2583,12 @@ export default function FindingDetailDrawer({ finding, onClose }: Props) {
           )}
 
           {/* Description */}
-          <div>
-            <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-gray-500">
-              Description
-            </h3>
-            <p className="text-sm text-gray-300 leading-relaxed">{finding.description}</p>
+          <div className="rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-2">
+            <div className="mb-1 flex items-center gap-1.5">
+              <Info className="h-3 w-3 text-gray-500" />
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">Description</span>
+            </div>
+            <p className="text-xs text-gray-300 leading-relaxed">{finding.description}</p>
           </div>
 
           {/* Code Evidence — SAST / IAC / SECRET: always show when filePath is known */}
@@ -2258,6 +2599,7 @@ export default function FindingDetailDrawer({ finding, onClose }: Props) {
               lineStart={finding.lineStart ?? null}
               lineEnd={finding.lineEnd ?? null}
               githubUrl={githubUrl}
+              locationApproximate={locationApproximate}
               onAnalyse={() => { setCodeModalOverride(null); setShowCodeModal(true); }}
             />
           )}
@@ -2274,9 +2616,18 @@ export default function FindingDetailDrawer({ finding, onClose }: Props) {
           {/* Subissues panel — merged SAST (multiple locations for same rule) */}
           {isMerged && locations.length > 0 && (
             <SubissuesPanel
+              findingId={finding.id}
               locations={locations}
               repoFullName={repoInfo?.fullName ?? null}
               defaultBranch={repoInfo?.defaultBranch ?? null}
+              locationApproximate={locationApproximate}
+              originalIndexOf={(loc) =>
+                allLocations.findIndex(
+                  (l) => l.filePath === loc.filePath && l.lineStart === loc.lineStart,
+                )
+              }
+              subStatus={subStatus}
+              onSubStatusChange={setSubStatus}
               onViewCode={(loc, ghUrl) => {
                 // Clean up the snippet the same way codeSnippet does
                 const rawSnip = loc.snippet?.trim() ?? null;
@@ -2311,6 +2662,8 @@ export default function FindingDetailDrawer({ finding, onClose }: Props) {
             <DastSubissuesPanel
               rawOut={rawOut as DastMergedRawOutput}
               findingId={finding.id}
+              subStatus={subStatus}
+              onSubStatusChange={setSubStatus}
               onViewCode={(occ) => {
                 // Build a structured evidence block as the "snippet" for the AI modal.
                 // DAST findings have no source file — the evidence IS the context.
@@ -2337,7 +2690,27 @@ export default function FindingDetailDrawer({ finding, onClose }: Props) {
 
           {/* Subissues panel — merged SECRET (same detector on multiple files) */}
           {isSecretMerged && secretOccurrences.length > 0 && (
-            <SecretSubissuesPanel rawOut={rawOut as SecretMergedRawOutput} repoInfo={repoInfo} />
+            <SecretSubissuesPanel
+              rawOut={rawOut as SecretMergedRawOutput}
+              repoInfo={repoInfo}
+              findingId={finding.id}
+              subStatus={subStatus}
+              onSubStatusChange={setSubStatus}
+              onViewCode={(occ, ghUrl, redactedSnippet) => {
+                // Secret findings: the snippet shown to the user (and to the AI
+                // modal) is always the redacted one — the raw credential must
+                // never leave the drawer. filePath is the workspace-cleaned
+                // path so the modal shows the same label as the sub-issue row.
+                setCodeModalOverride({
+                  filePath:  cleanSecretPath(occ.filePath) ?? occ.filePath ?? "",
+                  lineStart: occ.lineStart ?? null,
+                  lineEnd:   null,
+                  snippet:   redactedSnippet,
+                  githubUrl: ghUrl,
+                });
+                setShowCodeModal(true);
+              }}
+            />
           )}
 
           {/* Resources panel — merged IAC (same rule failing on multiple resources) */}
@@ -2397,11 +2770,12 @@ export default function FindingDetailDrawer({ finding, onClose }: Props) {
 
           {/* Vulnerability details */}
           {(finding.cveId || finding.cvssScore != null || finding.packageName) && (
-            <div>
-              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
-                Vulnerability Details
-              </h3>
-              <dl className="grid grid-cols-2 gap-2 text-sm">
+            <div className="rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-2">
+              <div className="mb-1.5 flex items-center gap-1.5">
+                <AlertTriangle className="h-3 w-3 text-gray-500" />
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">Vulnerability Details</span>
+              </div>
+              <dl className="grid grid-cols-2 gap-2 text-xs">
                 {finding.cveId && (
                   <><dt className="text-gray-500">CVE</dt><dd className="font-mono text-gray-200">{finding.cveId}</dd></>
                 )}
@@ -2415,7 +2789,14 @@ export default function FindingDetailDrawer({ finding, onClose }: Props) {
                   </dd></>
                 )}
                 {finding.fixVersion && (
-                  <><dt className="text-gray-500">Fix version</dt><dd className="font-mono text-teal-400">{finding.fixVersion}</dd></>
+                  <>
+                    <dt className="text-gray-500">Fix version</dt>
+                    <dd>
+                      <code className="rounded border border-gray-700 bg-gray-800 px-1.5 py-0.5 font-mono font-semibold text-gray-100">
+                        {finding.fixVersion}
+                      </code>
+                    </dd>
+                  </>
                 )}
               </dl>
             </div>
@@ -2423,9 +2804,12 @@ export default function FindingDetailDrawer({ finding, onClose }: Props) {
 
           {/* Remediation */}
           {finding.remediation && (
-            <div>
-              <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-gray-500">Remediation</h3>
-              <p className="text-sm text-gray-300">{finding.remediation}</p>
+            <div className="rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-2">
+              <div className="mb-1 flex items-center gap-1.5">
+                <Wrench className="h-3 w-3 text-gray-500" />
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">Remediation</span>
+              </div>
+              <p className="text-xs text-gray-300 leading-relaxed">{finding.remediation}</p>
             </div>
           )}
 
@@ -2455,9 +2839,12 @@ export default function FindingDetailDrawer({ finding, onClose }: Props) {
           )}
 
           {/* Metadata */}
-          <div>
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Metadata</h3>
-            <dl className="grid grid-cols-2 gap-2 text-sm">
+          <div className="rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-2">
+            <div className="mb-1.5 flex items-center gap-1.5">
+              <BookOpen className="h-3 w-3 text-gray-500" />
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">Metadata</span>
+            </div>
+            <dl className="grid grid-cols-2 gap-2 text-xs">
               <dt className="text-gray-500">Tracking ID</dt>
               <dd className="font-mono text-xs text-indigo-400 select-all">#{finding.id.slice(0, 8).toUpperCase()}</dd>
               <dt className="text-gray-500">First seen</dt>
@@ -2593,6 +2980,7 @@ export default function FindingDetailDrawer({ finding, onClose }: Props) {
           githubUrl={githubUrl}
           repoInfo={repoInfo}
           locationOverride={codeModalOverride}
+          locationApproximate={locationApproximate}
           onClose={() => { setShowCodeModal(false); setCodeModalOverride(null); }}
         />
       )}

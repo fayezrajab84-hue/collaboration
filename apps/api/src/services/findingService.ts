@@ -693,16 +693,28 @@ export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: n
   const fingerprints = findings.map((f) => f.fingerprint);
   const existing = await prisma.finding.findMany({
     where:  { fingerprint: { in: fingerprints } },
-    select: { fingerprint: true, rawOutput: true },
+    select: { fingerprint: true, rawOutput: true, status: true },
   });
-  const existingMap = new Map(existing.map((e: { fingerprint: string; rawOutput: unknown }) => [e.fingerprint, e]));
+  const existingMap = new Map(existing.map((e: { fingerprint: string; rawOutput: unknown; status: string }) => [e.fingerprint, e]));
   const existingSet = new Set(existing.map((e: { fingerprint: string }) => e.fingerprint));
 
   const now = new Date();
 
+  let reopenedCount = 0;
   for (const rawF of findings) {
     // Scrub NUL bytes from all string fields — Postgres jsonb rejects them.
     const f = stripNulBytes(rawF);
+
+    // ── Re-observation reopen ─────────────────────────────────────────────
+    // If the scanner sees a fingerprint that is currently FIXED, the issue
+    // is demonstrably still present (auto-fix or a user's "mark fixed" was
+    // premature) — reopen it. Leave FALSE_POSITIVE / IGNORED alone because
+    // those statuses are user-curated judgments about the finding, not
+    // about remediation.
+    const prev = existingMap.get(f.fingerprint);
+    const shouldReopen = prev?.status === "FIXED";
+    if (shouldReopen) reopenedCount += 1;
+
     await prisma.finding.upsert({
       where: { fingerprint: f.fingerprint },
       create: {
@@ -740,6 +752,10 @@ export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: n
       },
       update: {
         lastSeen:     now,
+        // Re-observed fingerprints that were wrongly marked FIXED get reopened.
+        // `undefined` means "don't touch" so manual FALSE_POSITIVE / IGNORED
+        // and still-OPEN / ACKNOWLEDGED rows are preserved as-is.
+        ...(shouldReopen ? { status: "OPEN" as const, resolvedAt: null } : {}),
         // Always refresh these so re-scans reflect updated CVE data
         title:        f.title,
         description:  f.description,
@@ -748,6 +764,13 @@ export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: n
         fixVersion:   f.fixVersion   ?? null,
         remediation:  f.remediation  ?? null,
         references:   f.references   ?? [],
+        // Refresh location + snippet so re-scans backfill any previously-empty
+        // values (e.g. older Semgrep IAC findings that were stored without a
+        // code_snippet before the scanner started emitting "N: code" prefixes).
+        filePath:     f.filePath     ?? null,
+        lineStart:    f.lineStart    ?? null,
+        lineEnd:      f.lineEnd      ?? null,
+        codeSnippet:  f.codeSnippet  ?? null,
         rawOutput:    (() => {
           const newRaw = (f.rawOutput ?? {}) as Record<string, unknown>;
           const prevRaw = existingMap.get(f.fingerprint)?.rawOutput as Record<string, unknown> | undefined;
@@ -871,6 +894,13 @@ export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: n
   // re-confirmed N known issues still present" — a critical signal for
   // operators tracking remediation progress.
   const confirmedCount = fingerprints.length - newCount;
+
+  if (reopenedCount > 0) {
+    logger.info(
+      `[findings] reopened ${reopenedCount} previously-FIXED finding(s) re-observed in this scan`,
+      { orgId, scanType, targetType, targetId },
+    );
+  }
 
   return { newCount, totalCount: findings.length, fixedCount, confirmedCount, newFindings };
 }
