@@ -221,6 +221,30 @@
 
 ---
 
+### Phase 26 — AI-driven novel vulnerability discovery ❌ *(RESEARCH MOAT, deferred to Month 7+, 2–3 weeks)*
+
+- New `ScanType.AI_DISCOVERY` — runs in parallel to SAST on the same cloned repo
+- New `AIServiceName.NOVEL_VULN_DISCOVERY` routed through `aiClient.ts` (multi-provider already in place)
+- Per-repo opt-in (cost-sensitive — Mythos-class calls are expensive vs Trivy/Semgrep)
+- Findings normalised to the existing `Finding` schema with `scanner: "ai-discovery"` so they're filterable
+- Cost gating: monthly $ budget per org + per-call token cap; metrics for hit rate (false-positive vs novel-true-positive over time)
+- Retrieval-augmented prompts: don't send the whole repo to the LLM — extract candidate hot paths via call-graph (the same Phase-14 reachability infra) + send only those + their dependencies. Cuts token usage 10-100x.
+
+**Why:** Anthropic's [Mythos Preview](https://red.anthropic.com/2026/mythos-preview/) (announced 2026 via Project Glasswing) demonstrated that frontier-model reasoning over code finds vulnerabilities pattern-based scanners can't. Per the announcement: 595 severe-tier crashes vs single-digit prior generation; 181 working JavaScript exploits vs 2 prior; bugs found in heavily-audited projects (FFmpeg, OpenBSD, Linux kernel). Pattern-based scanning hits a ceiling on novel/complex bugs; LLM reasoning extends past it.
+
+**World-class equivalents:** Mythos Preview (Anthropic, restricted preview as of 2026; no public API yet), GitHub Copilot Autofix, Snyk DeepCode AI, OpenAI's emerging code-reasoning research.
+
+**Why deferred to Month 7+:**
+- Mythos isn't GA at Anthropic (Project Glasswing is invite-only). Until a public API lands, BreachLens can use Claude Sonnet 4.5 / GPT-5 / Gemini 2.5 Pro as fallbacks — but those are demonstrably weaker on this specific task per Anthropic's own benchmarks
+- Cost-per-finding is currently prohibitive without the Phase-14 reachability layer to scope what gets sent to the LLM. Phase 14 should land first
+- Zero procurement urgency — no auditor / RFP / customer asks for "AI-driven novel vuln discovery" today. It's a research moat, not a procurement gate
+
+**When the Mythos API lands** (or any frontier model with comparable code-reasoning capability): plumbing is ~hours, not weeks, because `aiClient.ts` already abstracts providers. Add a `MYTHOS` enum value to `AIProviderType`, an adapter in the service, and the new service routes through. The hard part is the *content* of the prompts + the cost-gating + the false-positive triage at scale.
+
+**Strategic position:** Anthropic ships the pickaxe (Mythos), BreachLens ships the mine. When customers want LLM-driven discovery integrated with their existing scanner pipeline + audit trail + ticketing + RBAC, BreachLens is structurally positioned to integrate it — Mythos has no operational wrapper.
+
+---
+
 ## GTM-optimized sequenced timeline
 
 | Month | Focus | Phases | Why this slot |
@@ -231,7 +255,8 @@
 | 4 | **Refresh the differentiator + close the fix loop** | 24 + 17 | Pentest depth keeps demos sharp; auto-PRs close the "devs don't fix" gap |
 | 5 | **Category expansion** | 18 (AWS-only first cut) | Biggest single category expansion (CSPM); start with AWS to scope down |
 | 6 | **Coverage + adoption** | 19 + 20 + 21 | K8s easy win; API security newer differentiator; IDE for dev adoption funnel |
-| Later | **SaaS scale** | 25 | Only when going multi-tenant SaaS — defer for self-host deployments |
+| Later (SaaS-only) | **SaaS scale** | 25 | Only when going multi-tenant SaaS — defer for self-host deployments |
+| Later (research moat) | **AI-driven discovery** | 26 | Waits on Mythos public API + Phase 14 reachability for cost-effective scoping. Plumbing is hours when ready. |
 
 ### Why this differs from a technical-layering sequence
 
