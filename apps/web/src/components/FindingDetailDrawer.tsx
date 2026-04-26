@@ -11,9 +11,11 @@ import { findingsApi, ticketsApi, suppressionsApi } from "../lib/api";
 import Can from "./Can";
 import SeverityBadge from "./SeverityBadge";
 import ConfidenceBadge from "./ConfidenceBadge";
+import ProofOfExploitBadge from "./ProofOfExploitBadge";
 import DiffViewer from "./DiffViewer";
 import SyntaxHighlight from "./SyntaxHighlight";
 import { formatDate } from "../lib/utils";
+import { hasProofOfExploit } from "../lib/findings";
 import { SEVERITY_BADGE } from "../lib/colors";
 
 // Severity badge class-name map used by SCA, Secret, SAST, and DAST subissues.
@@ -1766,8 +1768,9 @@ function CodeAnalysisModal({ finding, snippet, githubUrl, repoInfo, locationOver
 
           {/* Finding title + meta */}
           <div className="space-y-2">
-            <div className="flex flex-wrap gap-1.5">
+            <div className="flex flex-wrap items-center gap-1.5">
               <SeverityBadge severity={finding.severity} />
+              {hasProofOfExploit(finding) && <ProofOfExploitBadge />}
               <span className="rounded bg-gray-800 px-2 py-0.5 text-xs text-gray-400">{finding.scanType}</span>
               <span className="rounded bg-gray-800 px-2 py-0.5 text-xs text-gray-400">{finding.scanner as string}</span>
             </div>
@@ -2469,6 +2472,7 @@ export default function FindingDetailDrawer({ finding, onClose }: Props) {
             <div className="mb-2 flex flex-wrap items-center gap-2">
               <SeverityBadge severity={finding.severity} />
               <ConfidenceBadge confidence={finding.confidence} />
+              {hasProofOfExploit(finding) && <ProofOfExploitBadge />}
               <span className="rounded bg-gray-800 px-2 py-0.5 text-xs text-gray-400">
                 {finding.scanType}
               </span>
