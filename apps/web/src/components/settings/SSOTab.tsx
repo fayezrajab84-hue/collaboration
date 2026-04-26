@@ -233,7 +233,7 @@ export default function SSOTab() {
             <KeyRound className="h-4 w-4 text-indigo-400" />
             Single Sign-On (OIDC)
           </h2>
-          <p className="mt-1 text-sm text-gray-400">
+          <p className="mt-1 text-xs text-gray-400">
             Configure an OpenID Connect identity provider — Okta, Azure AD, Google Workspace, Auth0, Keycloak.
           </p>
         </div>
@@ -263,14 +263,14 @@ export default function SSOTab() {
         {/* Provider preset — guidance only, not persisted. Selecting changes
             the issuer URL placeholder + reveals provider-specific setup notes. */}
         <div>
-          <label className="mb-1.5 block text-sm font-medium text-gray-300">Provider</label>
+          <label className="mb-1.5 block text-xs font-medium text-gray-300">Provider</label>
           <p className="mb-2 text-xs text-gray-500">
             Select your IdP for setup guidance — saved config is generic OIDC.
           </p>
           <select
             value={provider}
             onChange={(e) => setProvider(e.target.value as ProviderPreset)}
-            className="w-full rounded bg-gray-800 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            className="w-full rounded bg-gray-800 px-3 py-2 text-xs text-gray-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
           >
             {(Object.entries(PROVIDER_PRESETS) as [ProviderPreset, typeof PROVIDER_PRESETS["generic"]][]).map(
               ([key, p]) => <option key={key} value={key}>{p.label}</option>,
@@ -311,7 +311,7 @@ export default function SSOTab() {
 
         {/* ── Allowed email domains ─────────────────────────────────────── */}
         <div>
-          <label className="mb-1.5 block text-sm font-medium text-gray-300">
+          <label className="mb-1.5 block text-xs font-medium text-gray-300">
             Allowed email domains
           </label>
           <p className="mb-2 text-xs text-gray-500">
@@ -363,24 +363,24 @@ export default function SSOTab() {
         {/* ── Default role + active toggle ──────────────────────────────── */}
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="mb-1.5 block text-sm font-medium text-gray-300">Default role</label>
+            <label className="mb-1.5 block text-xs font-medium text-gray-300">Default role</label>
             <p className="mb-2 text-xs text-gray-500">
               Assigned when no group claim matches the mapping below.
             </p>
             <select
               value={form.defaultRole}
               onChange={(e) => setForm((f) => ({ ...f, defaultRole: e.target.value as MemberRole }))}
-              className="w-full rounded bg-gray-800 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              className="w-full rounded bg-gray-800 px-3 py-2 text-xs text-gray-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
             >
               {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
             </select>
           </div>
           <div>
-            <label className="mb-1.5 block text-sm font-medium text-gray-300">Status</label>
+            <label className="mb-1.5 block text-xs font-medium text-gray-300">Status</label>
             <p className="mb-2 text-xs text-gray-500">
               Disable to keep the config but stop accepting SSO logins.
             </p>
-            <label className="inline-flex items-center gap-2 text-sm text-gray-300">
+            <label className="inline-flex items-center gap-2 text-xs text-gray-300">
               <input
                 type="checkbox"
                 checked={form.isActive}
@@ -394,7 +394,7 @@ export default function SSOTab() {
 
         {/* ── Group → role mapping ──────────────────────────────────────── */}
         <div>
-          <label className="mb-1.5 block text-sm font-medium text-gray-300">
+          <label className="mb-1.5 block text-xs font-medium text-gray-300">
             Group → role mapping
           </label>
           <p className="mb-2 text-xs text-gray-500">
@@ -509,14 +509,14 @@ function Field({
 }) {
   return (
     <div>
-      <label className="mb-1.5 block text-sm font-medium text-gray-300">{label}</label>
-      {help && <p className="mb-2 text-xs text-gray-500">{help}</p>}
+      <label className="mb-1.5 block text-xs font-medium text-gray-300">{label}</label>
+      {help && <p className="mb-2 text-[11px] text-gray-500">{help}</p>}
       <input
         type={type}
         value={value}
         placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded bg-gray-800 px-3 py-2 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+        className="w-full rounded bg-gray-800 px-3 py-2 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-500"
       />
     </div>
   );
