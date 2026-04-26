@@ -132,7 +132,7 @@ function JiraTab() {
           </p>
         </div>
         {existing && (
-          <span className="rounded-full bg-teal-900/40 border border-teal-800/40 px-2.5 py-0.5 text-xs text-teal-300">
+          <span className="rounded-full bg-indigo-900/40 border border-indigo-800/40 px-2.5 py-0.5 text-xs text-indigo-300">
             Connected
           </span>
         )}
@@ -225,7 +225,7 @@ function SlackTab() {
           </p>
         </div>
         {existing && (
-          <span className="rounded-full bg-teal-900/40 border border-teal-800/40 px-2.5 py-0.5 text-xs text-teal-300">
+          <span className="rounded-full bg-indigo-900/40 border border-indigo-800/40 px-2.5 py-0.5 text-xs text-indigo-300">
             Connected
           </span>
         )}
@@ -324,7 +324,7 @@ function TeamsTab() {
           </p>
         </div>
         {existing && (
-          <span className="rounded-full bg-teal-900/40 border border-teal-800/40 px-2.5 py-0.5 text-xs text-teal-300">
+          <span className="rounded-full bg-indigo-900/40 border border-indigo-800/40 px-2.5 py-0.5 text-xs text-indigo-300">
             Connected
           </span>
         )}
@@ -428,7 +428,7 @@ export default function SettingsPage() {
               <span>{label}</span>
               {connected[id] && (
                 <span
-                  className="h-2 w-2 rounded-full bg-teal-500 shrink-0"
+                  className="h-2 w-2 rounded-full bg-indigo-500 shrink-0"
                   title="Connected"
                 />
               )}

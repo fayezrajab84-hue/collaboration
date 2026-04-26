@@ -142,7 +142,7 @@ function AddRepoModal({ onClose }: { onClose: () => void }) {
                           </div>
                         </div>
                         {r.added ? (
-                          <span className="flex items-center gap-1 rounded bg-teal-900/30 border border-teal-800/50 px-2 py-1 text-xs text-teal-400">
+                          <span className="flex items-center gap-1 rounded bg-indigo-900/30 border border-indigo-800/50 px-2 py-1 text-xs text-indigo-400">
                             <Check className="h-3 w-3" /> Added
                           </span>
                         ) : (
