@@ -79,6 +79,30 @@
 
 ---
 
+### Phase 22.5 — GitHub Enterprise + GitHub App ❌ *(MUST-HAVE for GHES customers, NOT STARTED)*
+
+Closes the Phase 22 gap that bites Entra-federated-GitHub-Enterprise customers: today they can sign in via Entra OIDC (Phase 22 PR 3), but the JIT-provisioned user has a placeholder access token (`encrypt("oidc-no-token")`) — they literally cannot scan their private GHES repos.
+
+**Two procurement blockers, one phase:**
+
+1. The "Continue with GitHub" button hardcodes github.com — useless for GHES tenants
+2. SSO-provisioned users have no usable repo-access token — scans on private repos fail
+
+**Solution shape:** decouple identity (Entra OIDC stays primary) from repo access (move to org-level GitHub App installations). This is the canonical pattern Snyk / Aikido / Wiz all use.
+
+**4 slices, ~830 lines, ~2 days:**
+
+- **A — Configurable GHES OAuth login:** second `passport-github2` strategy with custom URLs from `GITHUB_ENTERPRISE_URL` env vars; conditional "Continue with <ghes-domain>" login button
+- **B — Schema + GitHub App service:** add `IntegrationType.GITHUB_APP`; new `githubAppService` with JWT signing + installation token caching
+- **C — Install flow + Settings UI:** `GET /api/integrations/github-app/install-url` + callback + Settings → GitHub Integration tab
+- **D — Token resolution refactor:** central `getRepoTokenForOrg(orgId)` helper; prefer App token, fall back to OWNER's user token, clear error when neither
+
+**Also unblocks Phase 17** (auto-fix PRs) — PR creation as a bot needs an App, not user OAuth tokens.
+
+**Full scope doc:** [`docs/plans/phase-22.5-ghes-and-github-app.md`](./phase-22.5-ghes-and-github-app.md). Four open questions to resolve before starting Slice A (App ownership model, hide-github.com toggle, per-user GHES OAuth deferral, legacy token migration).
+
+---
+
 ### Phase 15 — SBOM generation ✅ *(MUST-HAVE, 🚪 govt/regulated procurement — SHIPPED)*
 
 **All three slices shipped:**
