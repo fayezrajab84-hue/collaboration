@@ -5,7 +5,7 @@ import { config } from "../config.js";
 import { logger } from "../logger.js";
 import prisma from "../db.js";
 import { upsertFindings, countBySeverity } from "../services/findingService.js";
-import { aiTriageQueue } from "../queues/definitions.js";
+import { aiTriageQueue, scanQueues } from "../queues/definitions.js";
 import { emitStatusChange, emitFindingsBatch } from "../services/sseService.js";
 import { decrypt } from "../services/encryptionService.js";
 import type { ScanJobPayload } from "../queues/definitions.js";
@@ -18,6 +18,7 @@ import { scoreTarget } from "../services/riskScoringService.js";
 import { generateTargetReport } from "../services/reportHtmlService.js";
 import { resolvePolicy, evaluatePolicy } from "../services/policyService.js";
 import { markInProgress as markCheckInProgress, completeCheck } from "../services/prCheckService.js";
+import { extractApiSpecUrls } from "../services/openApiUrlExtractor.js";
 
 const SCAN_TYPES: ScanType[] = ["SAST", "SCA", "SECRET", "IAC", "CONTAINER", "DAST", "PENTEST", "PENTEST_FULL"];
 
@@ -76,6 +77,11 @@ async function processScanJob(payload: ScanJobPayload) {
           oauth2_client_secret: creds["clientSecret"] ?? null,
           oauth2_scope:        cfg.oauth2Scope       ?? null,
           oauth2_grant_type:   cfg.oauth2GrantType   ?? "client_credentials",
+          // CSRF tracking — passed to crawler payload by the scanner. Null
+          // values mean "no CSRF tracking", crawler skips the prime/refresh.
+          csrf_meta_selector:  cfg.csrfMetaSelector  ?? null,
+          csrf_cookie_name:    cfg.csrfCookieName    ?? null,
+          csrf_header_name:    cfg.csrfHeaderName    ?? null,
         };
       }
     } catch (err) {
@@ -83,39 +89,21 @@ async function processScanJob(payload: ScanJobPayload) {
     }
   }
 
-  // Extract API spec URLs from imported OpenAPI/Swagger spec (DAST & PENTEST_FULL only)
+  // Extract API spec URLs from imported OpenAPI/Swagger spec (DAST & PENTEST_FULL only).
+  // Heavy lifting (per-operation enumeration, type-aware param substitution,
+  // server-URL resolution) lives in `openApiUrlExtractor` so the worker stays
+  // focused on dispatch.
   let apiSpecUrls: string[] = [];
   if (targetType === "DOMAIN" && payload.domain && ["DAST", "PENTEST_FULL", "PENTEST"].includes(scanType)) {
     try {
       const spec = await prisma.domainApiSpec.findUnique({ where: { domainId: targetId } });
       if (spec?.specJson) {
-        const specJson = spec.specJson as Record<string, unknown>;
-        const paths = (specJson.paths ?? {}) as Record<string, unknown>;
-
-        // Resolve base URL from spec (OpenAPI 3.x servers[] or Swagger 2.x host+basePath)
-        let baseUrl = `http://${payload.domain}`;
-        const servers = specJson.servers as Array<{ url: string }> | undefined;
-        if (servers?.length) {
-          // Use first server; if relative, resolve against the domain
-          const serverUrl = servers[0]!.url;
-          baseUrl = serverUrl.startsWith("http") ? serverUrl : `http://${payload.domain}${serverUrl}`;
-        } else if (specJson.host) {
-          const scheme = (specJson.schemes as string[] | undefined)?.[0] ?? "http";
-          const basePath = (specJson.basePath as string) ?? "";
-          baseUrl = `${scheme}://${specJson.host}${basePath}`;
-        }
-
-        // Build a URL for each path (one per path, not per method — tools enumerate methods)
-        const methods = ["get", "post", "put", "patch", "delete"];
-        for (const [path, pathItem] of Object.entries(paths)) {
-          const item = pathItem as Record<string, unknown>;
-          const hasOp = methods.some((m) => item[m]);
-          if (!hasOp) continue;
-          // Replace path params with placeholder values so URLs are valid
-          const concretePath = path.replace(/\{[^}]+\}/g, "1");
-          apiSpecUrls.push(`${baseUrl.replace(/\/$/, "")}${concretePath}`);
-        }
-        logger.info(`OpenAPI spec: ${apiSpecUrls.length} endpoint URLs extracted`, { scanJobId });
+        const { urls, operations } = extractApiSpecUrls(spec.specJson, payload.domain);
+        apiSpecUrls = urls;
+        logger.info(
+          `OpenAPI spec: ${urls.length} URL(s) from ${operations} operation(s)`,
+          { scanJobId },
+        );
       }
     } catch (err) {
       logger.warn("Failed to extract OpenAPI spec URLs", { scanJobId, error: (err as Error).message });
@@ -209,12 +197,76 @@ async function processScanJob(payload: ScanJobPayload) {
   // but HTTP 200. Without this we'd silently mark the ScanJob COMPLETED with
   // 0 findings and no diagnostic — the failure mode that hid the DVWA DAST
   // ZAP timeout for 13 minutes.
+  //
+  // Append the failed scanType to ScanJob.failedScanTypes so the diff endpoint
+  // can exclude it (a 0-finding failed DAST scan must NOT make prior DAST
+  // findings appear "removed/fixed") and the finalize step can promote the
+  // parent status from COMPLETED → FAILED if every sub-scan failed.
   if (!result.success) {
     logger.error("Scanner reported failure", {
       scanJobId,
       scanType,
       error: result.error ?? "(no error message)",
       durationMs: result.durationMs,
+    });
+    // Use a raw SQL append to avoid a read-modify-write race when multiple
+    // scan-type workers finish in parallel. array_append is idempotent in
+    // practice because each scanType only runs once per ScanJob.
+    await prisma.$executeRaw`
+      UPDATE "ScanJob"
+      SET "failedScanTypes" = array_append("failedScanTypes", ${scanType}::"ScanType")
+      WHERE "id" = ${scanJobId}
+    `.catch((err: Error) =>
+      logger.error("Failed to append failedScanTypes", { scanJobId, scanType, error: err.message })
+    );
+  }
+
+  // Persist the in-scope URL list captured by the scanner. PENTEST_FULL
+  // (crawler_urls.txt) and DAST-recording scans return a populated list;
+  // other scan types return []. We persist EVEN empty arrays so the diff
+  // endpoint can distinguish "scanner ran but reported no URL surface"
+  // (empty) from "URL list never captured" (null) — without this, the
+  // scope-aware classification was silently falling back to the legacy
+  // "treat everything as in-scope" path for every scan whose write got
+  // skipped, defeating the whole purpose of the column.
+  //
+  // Merge with whatever's already on the ScanJob row so a multi-scan-type
+  // job (e.g. PENTEST_FULL + DAST) doesn't have one type clobber the
+  // other's URL list. Capped at 5000 to bound the JSON column size.
+  //
+  // The diagnostic log up front exists because previously several
+  // PENTEST_FULL scans completed without populating this column even
+  // though the scanner produced a 50+ URL crawler_urls.txt — we want the
+  // raw response shape on every run so future regressions are immediately
+  // visible without DB archaeology.
+  try {
+    const incoming = Array.isArray(result.targetUrls) ? result.targetUrls : [];
+    logger.info("[targetUrls] received from scanner", {
+      scanJobId, scanType,
+      count: incoming.length,
+      isArray: Array.isArray(result.targetUrls),
+      rawType: typeof result.targetUrls,
+    });
+    const existing = await prisma.scanJob.findUnique({
+      where: { id: scanJobId },
+      select: { targetUrls: true },
+    });
+    const prior: string[] = Array.isArray(existing?.targetUrls)
+      ? (existing!.targetUrls as unknown as string[])
+      : [];
+    const merged = Array.from(new Set([...prior, ...incoming])).slice(0, 5000);
+    await prisma.scanJob.update({
+      where: { id: scanJobId },
+      data:  { targetUrls: merged },
+    });
+    if (merged.length > 0) {
+      logger.info("[targetUrls] persisted in-scope URL list", {
+        scanJobId, scanType, count: merged.length, addedThisType: incoming.length,
+      });
+    }
+  } catch (err) {
+    logger.warn("[targetUrls] failed to persist URL list", {
+      scanJobId, scanType, error: (err as Error).message,
     });
   }
 
@@ -319,11 +371,15 @@ async function processScanJob(payload: ScanJobPayload) {
     // `scanJobId` equality undercounts because upsertFindings preserves the
     // *original* scanJobId when a fingerprint is re-observed, so re-confirmed
     // findings would not show up on subsequent scan rows.
+    //
+    // Pull failedScanTypes too so finalize can decide between COMPLETED,
+    // COMPLETED-with-warnings, and fully FAILED.
     const jobRow = await prisma.scanJob.findUniqueOrThrow({
       where: { id: scanJobId },
       select: {
         orgId: true, targetType: true, scanTypes: true, startedAt: true,
         repositoryId: true, containerId: true, domainId: true,
+        failedScanTypes: true,
       },
     });
     const windowStart = jobRow.startedAt ?? new Date(0);
@@ -332,26 +388,49 @@ async function processScanJob(payload: ScanJobPayload) {
       jobRow.targetType === "REPOSITORY" ? { repositoryId: jobRow.repositoryId }
       : jobRow.targetType === "CONTAINER" ? { containerId: jobRow.containerId }
       : { domainId: jobRow.domainId };
-    const counts = await prisma.finding.groupBy({
-      by: ["severity"],
-      where: {
-        orgId:    jobRow.orgId,
-        scanType: { in: jobRow.scanTypes },
-        ...targetFilter,
-        lastSeen: { gte: windowStart, lte: windowEnd },
-      },
-      _count: true,
-    });
+    // Only count severities for scan types that DIDN'T fail — a failed DAST
+    // sub-scan returns 0 findings, but those zero findings shouldn't push the
+    // dashboard counts down for that target.
+    const successfulScanTypes = jobRow.scanTypes.filter(
+      (t) => !jobRow.failedScanTypes.includes(t)
+    );
+    const counts = successfulScanTypes.length === 0
+      ? []
+      : await prisma.finding.groupBy({
+          by: ["severity"],
+          where: {
+            orgId:    jobRow.orgId,
+            scanType: { in: successfulScanTypes },
+            ...targetFilter,
+            lastSeen: { gte: windowStart, lte: windowEnd },
+          },
+          _count: true,
+        });
     const severityCounts: Record<string, number> = {};
     for (const c of counts) {
       severityCounts[c.severity] = c._count;
     }
 
+    // Decide finalize status:
+    //   - all sub-scans failed         → FAILED (with error summary)
+    //   - some sub-scans failed        → COMPLETED + error string listing them
+    //                                    (the user still has partial results)
+    //   - none failed                  → COMPLETED, no error
+    const failed = jobRow.failedScanTypes;
+    const allFailed     = failed.length > 0 && failed.length === jobRow.scanTypes.length;
+    const partialFailed = failed.length > 0 && failed.length < jobRow.scanTypes.length;
+    const finalStatus: "COMPLETED" | "FAILED" = allFailed ? "FAILED" : "COMPLETED";
+    const finalError =
+      allFailed     ? `All scan types failed: ${failed.join(", ")}` :
+      partialFailed ? `Partial failure: ${failed.join(", ")} did not complete (other scan types succeeded)` :
+                      null;
+
     await prisma.scanJob.update({
       where: { id: scanJobId },
       data: {
-        status: "COMPLETED",
+        status: finalStatus,
         completedAt: new Date(),
+        ...(finalError ? { error: finalError } : {}),
         criticalCount: severityCounts["CRITICAL"] ?? 0,
         highCount: severityCounts["HIGH"] ?? 0,
         mediumCount: severityCounts["MEDIUM"] ?? 0,
@@ -360,18 +439,22 @@ async function processScanJob(payload: ScanJobPayload) {
       },
     });
 
-    // Update target's lastScannedAt
-    if (targetType === "REPOSITORY") {
-      await prisma.repository.update({ where: { id: targetId }, data: { lastScannedAt: new Date() } });
-    } else if (targetType === "CONTAINER") {
-      await prisma.container.update({ where: { id: targetId }, data: { lastScannedAt: new Date() } });
-    } else if (targetType === "DOMAIN") {
-      await prisma.domain.update({ where: { id: targetId }, data: { lastScannedAt: new Date() } });
+    // Update target's lastScannedAt — even on partial failure we still touched
+    // the target. Skip only when EVERY sub-scan failed (no useful data).
+    if (!allFailed) {
+      if (targetType === "REPOSITORY") {
+        await prisma.repository.update({ where: { id: targetId }, data: { lastScannedAt: new Date() } });
+      } else if (targetType === "CONTAINER") {
+        await prisma.container.update({ where: { id: targetId }, data: { lastScannedAt: new Date() } });
+      } else if (targetType === "DOMAIN") {
+        await prisma.domain.update({ where: { id: targetId }, data: { lastScannedAt: new Date() } });
+      }
     }
 
-    emitStatusChange(scanJobId, "COMPLETED", {
+    emitStatusChange(scanJobId, finalStatus, {
       criticalCount: severityCounts["CRITICAL"] ?? 0,
       highCount: severityCounts["HIGH"] ?? 0,
+      ...(finalError ? { error: finalError } : {}),
     });
 
     // ── Policy evaluation + GitHub Check Run completion ─────────────────
@@ -407,12 +490,14 @@ async function processScanJob(payload: ScanJobPayload) {
 
     // If this was an interactive recording scan (DAST seeded from a ZAP
     // recording context, or PENTEST_FULL promoted from a recording),
-    // mark the linked RecordingSession as COMPLETED so the UI clears
-    // the SCANNING state. Detected via payload, not scanType.
+    // mark the linked RecordingSession with the matching terminal status so
+    // the UI clears the SCANNING state. Detected via payload, not scanType.
     if (payload.recordingSessionId) {
       await prisma.recordingSession.updateMany({
         where: { scanJobId, status: { in: ["SCANNING", "ACTIVE"] } },
-        data:  { status: "COMPLETED", endedAt: new Date() },
+        data:  allFailed
+          ? { status: "FAILED", endedAt: new Date(), errorMessage: finalError ?? "scan failed" }
+          : { status: "COMPLETED", endedAt: new Date() },
       }).catch(() => {/* non-fatal */});
     }
 
@@ -431,18 +516,35 @@ async function processScanJob(payload: ScanJobPayload) {
       );
     }
 
-    logger.info("Scan job completed", { scanJobId, totalFindings: result.findings.length });
+    logger.info("Scan job finalized", {
+      scanJobId,
+      finalStatus,
+      failedScanTypes: failed,
+      totalFindings: result.findings.length,
+    });
 
-    // Fire-and-forget AI scan summary (non-blocking)
-    generateScanSummary(scanJobId).catch(() => {/* already logged inside */});
+    // The AI summary / risk score / HTML report are derived from findings — if
+    // every sub-scan failed there are no fresh findings to summarise, and
+    // running these would either produce a misleading "looks clean!" report or
+    // re-use stale findings from prior scans. Skip them on full failure.
+    if (!allFailed) {
+      // Fire-and-forget AI scan summary (non-blocking)
+      generateScanSummary(scanJobId).catch(() => {/* already logged inside */});
 
-    // Fire-and-forget AI risk score for the scanned target (non-blocking)
-    scoreTarget(targetType as TargetType, targetId).catch(() => {/* already logged inside */});
+      // Fire-and-forget AI risk score for the scanned target (non-blocking)
+      scoreTarget(targetType as TargetType, targetId).catch(() => {/* already logged inside */});
 
-    // Fire-and-forget HTML security report — ON_SCAN_COMPLETE trigger
-    generateTargetReport(scanJobId).catch(() => {/* already logged inside */});
+      // Fire-and-forget HTML security report — ON_SCAN_COMPLETE trigger
+      generateTargetReport(scanJobId).catch(() => {/* already logged inside */});
+    }
   }
 }
+
+// Module-level registry so closeWorkers() can drain every active worker on
+// shutdown. Without this each scan-type worker would leak its Redis
+// connection + lock on the next SIGTERM, producing the stalled-job pattern
+// that has cancelled three scans in a single day.
+const _activeWorkers: Worker<ScanJobPayload>[] = [];
 
 export function initWorkers() {
   for (const scanType of SCAN_TYPES) {
@@ -474,6 +576,7 @@ export function initWorkers() {
         maxStalledCount: 1,
       }
     );
+    _activeWorkers.push(worker);
 
     worker.on("failed", async (job, err) => {
       if (!job) return;
@@ -493,7 +596,129 @@ export function initWorkers() {
       }
       emitStatusChange(scanJobId, "FAILED", { error: err.message });
     });
+
+    // Stalled = lock expired before the worker reported completion. With
+    // maxStalledCount=1 (set above), this is terminal: re-delivery would
+    // spawn a second scanner run against the same target. The most common
+    // cause in dev is `tsx watch` SIGKILL'ing the Node process mid-scan;
+    // in prod it's container restart, OOM, or an upstream network blip.
+    //
+    // We can't recover the in-flight scanner result (the `await axios.post`
+    // died with the worker), but we can mark the ScanJob terminal so it
+    // (a) stops permanently blocking fp-sweep's idle window, and (b) the
+    // user sees a clear, actionable failure instead of a perpetual RUNNING
+    // row that needs manual DB surgery to clear.
+    //
+    // BullMQ job IDs are deterministic: `<scanJobId>-<scanType>` (set by
+    // the scan-trigger route), so we can recover scanJobId from the
+    // jobId without a DB lookup against bullJobIds.
+    worker.on("stalled", async (jobId, prev) => {
+      logger.error("[scan] job stalled — marking ScanJob CANCELLED", {
+        jobId, scanType, prevState: prev,
+      });
+      const suffix = `-${scanType}`;
+      const scanJobId = jobId.endsWith(suffix) ? jobId.slice(0, -suffix.length) : null;
+      if (!scanJobId) {
+        logger.warn("[scan] stalled jobId did not match expected format", { jobId, scanType });
+        return;
+      }
+      await prisma.scanJob.update({
+        where: { id: scanJobId },
+        data: {
+          status:      "CANCELLED",
+          completedAt: new Date(),
+          error: `Worker stalled mid-${scanType}: lock expired before completion (likely tsx hot-reload, container restart, or process kill). Re-run the scan to retry.`,
+        },
+      }).catch((err: Error) => logger.warn("[scan] failed to mark stalled scan CANCELLED", {
+        scanJobId, scanType, error: err.message,
+      }));
+      emitStatusChange(scanJobId, "CANCELLED", { error: `Worker stalled mid-${scanType}` });
+    });
   }
 
   logger.info("BullMQ workers started for all scan types");
+}
+
+/** Drain all scan workers and release their Redis locks. Called from the
+ *  server's SIGTERM/SIGINT handler so jobs that were mid-processing release
+ *  cleanly instead of stalling on the next start.
+ *
+ *  In dev (`tsx watch`), this is mostly aspirational — tsx SIGKILLs after
+ *  a short SIGTERM grace, so we may not finish the close. The startup
+ *  reaper (`reapOrphanScans`) is the real safety net for that case. */
+export async function closeWorkers(): Promise<void> {
+  logger.info(`[scan] closing ${_activeWorkers.length} scan worker(s)…`);
+  await Promise.all(_activeWorkers.map((w) => w.close().catch(() => {})));
+  _activeWorkers.length = 0;
+  logger.info("[scan] all scan workers closed");
+}
+
+/**
+ * Reap orphan ScanJobs on API startup.
+ *
+ * BullMQ workers don't survive a hard process kill (SIGKILL by tsx-watch
+ * on hot-reload, container restart, OOM). When that happens the ScanJob
+ * row stays in PENDING/RUNNING forever — fp-sweep then permanently skips
+ * its idle window because it sees an "active scan" that no worker is
+ * actually processing.
+ *
+ * On every startup we look for non-terminal ScanJobs older than 30s
+ * (skip fresh inserts the new workers might be about to dequeue), then
+ * cross-check BullMQ for an active/waiting/delayed job linked to each.
+ * If BullMQ has nothing live, the row is orphaned and we mark it
+ * CANCELLED with a clear, user-actionable error message.
+ *
+ * The 30s grace window matters: without it, scans inserted in the brief
+ * gap between server boot and worker start would be killed before they
+ * had a chance to run.
+ */
+export async function reapOrphanScans(): Promise<void> {
+  const cutoff = new Date(Date.now() - 30_000);
+  const orphans = await prisma.scanJob.findMany({
+    where: {
+      status:    { in: ["PENDING", "RUNNING"] },
+      createdAt: { lt: cutoff },
+    },
+    select: { id: true, status: true, scanTypes: true, bullJobIds: true },
+  });
+  if (orphans.length === 0) {
+    logger.info("[scan-reap] no orphan scans on startup");
+    return;
+  }
+  logger.warn(`[scan-reap] found ${orphans.length} non-terminal scan(s) on startup — checking BullMQ for liveness`);
+
+  const reaped: string[] = [];
+  for (const scan of orphans) {
+    // bullJobIds shape: { "PENTEST_FULL": "<scanId>-PENTEST_FULL", ... }
+    const ids = (scan.bullJobIds ?? {}) as Record<string, string>;
+    let stillLive = false;
+    for (const scanType of Object.keys(ids)) {
+      const queue = scanQueues[scanType as ScanType];
+      if (!queue) continue;
+      const job = await queue.getJob(ids[scanType]!).catch(() => null);
+      if (!job) continue;
+      const state = await job.getState().catch(() => null);
+      if (state === "active" || state === "waiting" || state === "delayed") {
+        stillLive = true;
+        break;
+      }
+    }
+    if (stillLive) {
+      logger.info(`[scan-reap] scan ${scan.id} still live in BullMQ — leaving alone`);
+      continue;
+    }
+    await prisma.scanJob.update({
+      where: { id: scan.id },
+      data: {
+        status:      "CANCELLED",
+        completedAt: new Date(),
+        error: "Reaped on API startup: worker died (process killed during scan, likely tsx hot-reload or container restart). Re-run the scan to retry.",
+      },
+    }).catch((err: Error) =>
+      logger.warn("[scan-reap] failed to mark orphan CANCELLED", { scanJobId: scan.id, error: err.message })
+    );
+    emitStatusChange(scan.id, "CANCELLED", { error: "Reaped on startup" });
+    reaped.push(scan.id);
+  }
+  logger.warn(`[scan-reap] cancelled ${reaped.length} orphan scan(s)`, { reaped });
 }
