@@ -173,11 +173,28 @@ export default function AuditLogTab() {
             {rows.map((row) => {
               const fieldCount = Object.keys(row.metadata ?? {}).length;
               const isExpanded = expandedIds.has(row.id);
+              const hasMetadata = fieldCount > 0;
               return (
                 <Fragment key={row.id}>
                   <tr className="hover:bg-gray-800/30">
-                    <td className="px-3 py-2 font-mono text-[11px] text-gray-400 whitespace-nowrap">
-                      {formatDate(row.createdAt)}
+                    {/* Timestamp doubles as the row-expand affordance — click to
+                        toggle the metadata payload below. Disabled cursor when
+                        the row has no metadata to expand. */}
+                    <td
+                      className={`px-3 py-2 font-mono text-[11px] text-gray-400 whitespace-nowrap select-none ${
+                        hasMetadata ? "cursor-pointer hover:text-indigo-300" : "cursor-default"
+                      }`}
+                      onClick={() => hasMetadata && toggleExpand(row.id)}
+                      title={hasMetadata ? (isExpanded ? "Collapse metadata" : "Expand metadata") : "No metadata"}
+                    >
+                      <span className="inline-flex items-center gap-1">
+                        {hasMetadata && (
+                          isExpanded
+                            ? <ChevronUp   className="h-3 w-3 shrink-0 opacity-60" />
+                            : <ChevronDown className="h-3 w-3 shrink-0 opacity-60" />
+                        )}
+                        {formatDate(row.createdAt)}
+                      </span>
                     </td>
                     <td className="px-3 py-2 text-gray-300 whitespace-nowrap">
                       {row.user ? (
@@ -201,18 +218,10 @@ export default function AuditLogTab() {
                       )}
                     </td>
                     <td className="px-3 py-2">
-                      {fieldCount > 0 ? (
-                        <button
-                          onClick={() => toggleExpand(row.id)}
-                          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-gray-400 hover:bg-gray-800 hover:text-indigo-300"
-                          aria-expanded={isExpanded}
-                          title={isExpanded ? "Collapse metadata" : "Expand metadata"}
-                        >
-                          {isExpanded
-                            ? <ChevronUp   className="h-3 w-3" />
-                            : <ChevronDown className="h-3 w-3" />}
-                          {fieldCount} field{fieldCount === 1 ? "" : "s"}
-                        </button>
+                      {hasMetadata ? (
+                        <code className="block max-w-md truncate text-[10px] text-gray-500" title={JSON.stringify(row.metadata)}>
+                          {JSON.stringify(row.metadata)}
+                        </code>
                       ) : (
                         <span className="text-gray-700">—</span>
                       )}
