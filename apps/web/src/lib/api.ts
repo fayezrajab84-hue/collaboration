@@ -645,6 +645,52 @@ export const membersApi = {
     apiClient.delete(`/members/invitations/${id}`).then((r) => r.data),
 };
 
+// ── SSO (OIDC) configuration ─────────────────────────────────────────────
+
+export interface SsoConfigView {
+  id:                  string;
+  issuerUrl:           string;
+  clientId:            string;
+  clientSecretSet:     boolean;
+  allowedEmailDomains: string[];
+  groupRoleMapping:    Record<string, MemberRole>;
+  defaultRole:         MemberRole;
+  isActive:            boolean;
+  updatedAt:           string;
+}
+
+export interface SsoUpsert {
+  issuerUrl:           string;
+  clientId:            string;
+  /** Optional on update — omit to preserve the existing encrypted value. */
+  clientSecret?:       string;
+  allowedEmailDomains: string[];
+  groupRoleMapping:    Record<string, MemberRole>;
+  defaultRole:         MemberRole;
+  isActive:            boolean;
+}
+
+export interface SsoTestResult {
+  ok:                    boolean;
+  error?:                string;
+  message?:              string;
+  latencyMs:             number;
+  issuer?:               string;
+  authorizationEndpoint?: string;
+  tokenEndpoint?:        string;
+  userinfoEndpoint?:     string | null;
+  jwksUri?:              string;
+  scopesSupported?:      string[];
+}
+
+export const ssoApi = {
+  get:    () => apiClient.get<SsoConfigView | null>("/sso").then((r) => r.data),
+  save:   (data: SsoUpsert) => apiClient.put("/sso", data).then((r) => r.data),
+  remove: () => apiClient.delete("/sso").then((r) => r.data),
+  test:   (issuerUrl: string) =>
+            apiClient.post<SsoTestResult>("/sso/test", { issuerUrl }).then((r) => r.data),
+};
+
 // ── Admin (queues) ────────────────────────────────────────────────────────
 
 export interface QueueCounts {

@@ -206,6 +206,48 @@ model Organization {
   recordings      RecordingSession[]
   policies        Policy[]
   invitations     Invitation[]
+  ssoConfig       SsoConfig?
+}
+
+// Per-org OIDC SSO configuration. One row per org max (1:1 with Organization).
+//
+// Why split out instead of a JSON column on Organization:
+//   - issuerUrl + clientId + allowedEmailDomains need to be queryable to
+//     route incoming logins to the right org BEFORE the OAuth round-trip
+//     starts (e.g. user types alice@acme.com → look up which org owns
+//     "acme.com" in allowedEmailDomains)
+//   - clientSecret needs to be encrypted alongside, but as JSON so we can
+//     extend later (refresh tokens, JWKS overrides) without a migration
+//
+// Phase 22 PR 3 Slice A: this model + the config UI.
+// Phase 22 PR 3 Slice B: actual passport-openidconnect strategy that reads it.
+model SsoConfig {
+  id                  String   @id @default(cuid())
+  orgId               String   @unique
+  // OIDC discovery endpoint: <issuerUrl>/.well-known/openid-configuration
+  // resolves the rest (token/userinfo/jwks). E.g. for Okta:
+  //   https://<tenant>.okta.com/oauth2/default
+  issuerUrl           String
+  clientId            String
+  // Email domains that map to this org. Lowercase, no @. E.g. ["acme.com"].
+  // The login flow uses this to route an incoming user to the right org.
+  allowedEmailDomains String[]
+  // AES-256-GCM encrypted JSON: { clientSecret: string, ... }
+  // JSON-shape so we can add jwks/refresh-token storage without migrations.
+  encryptedSecrets    Json
+  // Group claim name → BreachLens role. E.g. { "devsecops-admins": "ADMIN" }.
+  // The OIDC strategy reads this on each login; first match wins, defaults
+  // to defaultRole if no claim matches.
+  groupRoleMapping    Json     @default("{}")
+  defaultRole         Role     @default(DEVELOPER)
+  // Operator switch — disable SSO without losing config (e.g. during an
+  // IdP outage or migration). When false, `/auth/sso/*` returns 503 for
+  // this org and only GitHub OAuth works.
+  isActive            Boolean  @default(true)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
 }
 
 // Pending org invitations matched by GitHub username on next OAuth login.

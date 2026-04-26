@@ -1,15 +1,16 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Settings, Github, ShieldCheck } from "lucide-react";
-import { integrationsApi, aiProvidersApi } from "../lib/api";
+import { integrationsApi, aiProvidersApi, ssoApi } from "../lib/api";
 import { useAuth } from "../hooks/useAuth";
 import { useToast } from "../hooks/useToast";
 import AIProvidersTab from "../components/settings/AIProvidersTab";
 import PoliciesTab from "../components/settings/PoliciesTab";
 import AuditLogTab from "../components/settings/AuditLogTab";
 import TeamTab from "../components/settings/TeamTab";
+import SSOTab from "../components/settings/SSOTab";
 
-type Tab = "github" | "team" | "ai" | "policies" | "jira" | "slack" | "teams" | "audit";
+type Tab = "github" | "team" | "sso" | "ai" | "policies" | "jira" | "slack" | "teams" | "audit";
 
 function SaveButton({ isPending, saved }: { isPending: boolean; saved: boolean }) {
   return (
@@ -371,6 +372,7 @@ function TeamsTab() {
 const TABS: { id: Tab; label: string }[] = [
   { id: "github",   label: "GitHub" },
   { id: "team",     label: "Team" },
+  { id: "sso",      label: "SSO" },
   { id: "ai",       label: "AI Providers" },
   { id: "policies", label: "Policies" },
   { id: "jira",     label: "Jira" },
@@ -389,9 +391,12 @@ export default function SettingsPage() {
   const { data: teamsData }     = useQuery({ queryKey: ["integrations", "teams"], queryFn: integrationsApi.getTeams, retry: false });
   const { data: aiProviders = [] } = useQuery({ queryKey: ["ai-providers"], queryFn: aiProvidersApi.list, retry: false });
 
+  const { data: ssoData } = useQuery({ queryKey: ["sso"], queryFn: ssoApi.get, retry: false });
+
   const connected: Record<Tab, boolean> = {
     github:   true,   // GitHub is always connected (OAuth session)
     team:     false,  // No "connected" dot — always present
+    sso:      !!ssoData?.isActive,
     ai:       aiProviders.length > 0,
     policies: false,  // No "connected" dot for policies
     jira:     !!jiraData,
@@ -442,6 +447,7 @@ export default function SettingsPage() {
 
           {activeTab === "github"   && <GitHubTab />}
           {activeTab === "team"     && <TeamTab />}
+          {activeTab === "sso"      && <SSOTab />}
           {activeTab === "ai"       && <AIProvidersTab />}
           {activeTab === "policies" && <PoliciesTab />}
           {activeTab === "jira"     && <JiraTab />}
