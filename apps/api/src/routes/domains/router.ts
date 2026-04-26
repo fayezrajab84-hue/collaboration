@@ -4,6 +4,7 @@ import axios from "axios";
 import { requireAuth } from "../../middleware/requireAuth.js";
 import { requireRole } from "../../middleware/requireRole.js";
 import prisma from "../../db.js";
+import { getActiveMembership } from "../../services/activeOrgService.js";
 import * as audit from "../../services/auditService.js";
 import { scoreTarget } from "../../services/riskScoringService.js";
 import { config } from "../../config.js";
@@ -37,7 +38,7 @@ const updateDomainSchema = z.object({
 router.get("/", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.json([]); return; }
 
     const [domains, countRows, authRows, specRows, recordingRows] = await Promise.all([
@@ -85,7 +86,7 @@ router.post("/", async (req, res, next) => {
   try {
     const body = createDomainSchema.parse(req.body);
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.status(400).json({ error: "No organization found" }); return; }
 
     const domain = await prisma.domain.create({
@@ -99,7 +100,7 @@ router.post("/", async (req, res, next) => {
 router.get("/:id", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     const domain = await prisma.domain.findFirst({
       where: { id: req.params["id"], orgId: member?.orgId },
     });
@@ -113,7 +114,7 @@ router.patch("/:id", async (req, res, next) => {
   try {
     const body = updateDomainSchema.parse(req.body);
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     const domain = await prisma.domain.findFirst({
       where: { id: req.params["id"], orgId: member?.orgId },
     });
@@ -154,7 +155,7 @@ router.post("/:id/authorize", async (req, res, next) => {
     const { confirmed } = z.object({ confirmed: z.literal(true) }).parse(req.body);
     if (!confirmed) { res.status(400).json({ error: "confirmed must be true" }); return; }
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     const domain = await prisma.domain.findFirst({ where: { id: req.params["id"], orgId: member?.orgId } });
     if (!domain) { res.status(404).json({ error: "Domain not found" }); return; }
     const updated = await prisma.domain.update({
@@ -176,7 +177,7 @@ function isConnectionError(err: unknown): boolean {
 router.post("/:id/recon", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     const domain = await prisma.domain.findFirst({ where: { id: req.params["id"], orgId: member?.orgId } });
     if (!domain) { res.status(404).json({ error: "Domain not found" }); return; }
 
@@ -241,7 +242,7 @@ router.post("/:id/recon", async (req, res, next) => {
 router.get("/:id/subdomains", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     const domain = await prisma.domain.findFirst({ where: { id: req.params["id"], orgId: member?.orgId } });
     if (!domain) { res.status(404).json({ error: "Domain not found" }); return; }
     const subdomains = await prisma.subdomainDiscovery.findMany({
@@ -256,7 +257,7 @@ router.patch("/:id/subdomains/:subId", async (req, res, next) => {
   try {
     const { includedInScan } = z.object({ includedInScan: z.boolean() }).parse(req.body);
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     const domain = await prisma.domain.findFirst({ where: { id: req.params["id"], orgId: member?.orgId } });
     if (!domain) { res.status(404).json({ error: "Domain not found" }); return; }
     const sub = await prisma.subdomainDiscovery.findFirst({
@@ -281,7 +282,7 @@ router.post("/:id/pentest", async (req, res, next) => {
     }).parse(req.body);
 
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     const domain = await prisma.domain.findFirst({
       where: { id: req.params["id"], orgId: member?.orgId },
       include: { authConfig: true },
@@ -328,7 +329,7 @@ router.post("/:id/pentest", async (req, res, next) => {
 router.post("/:id/scan", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     const domain = await prisma.domain.findFirst({
       where: { id: req.params["id"], orgId: member?.orgId },
       include: { authConfig: true },
@@ -396,7 +397,7 @@ const authConfigSchema = z.object({
 router.get("/:id/auth", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     const domain = await prisma.domain.findFirst({ where: { id: req.params["id"], orgId: member?.orgId } });
     if (!domain) { res.status(404).json({ error: "Domain not found" }); return; }
 
@@ -432,7 +433,7 @@ router.put("/:id/auth", async (req, res, next) => {
   try {
     const body = authConfigSchema.parse(req.body);
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     const domain = await prisma.domain.findFirst({ where: { id: req.params["id"], orgId: member?.orgId } });
     if (!domain) { res.status(404).json({ error: "Domain not found" }); return; }
 
@@ -502,7 +503,7 @@ router.put("/:id/auth", async (req, res, next) => {
 router.delete("/:id/auth", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     const domain = await prisma.domain.findFirst({ where: { id: req.params["id"], orgId: member?.orgId } });
     if (!domain) { res.status(404).json({ error: "Domain not found" }); return; }
 
@@ -515,7 +516,7 @@ router.delete("/:id/auth", async (req, res, next) => {
 router.post("/:id/risk-score", async (req, res, next) => {
   try {
     const user   = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     const target = await prisma.domain.findFirst({ where: { id: req.params["id"], orgId: member?.orgId } });
     if (!target) { res.status(404).json({ error: "Domain not found" }); return; }
     await scoreTarget("DOMAIN", target.id);
@@ -535,7 +536,7 @@ const upsertApiSpec = z.object({
 router.get("/:id/apispec", requireAuth, async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.status(403).json({ error: "Forbidden" }); return; }
 
     const spec = await prisma.domainApiSpec.findUnique({ where: { domainId: req.params.id } });
@@ -547,7 +548,7 @@ router.get("/:id/apispec", requireAuth, async (req, res, next) => {
 router.put("/:id/apispec", requireAuth, async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.status(403).json({ error: "Forbidden" }); return; }
 
     const body = upsertApiSpec.parse(req.body);
@@ -582,7 +583,7 @@ router.put("/:id/apispec", requireAuth, async (req, res, next) => {
 router.post("/:id/apispec/import", requireAuth, async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.status(403).json({ error: "Forbidden" }); return; }
 
     const filename = String(req.query["filename"] ?? "openapi.yaml").slice(0, 255);
@@ -630,7 +631,7 @@ router.post("/:id/apispec/import", requireAuth, async (req, res, next) => {
 router.delete("/:id/apispec", requireAuth, async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.status(403).json({ error: "Forbidden" }); return; }
 
     await prisma.domainApiSpec.deleteMany({ where: { domainId: req.params.id } });
@@ -655,7 +656,7 @@ router.get("/_recording/zap-ca.cer", async (_req, res, next) => {
 router.post("/:id/recording/start", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.status(403).json({ error: "Forbidden" }); return; }
     const result = await recording.start({
       orgId:    member.orgId,
@@ -679,7 +680,7 @@ router.post("/:id/recording/start", async (req, res, next) => {
 router.get("/:id/recording/status", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.status(403).json({ error: "Forbidden" }); return; }
     const result = await recording.status(member.orgId, req.params["id"]!);
     res.json(result);  // null when no active session — UI shows "start" state
@@ -689,7 +690,7 @@ router.get("/:id/recording/status", async (req, res, next) => {
 router.post("/:id/recording/scan", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.status(403).json({ error: "Forbidden" }); return; }
     const result = await recording.runScan(member.orgId, req.params["id"]!);
     await audit.log({
@@ -708,7 +709,7 @@ router.post("/:id/recording/scan", async (req, res, next) => {
 router.post("/:id/recording/promote", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.status(403).json({ error: "Forbidden" }); return; }
     const depth =
       req.body?.depth === "AGGRESSIVE" ? "AGGRESSIVE" :
@@ -731,7 +732,7 @@ router.post("/:id/recording/promote", async (req, res, next) => {
 router.post("/:id/recording/stop", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.status(403).json({ error: "Forbidden" }); return; }
     const result = await recording.stop(member.orgId, req.params["id"]!);
     await audit.log({

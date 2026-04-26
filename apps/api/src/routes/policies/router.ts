@@ -5,6 +5,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import prisma from "../../db.js";
+import { getActiveMembership } from "../../services/activeOrgService.js";
 import { requireAuth } from "../../middleware/requireAuth.js";
 import { requireRole } from "../../middleware/requireRole.js";
 
@@ -35,7 +36,7 @@ const upsertSchema = z.object({
 router.get("/", requireAuth, async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.json([]); return; }
     const rows = await prisma.policy.findMany({
       where: { orgId: member.orgId },
@@ -50,7 +51,7 @@ router.get("/", requireAuth, async (req, res, next) => {
 router.get("/:id", requireAuth, async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.status(404).json({ error: "not found" }); return; }
     const policy = await prisma.policy.findFirst({
       where: { id: req.params.id, orgId: member.orgId },
@@ -66,7 +67,7 @@ router.post("/", requireRole("ADMIN"), async (req, res, next) => {
   try {
     const body   = upsertSchema.parse(req.body);
     const user   = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.status(403).json({ error: "no org" }); return; }
 
     // If marking this policy as default, clear any other default first
@@ -104,7 +105,7 @@ router.put("/:id", requireRole("ADMIN"), async (req, res, next) => {
   try {
     const body   = upsertSchema.parse(req.body);
     const user   = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.status(403).json({ error: "no org" }); return; }
 
     const existing = await prisma.policy.findFirst({
@@ -149,7 +150,7 @@ router.put("/:id", requireRole("ADMIN"), async (req, res, next) => {
 router.delete("/:id", requireRole("ADMIN"), async (req, res, next) => {
   try {
     const user   = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.status(403).json({ error: "no org" }); return; }
     await prisma.policy.deleteMany({
       where: { id: req.params.id, orgId: member.orgId },

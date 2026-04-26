@@ -20,6 +20,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { Role } from "@prisma/client";
 import prisma from "../../db.js";
+import { getActiveMembership } from "../../services/activeOrgService.js";
 import { requireAuth } from "../../middleware/requireAuth.js";
 import { requireRole } from "../../middleware/requireRole.js";
 import * as audit from "../../services/auditService.js";
@@ -58,7 +59,7 @@ async function ownerCount(orgId: string): Promise<number> {
 router.get("/", requireAuth, async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.json({ members: [] }); return; }
 
     const members = await prisma.organizationMember.findMany({
@@ -231,6 +232,16 @@ router.post("/invitations", requireRole("ADMIN"), async (req, res, next) => {
         invitedById:    actor.id,
         expiresAt,
       },
+    });
+
+    // Inviting someone is an explicit "this org is shared, not my personal
+    // sandbox" signal. Promote PERSONAL → TEAM so getActiveMembership's
+    // type-based ordering can prefer this org over an invitee's auto-personal
+    // sandbox. updateMany + where:{type:PERSONAL} is idempotent — already-TEAM
+    // orgs are skipped silently.
+    await prisma.organization.updateMany({
+      where: { id: req.orgId!, type: "PERSONAL" },
+      data:  { type: "TEAM" },
     });
 
     await audit.log({

@@ -11,6 +11,7 @@
  */
 import type { Request, RequestHandler } from "express";
 import prisma from "../db.js";
+import { getActiveMembership } from "../services/activeOrgService.js";
 import { ROLE_RANK, type Role } from "../services/rbac.js";
 
 declare module "express-serve-static-core" {
@@ -28,7 +29,7 @@ export function requireRole(minRole: Role): RequestHandler {
         return;
       }
       const user = req.user as { id: string };
-      const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+      const member = await getActiveMembership(req);
       if (!member) {
         res.status(403).json({ error: "No organization membership" });
         return;

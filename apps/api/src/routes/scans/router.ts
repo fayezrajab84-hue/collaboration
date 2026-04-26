@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { requireAuth } from "../../middleware/requireAuth.js";
 import prisma from "../../db.js";
+import { getActiveMembership } from "../../services/activeOrgService.js";
 import { addClient, removeClient, emitStatusChange, emit, setLatestProgress, getLatestProgress } from "../../services/sseService.js";
 import { scanQueues } from "../../queues/definitions.js";
 import { generateScanSummary } from "../../services/scanSummaryService.js";
@@ -59,7 +60,7 @@ router.use(requireAuth);
 router.get("/", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.json({ data: [], total: 0 }); return; }
 
     const page = Math.max(1, parseInt(req.query["page"] as string || "1"));
@@ -103,7 +104,7 @@ router.get("/", async (req, res, next) => {
 router.get("/:id", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     const scan = await prisma.scanJob.findFirst({
       where: { id: req.params["id"], orgId: member?.orgId },
       include: {
@@ -183,7 +184,7 @@ router.get("/:id", async (req, res, next) => {
 router.get("/:id/diff", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.status(403).json({ error: "Forbidden" }); return; }
 
     const scanB = await prisma.scanJob.findFirst({
@@ -507,7 +508,7 @@ router.get("/:id/diff", async (req, res, next) => {
 router.post("/:id/cancel", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     const scan = await prisma.scanJob.findFirst({
       where: { id: req.params["id"], orgId: member?.orgId },
     });
@@ -555,7 +556,7 @@ router.post("/:id/cancel", async (req, res, next) => {
 router.delete("/:id", async (req, res, next) => {
   try {
     const user   = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     const scan   = await prisma.scanJob.findFirst({
       where: { id: req.params["id"], orgId: member?.orgId },
     });
@@ -583,7 +584,7 @@ router.delete("/", async (req, res, next) => {
       return;
     }
     const user   = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.json({ count: 0 }); return; }
 
     const { count } = await prisma.scanJob.deleteMany({
@@ -606,7 +607,7 @@ router.delete("/", async (req, res, next) => {
 router.post("/:id/summary", async (req, res, next) => {
   try {
     const user   = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     const scan   = await prisma.scanJob.findFirst({
       where: { id: req.params["id"], orgId: member?.orgId },
     });
@@ -632,7 +633,7 @@ router.post("/:id/summary", async (req, res, next) => {
 router.get("/:id/events", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     const scan = await prisma.scanJob.findFirst({
       where: { id: req.params["id"], orgId: member?.orgId },
     });

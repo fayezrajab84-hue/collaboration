@@ -4,6 +4,7 @@ import { z } from "zod";
 import { requireAuth } from "../../middleware/requireAuth.js";
 import { requireRole } from "../../middleware/requireRole.js";
 import prisma from "../../db.js";
+import { getActiveMembership } from "../../services/activeOrgService.js";
 import { config } from "../../config.js";
 import { analyseFinding } from "../../services/aiService.js";
 import { getOrgFindingGroups, generateGroupInsight } from "../../services/findingGroupService.js";
@@ -57,7 +58,7 @@ function applyLegacySecretFilter(where: Record<string, unknown>, includeLegacy: 
 router.get("/", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.json({ data: [], total: 0 }); return; }
 
     const q = req.query;
@@ -102,7 +103,7 @@ router.get("/", async (req, res, next) => {
     if (repoIds)      targetOr.push({ repositoryId: { in: repoIds } });
     if (containerIds) targetOr.push({ containerId:  { in: containerIds } });
     if (domainIds)    targetOr.push({ domainId:     { in: domainIds } });
-    if (targetOr.length === 1)      andClauses.push(targetOr[0]);
+    if (targetOr.length === 1)      andClauses.push(targetOr[0]!);
     else if (targetOr.length > 1)   andClauses.push({ OR: targetOr });
 
     if (q["search"]) {
@@ -129,7 +130,7 @@ router.get("/", async (req, res, next) => {
           case "untriaged": aiOr.push({ AND: [{ aiAnalysedAt: null }, { aiFixSuggestedAt: null }] }); break;
         }
       }
-      if (aiOr.length === 1)     andClauses.push(aiOr[0]);
+      if (aiOr.length === 1)     andClauses.push(aiOr[0]!);
       else if (aiOr.length > 1)  andClauses.push({ OR: aiOr });
     }
 
@@ -183,7 +184,7 @@ router.get("/", async (req, res, next) => {
 router.get("/groups", async (req, res, next) => {
   try {
     const user   = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.json([]); return; }
     const groups = await getOrgFindingGroups(member.orgId);
     res.json(groups);
@@ -196,7 +197,7 @@ router.post("/groups/insight", async (req, res, next) => {
     const { groupKey } = req.body as { groupKey?: string };
     if (!groupKey) { res.status(400).json({ error: "groupKey required" }); return; }
     const user   = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.status(403).json({ error: "No organization" }); return; }
     const insight = await generateGroupInsight(member.orgId, groupKey);
     res.json({ insight });
@@ -204,18 +205,41 @@ router.post("/groups/insight", async (req, res, next) => {
 });
 
 // Dashboard summary  (must come before /:id)
+//
+// Optional `?scanType=A,B,C` filter — applied to severityCounts, statusCounts
+// and confidenceCounts so the dashboard can compute per-tab (Code vs Web)
+// breakdowns from a single endpoint. scanTypeCounts itself stays unfiltered
+// because it's the source of truth used to render those very tab counts on
+// every page (and filtering it would be circular).
 router.get("/summary/stats", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.json({}); return; }
+
+    // Reuse the same multi-value parser shape as the list endpoint: accepts
+    // comma-separated, repeated, or single-value query strings.
+    const raw = req.query["scanType"];
+    const scanTypeFilter: string[] | null = (() => {
+      if (raw == null || raw === "") return null;
+      const arr = Array.isArray(raw) ? raw : [raw];
+      const flat = arr
+        .flatMap((x) => (typeof x === "string" ? x.split(",") : []))
+        .map((s) => s.trim())
+        .filter(Boolean);
+      return flat.length ? flat : null;
+    })();
+
+    const scopedWhere: Record<string, unknown> = { orgId: member.orgId };
+    if (scanTypeFilter) scopedWhere["scanType"] = { in: scanTypeFilter };
 
     const [severityCounts, scanTypeCounts, statusCounts, confidenceCounts] = await Promise.all([
       prisma.finding.groupBy({
         by: ["severity"],
-        where: { orgId: member.orgId, status: { notIn: ["FALSE_POSITIVE", "IGNORED"] } },
+        where: { ...scopedWhere, status: { notIn: ["FALSE_POSITIVE", "IGNORED"] } },
         _count: true,
       }),
+      // scanTypeCounts is intentionally NOT scoped — see header comment.
       prisma.finding.groupBy({
         by: ["scanType"],
         where: { orgId: member.orgId },
@@ -223,12 +247,12 @@ router.get("/summary/stats", async (req, res, next) => {
       }),
       prisma.finding.groupBy({
         by: ["status"],
-        where: { orgId: member.orgId },
+        where: scopedWhere,
         _count: true,
       }),
       prisma.finding.groupBy({
         by: ["confidence"],
-        where: { orgId: member.orgId, status: { notIn: ["FALSE_POSITIVE", "IGNORED"] } },
+        where: { ...scopedWhere, status: { notIn: ["FALSE_POSITIVE", "IGNORED"] } },
         _count: true,
       }),
     ]);
@@ -242,7 +266,7 @@ router.get("/summary/stats", async (req, res, next) => {
 router.get("/summary/top-targets", async (req, res, next) => {
   try {
     const user   = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.json([]); return; }
 
     const limit = Math.min(10, parseInt(req.query["limit"] as string || "5"));
@@ -325,7 +349,7 @@ router.get("/summary/top-targets", async (req, res, next) => {
 router.get("/summary/top-rules", async (req, res, next) => {
   try {
     const user   = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.json([]); return; }
 
     const limit = Math.min(20, parseInt(req.query["limit"] as string || "5"));
@@ -367,7 +391,7 @@ router.get("/summary/top-rules", async (req, res, next) => {
 router.get("/export.csv", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.status(403).send("Forbidden"); return; }
 
     const q = req.query;
@@ -400,7 +424,7 @@ router.get("/export.csv", async (req, res, next) => {
     if (repoIds)      targetOr.push({ repositoryId: { in: repoIds } });
     if (containerIds) targetOr.push({ containerId:  { in: containerIds } });
     if (domainIds)    targetOr.push({ domainId:     { in: domainIds } });
-    if (targetOr.length === 1)     andClauses.push(targetOr[0]);
+    if (targetOr.length === 1)     andClauses.push(targetOr[0]!);
     else if (targetOr.length > 1)  andClauses.push({ OR: targetOr });
 
     if (q["search"]) {
@@ -423,7 +447,7 @@ router.get("/export.csv", async (req, res, next) => {
           case "untriaged": aiOr.push({ AND: [{ aiAnalysedAt: null }, { aiFixSuggestedAt: null }] }); break;
         }
       }
-      if (aiOr.length === 1)     andClauses.push(aiOr[0]);
+      if (aiOr.length === 1)     andClauses.push(aiOr[0]!);
       else if (aiOr.length > 1)  andClauses.push({ OR: aiOr });
     }
 
@@ -474,7 +498,7 @@ router.get("/export.csv", async (req, res, next) => {
 router.get("/:id", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     const finding = await prisma.finding.findFirst({
       where: { id: req.params["id"], orgId: member?.orgId },
       include: {
@@ -496,7 +520,7 @@ router.get("/:id", async (req, res, next) => {
 router.get("/:id/http-message/:messageId", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.status(403).json({ error: "Forbidden" }); return; }
 
     // Verify the finding belongs to this org before proxying.
@@ -732,7 +756,7 @@ router.patch("/:id", requireRole("SECURITY"), async (req, res, next) => {
 router.post("/:id/verify", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     const finding = await prisma.finding.findFirst({
       where: { id: req.params["id"], orgId: member?.orgId },
       include: { domain: true, repository: true, container: true },
@@ -800,7 +824,7 @@ router.post("/:id/verify", async (req, res, next) => {
 router.post("/:id/analyse", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     const finding = await prisma.finding.findFirst({
       where: { id: req.params["id"], orgId: member?.orgId },
     });
@@ -821,7 +845,7 @@ router.post("/:id/analyse", async (req, res, next) => {
 router.post("/:id/check-fp", async (req, res, next) => {
   try {
     const user   = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     const finding = await prisma.finding.findFirst({
       where: { id: req.params["id"], orgId: member?.orgId },
     });
@@ -841,7 +865,7 @@ router.post("/:id/check-fp", async (req, res, next) => {
 router.post("/:id/fix", async (req, res, next) => {
   try {
     const user    = req.user as { id: string };
-    const member  = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member  = await getActiveMembership(req);
     const finding = await prisma.finding.findFirst({
       where: { id: req.params["id"], orgId: member?.orgId },
     });

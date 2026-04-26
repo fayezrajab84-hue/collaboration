@@ -8,10 +8,11 @@
  * POST /api/reports/ai-generate  — legacy AI streaming security report (SSE)
  */
 
-import { Router }       from "express";
+import { Router, type Request } from "express";
 import { z }            from "zod";
 import { requireAuth }  from "../../middleware/requireAuth.js";
 import prisma           from "../../db.js";
+import { getActiveMembership } from "../../services/activeOrgService.js";
 import { logger }       from "../../logger.js";
 import { streamSecurityReport }  from "../../services/reportService.js";
 import { generateTargetReport }  from "../../services/reportHtmlService.js";
@@ -21,8 +22,8 @@ router.use(requireAuth);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-async function getOrgId(userId: string): Promise<string | null> {
-  const m = await prisma.organizationMember.findFirst({ where: { userId } });
+async function getOrgId(req: Request): Promise<string | null> {
+  const m = await getActiveMembership(req);
   return m?.orgId ?? null;
 }
 
@@ -30,7 +31,7 @@ async function getOrgId(userId: string): Promise<string | null> {
 
 router.get("/", async (req, res, next) => {
   try {
-    const orgId = await getOrgId((req.user as { id: string }).id);
+    const orgId = await getOrgId(req);
     if (!orgId) { res.status(403).json({ error: "No organisation" }); return; }
 
     const page  = Math.max(1, Number(req.query["page"]  ?? 1));
@@ -66,7 +67,7 @@ router.get("/", async (req, res, next) => {
 
 router.get("/:id/html", async (req, res, next) => {
   try {
-    const orgId = await getOrgId((req.user as { id: string }).id);
+    const orgId = await getOrgId(req);
     if (!orgId) { res.status(403).json({ error: "No organisation" }); return; }
 
     const report = await prisma.report.findFirst({
@@ -89,7 +90,7 @@ router.get("/:id/html", async (req, res, next) => {
 
 router.delete("/:id", async (req, res, next) => {
   try {
-    const orgId = await getOrgId((req.user as { id: string }).id);
+    const orgId = await getOrgId(req);
     if (!orgId) { res.status(403).json({ error: "No organisation" }); return; }
 
     const report = await prisma.report.findFirst({ where: { id: req.params["id"], orgId } });
@@ -106,7 +107,7 @@ const GenerateSchema = z.object({ scanJobId: z.string().min(1) });
 
 router.post("/generate", async (req, res, next) => {
   try {
-    const orgId = await getOrgId((req.user as { id: string }).id);
+    const orgId = await getOrgId(req);
     if (!orgId) { res.status(403).json({ error: "No organisation" }); return; }
 
     const parse = GenerateSchema.safeParse(req.body);
@@ -139,7 +140,7 @@ router.post("/generate", async (req, res, next) => {
 router.post("/ai-generate", async (req, res, next) => {
   try {
     const user   = req.user as { id: string };
-    const orgId  = await getOrgId(user.id);
+    const orgId  = await getOrgId(req);
     if (!orgId) { res.status(403).json({ error: "No organization found" }); return; }
 
     res.setHeader("Content-Type",      "text/event-stream");

@@ -2,6 +2,7 @@ import { Router } from "express";
 import { requireAuth } from "../../middleware/requireAuth.js";
 import { requireRole } from "../../middleware/requireRole.js";
 import prisma from "../../db.js";
+import { getActiveMembership } from "../../services/activeOrgService.js";
 import * as audit from "../../services/auditService.js";
 import * as gh from "../../github/client.js";
 import { createRepoSchema, updateRepoSchema, triggerScanSchema } from "./validators.js";
@@ -19,7 +20,7 @@ router.use(requireAuth);
 router.get("/", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.json([]); return; }
 
     const [repos, countRows] = await Promise.all([
@@ -63,7 +64,7 @@ router.post("/", async (req, res, next) => {
     const dbUser = await prisma.user.findUnique({ where: { id: user.id } });
     if (!dbUser) { res.status(404).json({ error: "User not found" }); return; }
 
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.status(400).json({ error: "No organization found" }); return; }
 
     // Verify repo exists & user has access
@@ -117,7 +118,7 @@ router.get("/github", async (req, res, next) => {
     const user   = req.user as { id: string };
     const dbUser = await prisma.user.findUnique({ where: { id: user.id } });
     if (!dbUser) { res.status(404).json({ error: "User not found" }); return; }
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.status(400).json({ error: "No organization found" }); return; }
 
     const page = Math.max(1, parseInt((req.query["page"] as string) || "1", 10));
@@ -147,7 +148,7 @@ router.get("/github", async (req, res, next) => {
 router.get("/:id", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     const repo = await prisma.repository.findFirst({
       where: { id: req.params["id"], orgId: member?.orgId },
     });
@@ -161,7 +162,7 @@ router.patch("/:id", async (req, res, next) => {
   try {
     const body = updateRepoSchema.parse(req.body);
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     const repo = await prisma.repository.findFirst({
       where: { id: req.params["id"], orgId: member?.orgId },
     });
@@ -200,7 +201,7 @@ router.post("/:id/scan", async (req, res, next) => {
   try {
     const body = triggerScanSchema.parse(req.body);
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     const repo = await prisma.repository.findFirst({
       where: { id: req.params["id"], orgId: member?.orgId },
     });
@@ -230,7 +231,7 @@ router.post("/:id/scan", async (req, res, next) => {
 router.post("/:id/risk-score", async (req, res, next) => {
   try {
     const user   = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     const repo   = await prisma.repository.findFirst({ where: { id: req.params["id"], orgId: member?.orgId } });
     if (!repo) { res.status(404).json({ error: "Repository not found" }); return; }
     await scoreTarget("REPOSITORY", repo.id);
@@ -247,7 +248,7 @@ router.post("/:id/risk-score", async (req, res, next) => {
 router.get("/:id/sbom", async (req, res, next) => {
   try {
     const user   = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     const repo   = await prisma.repository.findFirst({
       where: { id: req.params["id"], orgId: member?.orgId },
     });

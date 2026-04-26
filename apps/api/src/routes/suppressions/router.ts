@@ -5,6 +5,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import prisma from "../../db.js";
+import { getActiveMembership } from "../../services/activeOrgService.js";
 import { requireAuth } from "../../middleware/requireAuth.js";
 import { requireRole } from "../../middleware/requireRole.js";
 import * as suppressions from "../../services/suppressionService.js";
@@ -22,7 +23,7 @@ const createSchema = z.object({
 router.get("/", requireAuth, async (req, res, next) => {
   try {
     const user   = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.json([]); return; }
     const active = req.query["active"] === "true";
     const rows   = await suppressions.list(member.orgId, { active });

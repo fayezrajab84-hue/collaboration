@@ -17,11 +17,12 @@
  * encrypted via encryptionService and never returned to clients.
  */
 
-import { Router } from "express";
+import { Router, type Request } from "express";
 import { z } from "zod";
 import { AIProviderType, AIServiceName } from "@prisma/client";
 import { requireAuth } from "../../middleware/requireAuth.js";
 import prisma from "../../db.js";
+import { getActiveMembership } from "../../services/activeOrgService.js";
 import { encrypt } from "../../services/encryptionService.js";
 import { invokeAI, AIError } from "../../services/aiClient.js";
 import * as audit from "../../services/auditService.js";
@@ -30,8 +31,8 @@ import { logger } from "../../logger.js";
 const router = Router();
 router.use(requireAuth);
 
-async function getOrgId(userId: string): Promise<string | null> {
-  const member = await prisma.organizationMember.findFirst({ where: { userId } });
+async function getOrgId(req: Request): Promise<string | null> {
+  const member = await getActiveMembership(req);
   return member?.orgId ?? null;
 }
 
@@ -51,7 +52,7 @@ const upsertProviderSchema = z.object({
 router.get("/", async (req, res, next) => {
   try {
     const user  = req.user as { id: string };
-    const orgId = await getOrgId(user.id);
+    const orgId = await getOrgId(req);
     if (!orgId) { res.json([]); return; }
 
     const rows = await prisma.aIProvider.findMany({
@@ -78,7 +79,7 @@ router.put("/:type", async (req, res, next) => {
     const type  = providerTypeSchema.parse(req.params["type"]);
     const body  = upsertProviderSchema.parse(req.body);
     const user  = req.user as { id: string };
-    const orgId = await getOrgId(user.id);
+    const orgId = await getOrgId(req);
     if (!orgId) { res.status(400).json({ error: "No organization" }); return; }
 
     // Look up existing row first — apiKey is only required on first-time create.
@@ -150,7 +151,7 @@ router.delete("/:type", async (req, res, next) => {
   try {
     const type  = providerTypeSchema.parse(req.params["type"]);
     const user  = req.user as { id: string };
-    const orgId = await getOrgId(user.id);
+    const orgId = await getOrgId(req);
     if (orgId) {
       const result = await prisma.aIProvider.deleteMany({ where: { orgId, type } });
       if (result.count > 0) {
@@ -169,7 +170,7 @@ router.post("/:type/default", async (req, res, next) => {
   try {
     const type  = providerTypeSchema.parse(req.params["type"]);
     const user  = req.user as { id: string };
-    const orgId = await getOrgId(user.id);
+    const orgId = await getOrgId(req);
     if (!orgId) { res.status(400).json({ error: "No organization" }); return; }
 
     const target = await prisma.aIProvider.findUnique({
@@ -196,7 +197,7 @@ router.post("/:type/test", async (req, res, next) => {
   try {
     const type  = providerTypeSchema.parse(req.params["type"]);
     const user  = req.user as { id: string };
-    const orgId = await getOrgId(user.id);
+    const orgId = await getOrgId(req);
     if (!orgId) { res.status(400).json({ error: "No organization" }); return; }
 
     // Pin this round-trip to the requested provider via a temporary routing
@@ -262,7 +263,7 @@ const upsertRoutingSchema = z.object({
 router.get("/routings", async (req, res, next) => {
   try {
     const user  = req.user as { id: string };
-    const orgId = await getOrgId(user.id);
+    const orgId = await getOrgId(req);
     if (!orgId) { res.json([]); return; }
 
     const rows = await prisma.aIServiceRouting.findMany({
@@ -285,7 +286,7 @@ router.put("/routings/:service", async (req, res, next) => {
     const service = serviceNameSchema.parse(req.params["service"]);
     const body    = upsertRoutingSchema.parse(req.body);
     const user    = req.user as { id: string };
-    const orgId   = await getOrgId(user.id);
+    const orgId   = await getOrgId(req);
     if (!orgId) { res.status(400).json({ error: "No organization" }); return; }
 
     // Validate the provider belongs to this org
@@ -313,7 +314,7 @@ router.delete("/routings/:service", async (req, res, next) => {
   try {
     const service = serviceNameSchema.parse(req.params["service"]);
     const user    = req.user as { id: string };
-    const orgId   = await getOrgId(user.id);
+    const orgId   = await getOrgId(req);
     if (orgId) {
       const result = await prisma.aIServiceRouting.deleteMany({ where: { orgId, service } });
       if (result.count > 0) {
@@ -333,7 +334,7 @@ router.delete("/routings/:service", async (req, res, next) => {
 router.get("/usage", async (req, res, next) => {
   try {
     const user  = req.user as { id: string };
-    const orgId = await getOrgId(user.id);
+    const orgId = await getOrgId(req);
     if (!orgId) { res.json({ totals: null, byService: [], byProvider: [] }); return; }
 
     const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);

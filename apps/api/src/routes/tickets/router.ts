@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { requireAuth } from "../../middleware/requireAuth.js";
 import prisma from "../../db.js";
+import { getActiveMembership } from "../../services/activeOrgService.js";
 import { createJiraIssue } from "../../services/jiraService.js";
 import { decrypt } from "../../services/encryptionService.js";
 
@@ -27,7 +28,7 @@ const updateTicketSchema = z.object({
 router.get("/", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.json({ data: [], total: 0 }); return; }
 
     const page = Math.max(1, parseInt(req.query["page"] as string || "1"));
@@ -57,7 +58,7 @@ router.post("/", async (req, res, next) => {
   try {
     const body = createTicketSchema.parse(req.body);
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.status(400).json({ error: "No organization found" }); return; }
 
     // Verify finding belongs to org
@@ -114,7 +115,7 @@ router.post("/", async (req, res, next) => {
 router.get("/:id", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     const ticket = await prisma.ticket.findFirst({
       where: { id: req.params["id"], orgId: member?.orgId },
       include: { finding: true, createdBy: { select: { username: true, avatarUrl: true } } },
@@ -129,7 +130,7 @@ router.patch("/:id", async (req, res, next) => {
   try {
     const body = updateTicketSchema.parse(req.body);
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     const ticket = await prisma.ticket.findFirst({
       where: { id: req.params["id"], orgId: member?.orgId },
     });
@@ -147,7 +148,7 @@ router.patch("/:id", async (req, res, next) => {
 router.delete("/:id", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     const ticket = await prisma.ticket.findFirst({
       where: { id: req.params["id"], orgId: member?.orgId },
     });

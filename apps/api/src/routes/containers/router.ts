@@ -3,6 +3,7 @@ import { z } from "zod";
 import { requireAuth } from "../../middleware/requireAuth.js";
 import { requireRole } from "../../middleware/requireRole.js";
 import prisma from "../../db.js";
+import { getActiveMembership } from "../../services/activeOrgService.js";
 import { triggerScan } from "../../services/scanService.js";
 import { generateContainerSbom } from "../../services/sbomService.js";
 import { scoreTarget } from "../../services/riskScoringService.js";
@@ -26,7 +27,7 @@ const updateContainerSchema = z.object({
 router.get("/", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.json([]); return; }
 
     const [containers, countRows] = await Promise.all([
@@ -64,7 +65,7 @@ router.post("/", async (req, res, next) => {
   try {
     const body = createContainerSchema.parse(req.body);
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.status(400).json({ error: "No organization found" }); return; }
 
     const container = await prisma.container.create({
@@ -78,7 +79,7 @@ router.post("/", async (req, res, next) => {
 router.get("/:id", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     const container = await prisma.container.findFirst({
       where: { id: req.params["id"], orgId: member?.orgId },
     });
@@ -92,7 +93,7 @@ router.patch("/:id", async (req, res, next) => {
   try {
     const body = updateContainerSchema.parse(req.body);
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     const container = await prisma.container.findFirst({
       where: { id: req.params["id"], orgId: member?.orgId },
     });
@@ -133,7 +134,7 @@ router.delete("/:id", requireRole("ADMIN"), async (req, res, next) => {
 router.post("/:id/scan", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     const container = await prisma.container.findFirst({
       where: { id: req.params["id"], orgId: member?.orgId },
     });
@@ -155,7 +156,7 @@ router.post("/:id/scan", async (req, res, next) => {
 router.post("/:id/risk-score", async (req, res, next) => {
   try {
     const user   = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     const target = await prisma.container.findFirst({ where: { id: req.params["id"], orgId: member?.orgId } });
     if (!target) { res.status(404).json({ error: "Container not found" }); return; }
     await scoreTarget("CONTAINER", target.id);
@@ -171,7 +172,7 @@ router.post("/:id/risk-score", async (req, res, next) => {
 router.get("/:id/sbom", async (req, res, next) => {
   try {
     const user      = req.user as { id: string };
-    const member    = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member    = await getActiveMembership(req);
     const container = await prisma.container.findFirst({
       where: { id: req.params["id"], orgId: member?.orgId },
     });

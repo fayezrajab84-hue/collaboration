@@ -9,6 +9,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { requireAuth } from "../../middleware/requireAuth.js";
 import prisma from "../../db.js";
+import { getActiveMembership } from "../../services/activeOrgService.js";
 import { streamChat, buildOrgStats } from "../../services/chatService.js";
 
 const router = Router();
@@ -35,7 +36,7 @@ const chatSchema = z.object({
 router.get("/stats", async (req, res, next) => {
   try {
     const user   = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.json({ totalOpen: 0, critical: 0, high: 0, medium: 0, low: 0 }); return; }
 
     const stats = await buildOrgStats(member.orgId);
@@ -52,7 +53,7 @@ router.get("/stats", async (req, res, next) => {
 router.post("/", async (req, res, next) => {
   try {
     const user   = req.user as { id: string };
-    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    const member = await getActiveMembership(req);
     if (!member) { res.status(403).json({ error: "No organization found" }); return; }
 
     const { message, history } = chatSchema.parse(req.body);

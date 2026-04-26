@@ -1,15 +1,16 @@
-import { Router } from "express";
+import { Router, type Request } from "express";
 import { z } from "zod";
 import { requireAuth } from "../../middleware/requireAuth.js";
 import prisma from "../../db.js";
+import { getActiveMembership } from "../../services/activeOrgService.js";
 import { encrypt, decrypt } from "../../services/encryptionService.js";
 import * as audit from "../../services/auditService.js";
 
 const router = Router();
 router.use(requireAuth);
 
-async function getOrgId(userId: string): Promise<string | null> {
-  const member = await prisma.organizationMember.findFirst({ where: { userId } });
+async function getOrgId(req: Request): Promise<string | null> {
+  const member = await getActiveMembership(req);
   return member?.orgId ?? null;
 }
 
@@ -27,7 +28,7 @@ router.put("/jira", async (req, res, next) => {
   try {
     const body = jiraSchema.parse(req.body);
     const user = req.user as { id: string };
-    const orgId = await getOrgId(user.id);
+    const orgId = await getOrgId(req);
     if (!orgId) { res.status(400).json({ error: "No organization" }); return; }
 
     const encryptedData = {
@@ -57,7 +58,7 @@ router.put("/jira", async (req, res, next) => {
 router.get("/jira", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const orgId = await getOrgId(user.id);
+    const orgId = await getOrgId(req);
     const integration = orgId
       ? await prisma.integration.findUnique({ where: { orgId_type: { orgId, type: "JIRA" } } })
       : null;
@@ -79,7 +80,7 @@ router.get("/jira", async (req, res, next) => {
 router.delete("/jira", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const orgId = await getOrgId(user.id);
+    const orgId = await getOrgId(req);
     if (orgId) {
       const result = await prisma.integration.deleteMany({ where: { orgId, type: "JIRA" } });
       if (result.count > 0) {
@@ -104,7 +105,7 @@ router.put("/slack", async (req, res, next) => {
   try {
     const body = slackSchema.parse(req.body);
     const user = req.user as { id: string };
-    const orgId = await getOrgId(user.id);
+    const orgId = await getOrgId(req);
     if (!orgId) { res.status(400).json({ error: "No organization" }); return; }
 
     const encryptedData = {
@@ -131,7 +132,7 @@ router.put("/slack", async (req, res, next) => {
 router.get("/slack", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const orgId = await getOrgId(user.id);
+    const orgId = await getOrgId(req);
     const integration = orgId
       ? await prisma.integration.findUnique({ where: { orgId_type: { orgId, type: "SLACK" } } })
       : null;
@@ -143,7 +144,7 @@ router.get("/slack", async (req, res, next) => {
 router.delete("/slack", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const orgId = await getOrgId(user.id);
+    const orgId = await getOrgId(req);
     if (orgId) {
       const result = await prisma.integration.deleteMany({ where: { orgId, type: "SLACK" } });
       if (result.count > 0) {
@@ -165,7 +166,7 @@ router.put("/teams", async (req, res, next) => {
   try {
     const body = teamsSchema.parse(req.body);
     const user = req.user as { id: string };
-    const orgId = await getOrgId(user.id);
+    const orgId = await getOrgId(req);
     if (!orgId) { res.status(400).json({ error: "No organization" }); return; }
 
     await prisma.integration.upsert({
@@ -186,7 +187,7 @@ router.put("/teams", async (req, res, next) => {
 router.get("/teams", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const orgId = await getOrgId(user.id);
+    const orgId = await getOrgId(req);
     const integration = orgId
       ? await prisma.integration.findUnique({ where: { orgId_type: { orgId, type: "MICROSOFT_TEAMS" } } })
       : null;
@@ -198,7 +199,7 @@ router.get("/teams", async (req, res, next) => {
 router.delete("/teams", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
-    const orgId = await getOrgId(user.id);
+    const orgId = await getOrgId(req);
     if (orgId) {
       const result = await prisma.integration.deleteMany({ where: { orgId, type: "MICROSOFT_TEAMS" } });
       if (result.count > 0) {
