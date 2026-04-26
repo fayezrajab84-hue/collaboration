@@ -39,25 +39,43 @@
 
 ---
 
-### Phase 22 — Multi-tenancy + enterprise auth 🟨 *(MUST-HAVE, 🚪 biggest GTM unlock, ~1.5–2 weeks remaining)*
+### Phase 22 — Multi-tenancy + enterprise auth ✅ *(MUST-HAVE, 🚪 biggest GTM unlock — SHIPPED)*
 
-**Already shipped (foundation is ~50% done):**
+**Foundation (already in place at session start):**
 
-- ✅ 5-tier `Role` enum (OWNER / ADMIN / SECURITY / DEVELOPER / VIEWER) — richer than the original 3-role plan
+- ✅ 5-tier `Role` enum (OWNER / ADMIN / SECURITY / DEVELOPER / VIEWER)
 - ✅ `OrganizationMember.role` with default DEVELOPER
 - ✅ `requireAuth` + `requireRole(minRole)` middleware
 - ✅ `<Can role="X">` component + `useRole` hook
-- ✅ RBAC enforcement on 13 sensitive routes (repos, containers, domains, findings, policies, suppressions, admin)
+- ✅ RBAC enforcement on 13 sensitive routes
 - ✅ `AuditEvent` model + `auditService.log()` / `listEvents()` functions
 - ✅ Audit logging instrumented in 9 sites across 5 routers
 
-**Remaining work:**
+**Shipped this round:**
 
-- ❌ **PR 1 — Audit log surfacing + coverage** (1–2 days): `GET /api/audit` route (filterable, paginated, CSV export) + Settings → Audit Log tab + backfill `audit.log()` calls in unaudited routers (integrations, aiProviders, recordings, scans)
-- ❌ **PR 2 — Member management** (3–5 days): `GET / POST / PATCH / DELETE /api/orgs/:slug/members[/...]` + Settings → Team tab + invitation flow (GitHub-username-based until SSO lands)
-- ❌ **PR 3 — OIDC SSO** (1–2 weeks): per-org `Organization.ssoConfig` (encrypted), `passport-openidconnect` strategy, JIT user provisioning, role assignment via group claims, Settings → SSO tab. SAML deferred — most modern IdPs (Okta, Azure AD, Google Workspace) speak OIDC.
+- ✅ **PR 1 — Audit log surfacing + coverage** (commit `8327033`): `GET /api/audit` (filterable, paginated, ADMIN+) + `GET /api/audit/export.csv` (RFC 4180, 50k-row cap) + Settings → Audit Log tab + 16 new `audit.log()` call sites across integrations / AI providers / scans / recordings.
+- ✅ **PR 2 — Member management + invitations** (commit `7608980`): new `Invitation` Prisma model + 6 routes (list members, change role, remove member, list/create/revoke invitations) with last-OWNER guards + `passport.ts` invitation acceptance on every login + Settings → Team tab with member table, role dropdowns, GitHub-username invite flow, "no email is sent" out-of-band notification banner.
+- ✅ **PR 3 Slice A — SSO config infra** (commit `d7be957`): `SsoConfig` model (1:1 with Organization, encrypted clientSecret) + `GET / PUT / DELETE /api/sso` + `POST /api/sso/test` (validates IdP discovery doc) + Settings → SSO tab with chip-based domain editor, group → role mapping, brand-indigo styling.
+- ✅ **PR 3 Slice B — OIDC login flow** (commit `d135e4a`): minimal-deps OIDC client (`oidcService.ts`, ~200 LoC, no third-party install) + `/auth/sso/initiate?email=…` + `/auth/sso/callback` + JIT user provisioning + group-claim → role mapping + LoginPage SSO toggle alongside GitHub OAuth.
+- ✅ **PR 3 Slice C — Entra ID polish** (commit `686f9d7`): email fallback chain (email → preferred_username → upn → unique_name) + group overage detection (Entra ≥150 groups) + Provider preset dropdown in Settings (Generic / Entra / Okta / Auth0 / Google / Keycloak) with provider-specific setup notes.
+- ✅ **Brand sweep** (commits `fb86e92` + `5de75d3` + `b88bc01`): legacy teal "Connected" indicators → indigo across Settings sidebar dots, Jira/Slack/Teams Connected pills, Repositories "Added" pill; legacy `text-sm` form font sizing → `text-xs` across all 7 Settings tabs.
 
-**Why:** required to sell into companies with >5 engineers. Without RBAC + SSO, you can't get past procurement. **The single biggest unlock in the entire roadmap.**
+**Why this unblocks revenue:** required to sell into any company with >5 engineers. Without RBAC + SSO, prospects fail the security review at procurement. Now passes.
+
+**Verification status:**
+
+- All routes + UI verified via API curl + browser preview during build
+- OIDC initiate flow validated against real Google discovery URL (302 → standards-compliant authorization URL with `state` + `nonce`)
+- OIDC callback round-trip NOT tested against a live IdP (would need real client registration); first production login is the real test
+- Member invitation acceptance validated by simulating the passport callback's SQL inserts directly (test user `cmfake-invitee-probe` was provisioned and visible in Team tab)
+
+**Slice C / future polish that's NOT in this round:**
+
+- Per-org "require SSO" enforcement (both auth methods always work)
+- Microsoft Graph API for resolving Entra group overage (currently falls back to defaultRole + warning)
+- SSO logout / single-sign-out
+- Real email-based invitations (deferred — depends on email infra; SSO captures email anyway)
+- Audit retention policy / pg_partman integration
 
 ---
 
@@ -187,7 +205,7 @@
 
 | Month | Focus | Phases | Why this slot |
 |---|---|---|---|
-| 1 | **Procurement unlock** | 13 ✅ → **22** | RBAC + SSO + audit log unblocks every >5-engineer sale. Single biggest leverage move. |
+| 1 | **Procurement unlock** | 13 ✅ → **22 ✅** | RBAC + SSO + audit log unblocks every >5-engineer sale. Single biggest leverage move. |
 | 2 | **Auditor transformation** | 15 → 16 | SBOM + compliance dashboards turn "dev tool" into "auditor tool" — 5–10× license value, opens regulated/govt segment |
 | 3 | **Noise reduction + SOC story** | 14 + 23 | Reachability cuts SCA noise (protects renewals); SIEM bridge adds operational lift cheaply |
 | 4 | **Refresh the differentiator + close the fix loop** | 24 + 17 | Pentest depth keeps demos sharp; auto-PRs close the "devs don't fix" gap |
@@ -215,6 +233,6 @@ Two phases also got moved forward against the original sequence:
 - **Proof of Exploit badge** (commit `cacd7c8`) — Phase 24's "verified exploit" half.
 - **Policy engine + PR checks** (commit `9e7ff07`) — building blocks for Phase 17 auto-PRs.
 - **`pentest_full` pipeline** (`apps/scanner/scanners/pentest_full/`) — foundation for Phase 24 chaining.
-- **`AuditEvent` + `auditService` + RBAC middleware + `Role` enum + `<Can>` component** — ~50% of Phase 22 already in place.
+- **Phase 22 (RBAC + audit + members + SSO + Entra polish)** — fully shipped (8327033 / 7608980 / d7be957 / d135e4a / 686f9d7 + brand-sweep polish in fb86e92, 5de75d3, b88bc01).
 - **Wazuh MCP toolkit** — wired in, ready to expose for Phase 23.
 - **`/healthz` deep endpoint** (commit `868e8b2`) — operational readiness for Phase 25 work later.
