@@ -9,7 +9,7 @@ import { scoreTarget } from "../../services/riskScoringService.js";
 import { encrypt } from "../../services/encryptionService.js";
 import { randomBytes } from "crypto";
 import { triggerScan } from "../../services/scanService.js";
-import { generateRepoSbom } from "../../services/sbomService.js";
+import { generateRepoSbom, SBOM_FORMAT_META, type SbomFormat } from "../../services/sbomService.js";
 import type { ScanType } from "@devsecops/types";
 
 const router = Router();
@@ -239,7 +239,11 @@ router.post("/:id/risk-score", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// GET /api/repos/:id/sbom — CycloneDX SBOM download
+// GET /api/repos/:id/sbom?format=cyclonedx|spdx — SBOM download
+//
+// CycloneDX is the default and what most tooling expects. SPDX (ISO/IEC 5962)
+// is offered as an alternate because some procurement reviewers explicitly
+// require it. Both are generated on-demand by Trivy via the scanner service.
 router.get("/:id/sbom", async (req, res, next) => {
   try {
     const user   = req.user as { id: string };
@@ -251,15 +255,34 @@ router.get("/:id/sbom", async (req, res, next) => {
     const dbUser = await prisma.user.findUnique({ where: { id: user.id } });
     if (!dbUser) { res.status(404).json({ error: "User not found" }); return; }
 
+    const formatRaw = String(req.query["format"] ?? "cyclonedx").toLowerCase();
+    if (formatRaw !== "cyclonedx" && formatRaw !== "spdx") {
+      res.status(400).json({ error: "format must be cyclonedx or spdx" });
+      return;
+    }
+    const format = formatRaw as SbomFormat;
+
     const sbom = await generateRepoSbom({
       repoUrl:           repo.url,
       branch:            repo.defaultBranch,
       encryptedGitToken: dbUser.accessToken,
+      format,
     });
 
+    // Audit log — compliance trail of who downloaded which SBOM. Persisted
+    // so SOC 2 / ISO 27001 reviewers can trace SBOM access.
+    if (member?.orgId) {
+      await audit.log({
+        orgId: member.orgId, userId: user.id,
+        action: "sbom.download", resourceType: "Repository", resourceId: repo.id,
+        metadata: { format, repoFullName: repo.fullName, branch: repo.defaultBranch },
+      });
+    }
+
+    const meta     = SBOM_FORMAT_META[format];
     const safeName = repo.fullName.replace(/[^a-zA-Z0-9._-]/g, "_");
-    res.setHeader("Content-Type", "application/vnd.cyclonedx+json");
-    res.setHeader("Content-Disposition", `attachment; filename="${safeName}-sbom.cdx.json"`);
+    res.setHeader("Content-Type",        meta.contentType);
+    res.setHeader("Content-Disposition", `attachment; filename="${safeName}-sbom.${meta.suffix}"`);
     res.send(JSON.stringify(sbom, null, 2));
   } catch (err) { next(err); }
 });

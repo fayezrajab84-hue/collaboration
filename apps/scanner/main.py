@@ -103,12 +103,13 @@ async def run_verify(request: VerifyRequest) -> VerifyResponse:
 @app.post("/sbom")
 async def generate_sbom(request: dict):
     """
-    Generate a CycloneDX SBOM JSON for a repository or a container image.
+    Generate a CycloneDX or SPDX SBOM for a repository or container image.
     Request body:
       - target_type: "REPOSITORY" | "CONTAINER"
+      - format:      "cyclonedx" (default) | "spdx"
       - image_ref:   when CONTAINER
       - repo_url, branch, git_token: when REPOSITORY
-    Returns CycloneDX JSON directly (response is proxied by the API).
+    Returns the SBOM JSON directly (response is proxied by the API).
     """
     import json as _json
     import subprocess as _subprocess
@@ -117,6 +118,14 @@ async def generate_sbom(request: dict):
     target_type = request.get("target_type")
     if target_type not in ("REPOSITORY", "CONTAINER"):
         raise HTTPException(status_code=400, detail="target_type must be REPOSITORY or CONTAINER")
+
+    # Format → Trivy --format value. Both produce JSON; SPDX is the
+    # ISO/IEC 5962 standard, some procurement reviewers require it
+    # over CycloneDX. Default cyclonedx for backwards compat.
+    fmt = (request.get("format") or "cyclonedx").lower()
+    if fmt not in ("cyclonedx", "spdx"):
+        raise HTTPException(status_code=400, detail="format must be cyclonedx or spdx")
+    trivy_format = "spdx-json" if fmt == "spdx" else "cyclonedx"
 
     import tempfile as _tempfile
     import shutil as _shutil
@@ -147,7 +156,7 @@ async def generate_sbom(request: dict):
     # miss jar packages. The 15m timeout accommodates first-run DB downloads.
     common = [
         "--cache-dir", trivy_cache,
-        "--format", "cyclonedx",
+        "--format", trivy_format,
         "--quiet",
         "--timeout", "15m",
     ]

@@ -452,9 +452,13 @@ export const suppressionsApi = {
 
 // ── SBOM ──────────────────────────────────────────────────────────────────
 
+export type SbomFormat = "cyclonedx" | "spdx";
+
 export const sbomApi = {
-  repoUrl:      (id: string) => `/api/repos/${id}/sbom`,
-  containerUrl: (id: string) => `/api/containers/${id}/sbom`,
+  repoUrl:      (id: string, format: SbomFormat = "cyclonedx") =>
+                  `/api/repos/${id}/sbom${format === "spdx" ? "?format=spdx" : ""}`,
+  containerUrl: (id: string, format: SbomFormat = "cyclonedx") =>
+                  `/api/containers/${id}/sbom${format === "spdx" ? "?format=spdx" : ""}`,
 };
 
 // ── Integrations ──────────────────────────────────────────────────────────

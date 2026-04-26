@@ -164,7 +164,10 @@ router.post("/:id/risk-score", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// GET /api/containers/:id/sbom — CycloneDX SBOM download
+// GET /api/containers/:id/sbom?format=cyclonedx|spdx — SBOM download
+//
+// CycloneDX is the default. SPDX (ISO/IEC 5962) offered as an alternate
+// for procurement reviewers that require it.
 router.get("/:id/sbom", async (req, res, next) => {
   try {
     const user      = req.user as { id: string };
@@ -174,10 +177,27 @@ router.get("/:id/sbom", async (req, res, next) => {
     });
     if (!container) { res.status(404).json({ error: "Container not found" }); return; }
 
-    const sbom     = await generateContainerSbom(container.imageRef);
+    const formatRaw = String(req.query["format"] ?? "cyclonedx").toLowerCase();
+    if (formatRaw !== "cyclonedx" && formatRaw !== "spdx") {
+      res.status(400).json({ error: "format must be cyclonedx or spdx" });
+      return;
+    }
+    const format = formatRaw as SbomFormat;
+
+    const sbom = await generateContainerSbom({ imageRef: container.imageRef, format });
+
+    if (member?.orgId) {
+      await audit.log({
+        orgId: member.orgId, userId: user.id,
+        action: "sbom.download", resourceType: "Container", resourceId: container.id,
+        metadata: { format, imageRef: container.imageRef },
+      });
+    }
+
+    const meta     = SBOM_FORMAT_META[format];
     const safeName = container.imageRef.replace(/[^a-zA-Z0-9._-]/g, "_");
-    res.setHeader("Content-Type", "application/vnd.cyclonedx+json");
-    res.setHeader("Content-Disposition", `attachment; filename="${safeName}-sbom.cdx.json"`);
+    res.setHeader("Content-Type",        meta.contentType);
+    res.setHeader("Content-Disposition", `attachment; filename="${safeName}-sbom.${meta.suffix}"`);
     res.send(JSON.stringify(sbom, null, 2));
   } catch (err) { next(err); }
 });

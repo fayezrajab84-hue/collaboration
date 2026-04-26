@@ -206,15 +206,26 @@ export default function ContainersPage() {
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
                       <ScanButton containerId={c.id} />
-                      <a
-                        href={sbomApi.containerUrl(c.id)}
-                        className="flex items-center gap-1 rounded border border-gray-700 bg-gray-800 px-2 py-1 text-xs text-gray-300 hover:border-indigo-600 hover:bg-indigo-900/30 hover:text-indigo-300"
-                        title="Download CycloneDX SBOM (software bill of materials)"
-                        download
-                      >
-                        <FileDown className="h-3 w-3" />
-                        SBOM
-                      </a>
+                      <div className="flex items-center rounded border border-gray-700 bg-gray-800 text-xs text-gray-300 hover:border-indigo-600">
+                        <a
+                          href={sbomApi.containerUrl(c.id, "cyclonedx")}
+                          className="flex items-center gap-1 px-2 py-1 hover:bg-indigo-900/30 hover:text-indigo-300"
+                          title="Download CycloneDX SBOM (software bill of materials, JSON)"
+                          download
+                        >
+                          <FileDown className="h-3 w-3" />
+                          SBOM
+                        </a>
+                        <span className="h-3.5 w-px bg-gray-700" />
+                        <a
+                          href={sbomApi.containerUrl(c.id, "spdx")}
+                          className="px-2 py-1 text-[10px] uppercase tracking-wide text-gray-500 hover:bg-indigo-900/30 hover:text-indigo-300"
+                          title="Download SPDX SBOM (ISO/IEC 5962, JSON)"
+                          download
+                        >
+                          spdx
+                        </a>
+                      </div>
                       <Can role="DEVELOPER">
                         <button onClick={() => setEditContainer(c)} className="text-gray-600 hover:text-indigo-400" title="Edit container">
                           <Pencil className="h-4 w-4" />
