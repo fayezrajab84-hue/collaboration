@@ -198,7 +198,7 @@ export async function exchangeCodeForUserProfile(
         sub:          extractSubject(profile),
         email:        extractEmail(profile),
         name:         typeof profile.name === "string" ? profile.name : undefined,
-        picture:      typeof profile.picture === "string" ? profile.picture : undefined,
+        picture:      extractPicture(profile),
         groups:       undefined,
         groupOverage: true,
       };
@@ -209,9 +209,28 @@ export async function exchangeCodeForUserProfile(
     sub:     extractSubject(profile),
     email:   extractEmail(profile),
     name:    typeof profile.name === "string" ? profile.name : undefined,
-    picture: typeof profile.picture === "string" ? profile.picture : undefined,
+    picture: extractPicture(profile),
     groups,
   };
+}
+
+// Skip picture URLs that aren't anonymously fetchable. Entra returns
+// `https://graph.microsoft.com/v1.0/me/photo/$value` — a Graph endpoint
+// that requires a Bearer access token; <img src> requests it anonymously
+// and gets 401'd, leaving a broken image icon in the sidebar. Other IdPs
+// (Google, GitHub, Auth0) return plain CDN URLs which load fine.
+function extractPicture(profile: Record<string, unknown>): string | undefined {
+  const raw = profile.picture;
+  if (typeof raw !== "string" || !raw) return undefined;
+  try {
+    const host = new URL(raw).hostname.toLowerCase();
+    if (host === "graph.microsoft.com" || host.endsWith(".graph.microsoft.com")) {
+      return undefined;
+    }
+  } catch {
+    return undefined;
+  }
+  return raw;
 }
 
 function extractSubject(profile: Record<string, unknown>): string {
