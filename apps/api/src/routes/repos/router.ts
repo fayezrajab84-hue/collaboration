@@ -9,7 +9,7 @@ import { scoreTarget } from "../../services/riskScoringService.js";
 import { encrypt } from "../../services/encryptionService.js";
 import { randomBytes } from "crypto";
 import { triggerScan } from "../../services/scanService.js";
-import { generateRepoSbom, SBOM_FORMAT_META, type SbomFormat } from "../../services/sbomService.js";
+import { generateRepoSbom, getLatestRepoSbom, SBOM_FORMAT_META, type SbomFormat } from "../../services/sbomService.js";
 import type { ScanType } from "@devsecops/types";
 
 const router = Router();
@@ -262,12 +262,27 @@ router.get("/:id/sbom", async (req, res, next) => {
     }
     const format = formatRaw as SbomFormat;
 
-    const sbom = await generateRepoSbom({
-      repoUrl:           repo.url,
-      branch:            repo.defaultBranch,
-      encryptedGitToken: dbUser.accessToken,
-      format,
-    });
+    // Cache-first (Phase 15 Slice B): serve the persisted SBOM from the most
+    // recent SCA scan when available. Falls back to on-demand generation for
+    // legacy scans + SPDX (we only auto-persist CycloneDX to keep per-scan
+    // Trivy time bounded). The cache hit is the common path for any repo
+    // scanned since this slice landed.
+    let sbom: unknown;
+    let cacheHit = false;
+    let generatedAt: Date | null = null;
+    const cached = await getLatestRepoSbom({ repositoryId: repo.id, format });
+    if (cached) {
+      sbom        = cached.document;
+      cacheHit    = true;
+      generatedAt = cached.generatedAt;
+    } else {
+      sbom = await generateRepoSbom({
+        repoUrl:           repo.url,
+        branch:            repo.defaultBranch,
+        encryptedGitToken: dbUser.accessToken,
+        format,
+      });
+    }
 
     // Audit log — compliance trail of who downloaded which SBOM. Persisted
     // so SOC 2 / ISO 27001 reviewers can trace SBOM access.
@@ -275,7 +290,11 @@ router.get("/:id/sbom", async (req, res, next) => {
       await audit.log({
         orgId: member.orgId, userId: user.id,
         action: "sbom.download", resourceType: "Repository", resourceId: repo.id,
-        metadata: { format, repoFullName: repo.fullName, branch: repo.defaultBranch },
+        metadata: {
+          format, repoFullName: repo.fullName, branch: repo.defaultBranch,
+          source:      cacheHit ? "cache" : "on-demand",
+          generatedAt: generatedAt?.toISOString() ?? null,
+        },
       });
     }
 
@@ -283,6 +302,10 @@ router.get("/:id/sbom", async (req, res, next) => {
     const safeName = repo.fullName.replace(/[^a-zA-Z0-9._-]/g, "_");
     res.setHeader("Content-Type",        meta.contentType);
     res.setHeader("Content-Disposition", `attachment; filename="${safeName}-sbom.${meta.suffix}"`);
+    // Operator-facing breadcrumb so curl + browser DevTools surface whether the
+    // SBOM came from cache or was just generated. Also useful in support cases.
+    res.setHeader("X-Sbom-Source",       cacheHit ? "cache" : "on-demand");
+    if (generatedAt) res.setHeader("X-Sbom-Generated-At", generatedAt.toISOString());
     res.send(JSON.stringify(sbom, null, 2));
   } catch (err) { next(err); }
 });

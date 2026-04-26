@@ -13,6 +13,7 @@ import type { NormalizedFinding, ScanType, TargetType } from "@devsecops/types";
 import type { ScanResult } from "@devsecops/types";
 import { notifyNewFindings } from "../services/notificationService.js";
 import { backfillSnippetsForScanJob } from "../services/sastSnippetService.js";
+import { persistRepoSbom } from "../services/sbomService.js";
 import { generateScanSummary } from "../services/scanSummaryService.js";
 import { scoreTarget } from "../services/riskScoringService.js";
 import { generateTargetReport } from "../services/reportHtmlService.js";
@@ -313,6 +314,36 @@ async function processScanJob(payload: ScanJobPayload) {
         .catch((err: Error) =>
           logger.warn("[sast-snippet] backfill failed", { scanJobId, error: err.message })
         );
+    }
+
+    // ── Phase 15 Slice B: persist CycloneDX SBOM after SCA scans ────────────
+    // Fire-and-forget — don't block scan completion on the second Trivy run.
+    // The download endpoint reads from this cache (instant) and falls back to
+    // on-demand generation when no row exists (legacy scans, SPDX requests).
+    // Per-scan rows enable historical lookup ("BOM at scan T?") and
+    // component-delta tracking. Dedup logic in persistRepoSbom skips inserts
+    // when the BOM is byte-identical to the previous one.
+    if (scanType === "SCA" && targetType === "REPOSITORY") {
+      const repo = await prisma.repository.findUnique({
+        where:  { id: targetId },
+        select: { url: true, defaultBranch: true },
+      });
+      const dbUser = await prisma.user.findFirst({
+        where:  { organizations: { some: { orgId } } },
+        select: { accessToken: true },
+      });
+      if (repo) {
+        persistRepoSbom({
+          orgId,
+          repositoryId:      targetId,
+          scanJobId,
+          repoUrl:           repo.url,
+          branch:            repo.defaultBranch,
+          encryptedGitToken: dbUser?.accessToken ?? null,
+        }).catch((err: Error) =>
+          logger.warn("[sbom] persist failed", { scanJobId, error: err.message })
+        );
+      }
     }
 
     // Enqueue AI triage for newly discovered findings (fire-and-forget)
