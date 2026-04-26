@@ -103,7 +103,15 @@ app.use(requestId);
 
 // ── Routes ────────────────────────────────────────────────────────────────
 app.use(healthRouter);
-app.use("/auth", authLimiter, authRouter);
+// Strict auth limiter only on the IdP-handshake routes — those make
+// outbound calls to GitHub / Microsoft / Okta and are the actual abuse
+// vector. /auth/me, /auth/logout, /auth/org/switch run on every page
+// load and session change, so they get the looser apiLimiter (300/min)
+// to avoid a "Too many auth requests" wall after 10 navigations.
+app.use("/auth/github",       authLimiter);
+app.use("/auth/sso/initiate", authLimiter);
+app.use("/auth/sso/callback", authLimiter);
+app.use("/auth", apiLimiter, authRouter);
 app.use("/api/repos", apiLimiter, reposRouter);
 app.use("/api/containers", apiLimiter, containersRouter);
 app.use("/api/domains", apiLimiter, domainsRouter);
