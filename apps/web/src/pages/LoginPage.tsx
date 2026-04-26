@@ -1,4 +1,25 @@
 /** BreachLens login page — matches the sidebar brand identity */
+import { useState } from "react";
+import { KeyRound } from "lucide-react";
+
+// Map backend error codes (from /auth?error=…) to operator-friendly text.
+// Codes are emitted by passport.ts (GitHub OAuth) + auth.ts SSO routes.
+const ERROR_MESSAGES: Record<string, string> = {
+  oauth_failed:           "GitHub authentication failed. Please try again.",
+  invalid_email:          "Enter a valid email address (with @).",
+  no_sso_for_domain:      "No SSO configured for this email domain. Try GitHub or contact your admin.",
+  state_mismatch:         "Login session expired. Please try again.",
+  sso_disabled:           "SSO is disabled for your organization.",
+  invalid_callback:       "Invalid response from your identity provider.",
+  no_email_in_profile:    "Your identity provider didn't return an email address.",
+  discovery_failed:       "Couldn't reach your identity provider. Check the issuer URL.",
+  discovery_incomplete:   "Identity provider isn't a valid OIDC endpoint.",
+  no_userinfo_endpoint:   "Identity provider doesn't expose a userinfo endpoint (required).",
+  token_exchange_failed:  "Identity provider rejected the login. Check client ID + secret.",
+  userinfo_failed:        "Couldn't fetch your profile from the identity provider.",
+  initiate_failed:        "Couldn't start SSO login. Check the SSO config.",
+  callback_failed:        "SSO login failed during callback.",
+};
 
 function BreachLensLoginLogo() {
   return (
@@ -37,7 +58,21 @@ function BreachLensLoginLogo() {
 }
 
 export default function LoginPage() {
-  const error = new URLSearchParams(window.location.search).get("error");
+  const errorCode = new URLSearchParams(window.location.search).get("error");
+  const errorMessage = errorCode ? ERROR_MESSAGES[errorCode] ?? "Sign-in failed. Please try again." : null;
+
+  // SSO email input is collapsed by default — keeps GitHub as the primary
+  // affordance and only reveals when the user opts in.
+  const [showSso, setShowSso] = useState(false);
+  const [ssoEmail, setSsoEmail] = useState("");
+
+  function handleSsoSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    const email = ssoEmail.trim().toLowerCase();
+    if (!email.includes("@")) return;
+    // GET (not fetch) so the browser handles the 302 → IdP redirect natively.
+    window.location.href = `/auth/sso/initiate?email=${encodeURIComponent(email)}`;
+  }
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-gray-950 px-4">
@@ -60,9 +95,9 @@ export default function LoginPage() {
         </div>
 
         {/* Error */}
-        {error && (
+        {errorMessage && (
           <div className="mb-4 rounded-lg border border-red-800 bg-red-900/40 px-4 py-3 text-sm text-red-300">
-            Authentication failed. Please try again.
+            {errorMessage}
           </div>
         )}
 
@@ -79,6 +114,61 @@ export default function LoginPage() {
             </svg>
             Continue with GitHub
           </a>
+
+          {/* SSO divider */}
+          <div className="my-4 flex items-center gap-3">
+            <div className="h-px flex-1 bg-gray-800" />
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-600">or</span>
+            <div className="h-px flex-1 bg-gray-800" />
+          </div>
+
+          {/* SSO toggle / form */}
+          {!showSso ? (
+            <button
+              type="button"
+              onClick={() => setShowSso(true)}
+              className="flex w-full items-center justify-center gap-2 rounded-lg border border-indigo-800/60 bg-indigo-950/40 px-4 py-3 text-sm font-semibold text-indigo-200 transition hover:bg-indigo-950/60"
+            >
+              <KeyRound className="h-4 w-4" />
+              Sign in with SSO
+            </button>
+          ) : (
+            <form onSubmit={handleSsoSubmit} className="space-y-2">
+              <label className="block">
+                <span className="mb-1.5 block text-xs font-medium text-gray-400">
+                  Work email
+                </span>
+                <input
+                  type="email"
+                  autoFocus
+                  value={ssoEmail}
+                  onChange={(e) => setSsoEmail(e.target.value)}
+                  placeholder="alice@acme.com"
+                  className="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2.5 text-sm text-gray-200 placeholder:text-gray-600 focus:border-indigo-700 focus:outline-none"
+                />
+              </label>
+              <div className="flex items-center gap-2">
+                <button
+                  type="submit"
+                  disabled={!ssoEmail.includes("@")}
+                  className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <KeyRound className="h-4 w-4" />
+                  Continue
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowSso(false); setSsoEmail(""); }}
+                  className="rounded-lg px-3 py-2.5 text-xs text-gray-400 hover:bg-gray-800 hover:text-gray-200"
+                >
+                  Cancel
+                </button>
+              </div>
+              <p className="text-[10px] text-gray-500">
+                Your admin must have configured SSO for your email domain.
+              </p>
+            </form>
+          )}
 
           <p className="mt-4 text-center text-xs text-gray-500">
             Your repositories and scan results are stored only in your self-hosted instance.
