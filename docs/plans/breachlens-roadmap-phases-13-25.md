@@ -79,22 +79,31 @@
 
 ---
 
-### Phase 15 — SBOM generation 🟨 *(MUST-HAVE, 🚪 govt/regulated procurement, ~2-3 hours remaining)*
+### Phase 15 — SBOM generation ✅ *(MUST-HAVE, 🚪 govt/regulated procurement — SHIPPED)*
 
-**Shipped:**
+**All three slices shipped:**
 
 - ✅ CycloneDX generation via Trivy (repos: `trivy fs`; containers: `trivy image`)
 - ✅ **Slice A** (`14bedf5`) — SPDX (ISO/IEC 5962) alongside CycloneDX, audit-logged downloads, right Content-Type + filename per format
-- ✅ **Slice B** (`9b71b49`) — per-scan persistence: `Sbom` model with cascade-delete and (repo, format, generatedAt DESC) indexes; worker auto-persists CycloneDX after each SCA scan; download endpoint cache-first with X-Sbom-Source header; sha256 dedup against latest row prevents JSONB churn for stable repos
+- ✅ **Slice B** (`9b71b49`) — per-scan persistence: `Sbom` model with (repo, format, generatedAt DESC) indexes; worker auto-persists CycloneDX after each SCA scan; download endpoint cache-first with `X-Sbom-Source` header; sha256 dedup against latest row prevents JSONB churn for stable repos
+- ✅ **Slice C** (`00ffce2`) — cosign-compatible ECDSA P-256 SHA256 signing: instance-wide `SbomSigningKey` (lazy-init keypair, AES-256-GCM private key), worker signs after persist, download emits `X-Sbom-Signature` + `X-Sbom-Signature-Key-Id` headers, `GET /api/sbom/public-key` for verifiers
 - ✅ UI: split-button group on Repositories + Containers pages — primary CycloneDX + smaller SPDX
 
-**Verification:** end-to-end against sindresorhus/is-online — cached download 52ms vs on-demand 247ms (~5x speedup on a tiny repo; will be 100x+ on real-world repos where Trivy takes minutes).
+**Verification:** stock `openssl dgst -sha256 -verify pub.pem -signature sig.bin sbom.json` returns `Verified OK` for genuine SBOMs and `Verification failure` for byte-tampered ones. Signatures are byte-for-byte compatible with `cosign verify-blob`.
 
-**Remaining (Slice C):**
+**Operator workflow for procurement reviews:**
+1. `curl ... /api/repos/<id>/sbom > sbom.json` (capture `X-Sbom-Signature` + `X-Sbom-Signature-Key-Id`)
+2. `curl ... /api/sbom/public-key | jq -r .publicKeyPem > pub.pem`
+3. `openssl dgst -sha256 -verify pub.pem -signature <decoded-sig> sbom.json` → `Verified OK`
 
-- ❌ **Slice C — Cosign signing** (~2-3 hours): real procurement evidence. Keypair management runbook, sign on generation, verify on download. EO 14028 explicitly calls out attestation, not just availability.
-
-**Other deferred:** container SBOM auto-persistence (only repo SBOMs auto-persist today), retention policy for historical Sbom rows, SPDX auto-persistence on scan (cost-vs-coverage trade — defer until someone asks).
+**Deferred to follow-ups (not blockers for procurement):**
+- Container SBOM auto-persistence + signing (only repo SBOMs auto-persist + auto-sign today)
+- Key rotation runbook + `DELETE /api/sbom/key` endpoint
+- Public key archival/export (so old signatures stay verifiable across rotations)
+- Sigstore Rekor transparency log integration (keyless mode)
+- SLSA provenance attestations (separate from SBOM attestation)
+- Retention policy for historical `Sbom` rows
+- SPDX auto-persistence on scan (cost-vs-coverage; defer until requested)
 
 **Why:** US Executive Order 14028 + EU Cyber Resilience Act make SBOMs mandatory for selling to government and large enterprise. No SBOM = no procurement. Slice A clears the format-availability gate; Slices B+C add the historical+attested evidence procurement actually wants.
 **World-class equivalent:** Snyk SBOM, Anchore.
