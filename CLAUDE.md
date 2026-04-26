@@ -117,10 +117,41 @@ docker compose exec -T postgres psql -U devsecops -d devsecops -c "<query>"
   table. There is **no** `authConfigId` column on `Domain` — query via
   `JOIN "DomainAuthConfig" ac ON ac."domainId" = d.id` or use Prisma's
   `include: { authConfig: true }`.
+- **`OrganizationMember` has no timestamps** — `(userId, orgId, role)` is
+  the entire row. Don't write `orderBy: { createdAt: ... }` against it
+  (Prisma will throw at runtime). Use `org: { createdAt: "asc" }` if you
+  need a tiebreaker.
+- **`OrgType` enum is `{ PERSONAL, TEAM }`** (not `SHARED` — easy to
+  guess wrong). PERSONAL is the auto-created sandbox at first login;
+  TEAM is set when an invitation is created (`routes/members/router.ts`).
 - **Quoting:** Postgres folds unquoted identifiers to lowercase. Prisma
   models use camelCase, so every column with a capital letter needs
   double quotes: `SELECT "scanTypes" FROM "ScanJob"` — *not*
   `SELECT scanTypes FROM ScanJob`.
+
+### `db push` does not survive a postgres recreate
+
+Schema changes pushed via `prisma db push` (no migration file) live only
+in the running database. When the postgres container gets recreated
+(`docker compose up -d` after a long absence is the most common
+trigger), the `migrate` service re-runs only what's in
+`apps/api/prisma/migrations/` — anything that was `db push`-only is
+gone.
+
+This bit us this session: `SsoConfig`, `Sbom`, `SbomSigningKey`, and
+`Invitation` tables disappeared after a routine `up -d`, and every
+`/auth/sso/initiate` started failing with "table does not exist". The
+fix is the docker-cp + prisma dance below; long-term, generate proper
+migration files so the `migrate` service handles it on its own.
+
+```bash
+docker compose cp apps/api/prisma api:/app/apps/api/
+docker compose exec -T -w //app/apps/api api npx prisma db push --skip-generate --accept-data-loss
+docker compose exec -T -w //app/apps/api api npx prisma generate
+docker compose restart api
+```
+
+`/db-push` automates this.
 
 ### Useful one-liners
 
@@ -137,6 +168,120 @@ docker compose exec -T postgres psql -U devsecops -d devsecops -c \
 docker compose exec -T postgres psql -U devsecops -d devsecops -c \
   "SELECT id, status, \"urlCount\", \"zapContextName\" FROM \"RecordingSession\" WHERE \"domainId\"='<id>' ORDER BY \"startedAt\" DESC LIMIT 1;"
 ```
+
+---
+
+## Multi-tenant data scoping
+
+Every list endpoint scopes queries by `orgId`. The mechanism that turns
+"who is logged in?" into "which org are they looking at?" is
+`apps/api/src/services/activeOrgService.ts`:
+
+```ts
+const member = await getActiveMembership(req);
+if (!member) { res.json([]); return; }
+// member.orgId is what scopes the query
+```
+
+Resolution order:
+
+1. `req.session.activeOrgId` — set by `POST /auth/org/switch` when the
+   user picks an org in the sidebar dropdown
+2. Deterministic fallback — TEAM orgs over PERSONAL, then oldest
+   `org.createdAt` first
+
+**Don't write the lookup ad-hoc.** The pre-refactor pattern
+`prisma.organizationMember.findFirst({ where: { userId: user.id } })`
+returned a non-deterministic membership and silently dumped users with
+multiple orgs into the wrong sandbox (the empty PERSONAL one usually
+won the race because Postgres returned it first physically). 74 sites
+across 11 files used the bad pattern before the refactor — if a new
+route handler needs the user's org, use `getActiveMembership(req)`.
+
+### PERSONAL → TEAM auto-promotion
+
+`POST /api/members/invitations` flips the org's type from PERSONAL to
+TEAM the moment an invitation is created. Without this, the
+type-based ordering in `getActiveMembership` would never fire (every
+auto-personal-org is born PERSONAL). If you write a new "add a member
+to an org" path, mirror the `prisma.organization.updateMany({ where:
+{ id: orgId, type: "PERSONAL" }, data: { type: "TEAM" } })` call.
+
+---
+
+## Auth & SSO
+
+### Rate limiter scope (the wall everyone hits at request 11)
+
+`apps/api/src/app.ts` defines two limiters:
+
+- **`authLimiter`** — 10 req per 15 min. Applied to **only** the
+  IdP-handshake routes: `/auth/github`, `/auth/sso/initiate`,
+  `/auth/sso/callback`. These make outbound calls to GitHub /
+  Microsoft / Okta and are unauthenticated entry points — the actual
+  abuse vector.
+- **`apiLimiter`** — 300 req per min. Applied to `/auth` (the rest of
+  the router) and every `/api/*` route. `/auth/me` runs on every page
+  load + every TanStack Query refetch + every navigation, so it MUST be
+  on the loose limiter; the strict one walls users off after ~10
+  navigations as `{"error":"Too many auth requests"}`.
+
+If you add a new `/auth/*` route, decide which bucket it belongs to
+**before** mounting it — the wrong choice silently breaks the app for
+real users with no obvious server-side error.
+
+### OIDC scope: send `openid` only
+
+`apps/api/src/auth/oidcService.ts:buildAuthorizationUrl` deliberately
+sends just `scope: "openid"`. Reasoning:
+
+- **Entra rejects unknown scopes hard** — it does *not* silently drop
+  them like Okta / Keycloak / Auth0. Sending `groups` causes "scope
+  doesn't exist on resource" with no useful diagnostic.
+- The OIDC standard scopes (`email`, `profile`) and Graph permissions
+  (`User.Read`) should be driven by the IdP-side app registration
+  (Entra: API permissions + Token Configuration → Optional Claims).
+  Don't request them from our side — let the operator's Entra config
+  decide what the userinfo endpoint returns.
+
+### Entra-specific quirks worth knowing
+
+- **`/userinfo` returns the photo as a Graph URL** —
+  `https://graph.microsoft.com/v1.0/me/photo/$value`. That endpoint
+  needs a Bearer access token; `<img src>` requests it anonymously and
+  gets 401'd. `oidcService.extractPicture()` filters out
+  `graph.microsoft.com` hosts so the existing initials-fallback chip
+  renders instead of a broken image icon.
+- **`login_hint` skips the username step.** The email the user typed
+  on `/login` is threaded through to the IdP authorization URL as
+  `login_hint`, which Entra honours by either pre-filling the username
+  field or — under Conditional Access / passwordless — skipping it
+  entirely.
+- **`_claim_names` overage** — Entra returns `>150` groups via a
+  `_claim_names` indirection rather than inline. We can't resolve it
+  without a Graph call, so we surface a `[sso] groups overage` warn
+  and fall back to `defaultRole`. Operator fix: app registration →
+  Token configuration → Optional claims → `groups` → `sam_account_name`.
+
+### Diagnostic logging on `invalid_callback`
+
+The SSO callback handler silently redirects to
+`/login?error=invalid_callback` when `code` / `state` are missing.
+That's also the path Entra/Okta hit when *they* return
+`?error=invalid_client / unauthorized_client / invalid_redirect_uri /
+consent_required` — all real misconfigurations. The handler now
+`logger.warn`s the full query so the next broken app registration
+shows up in `docker compose logs api` instead of being invisible.
+
+### Network reachability surprises
+
+- `login.microsoftonline.com` **is** reachable from a real Chrome /
+  Firefox tab on this dev box. Earlier dev-environment notes assumed
+  it was DNS-blocked — that's wrong; the only real block is `github.com`
+  for `git push`.
+- The Claude Preview iframe still blocks top-level navigation to
+  external auth endpoints. Test SSO in a real browser tab against
+  `http://localhost:5173`, not in Preview.
 
 ---
 
@@ -286,5 +431,9 @@ docker run --rm --network admiring-hertz_internal --entrypoint python \
   latest recording context for the dvwa target
 - `/scan-status <scanJobId>` — DB row + finding counts + recent log lines
 - `/finding-evidence <findingId>` — pretty-print evidence + raw_output
+- `/db-push` — sync the prisma schema into the running api container
+  (the docker-cp + db push + generate + restart dance) — needed every
+  time the postgres container gets recreated and `db push`-only tables
+  get dropped
 
 See `.claude/commands/*.md` for the prompt sources.
