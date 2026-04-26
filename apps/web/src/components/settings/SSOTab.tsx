@@ -10,7 +10,7 @@
  * to validate the issuer URL before save. No clientId/clientSecret check —
  * those only get exercised on a real login.
  */
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   KeyRound, Loader2, Check, AlertCircle, Trash2, Info, Plug, Plus, X, Copy,
@@ -533,6 +533,39 @@ function detectProvider(issuerUrl: string): ProviderPreset {
   return "generic";
 }
 
+/**
+ * Copy text to clipboard with a 3-step fallback. Returns true on success.
+ *
+ *   1. navigator.clipboard.writeText — modern, requires HTTPS or localhost
+ *      AND a permissive Permissions-Policy. Blocked in many sandboxed
+ *      iframes (including some preview/embed contexts).
+ *   2. document.execCommand('copy') via temp textarea — older, deprecated,
+ *      but works in more restricted contexts including iframes without
+ *      explicit clipboard-write permission.
+ *   3. Caller's responsibility: auto-select the source element so the user
+ *      can hit Ctrl+C / Cmd+C themselves.
+ */
+async function copyText(text: string): Promise<boolean> {
+  if (navigator.clipboard?.writeText) {
+    try { await navigator.clipboard.writeText(text); return true; } catch { /* fall through */ }
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
 function RedirectUriBlock({
   url, toast,
 }: {
@@ -540,22 +573,39 @@ function RedirectUriBlock({
   toast: ReturnType<typeof useToast>["toast"];
 }) {
   const [copied, setCopied] = useState(false);
-  function handleCopy() {
-    navigator.clipboard.writeText(url).then(
-      () => {
-        setCopied(true);
-        setTimeout(() => setCopied(false), 1500);
-      },
-      () => toast.error("Couldn't copy — please select the URL manually"),
-    );
+  const codeRef = useRef<HTMLElement>(null);
+
+  async function handleCopy() {
+    const ok = await copyText(url);
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+      return;
+    }
+    // Both clipboard APIs blocked (sandboxed iframe / strict policy).
+    // Auto-select the URL in the code block so Ctrl+C works immediately —
+    // less hostile than just an error toast telling the user to do it
+    // manually with no help.
+    if (codeRef.current) {
+      const range = document.createRange();
+      range.selectNodeContents(codeRef.current);
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+    }
+    toast.info("Clipboard blocked — URL selected, press Ctrl+C / Cmd+C to copy");
   }
+
   return (
     <div className="mt-2 flex items-start gap-2 rounded-md border border-indigo-900/40 bg-indigo-950/30 px-3 py-2 text-[11px]">
       <Info className="h-3.5 w-3.5 mt-0.5 shrink-0 text-indigo-400" />
       <div className="min-w-0 flex-1">
         <div className="font-semibold text-gray-100">Redirect URI to register at your IdP</div>
         <div className="mt-1 flex items-center gap-2">
-          <code className="flex-1 min-w-0 truncate rounded bg-gray-950 px-2 py-1 font-mono text-[11px] text-indigo-200 select-all">
+          <code
+            ref={codeRef}
+            className="flex-1 min-w-0 truncate rounded bg-gray-950 px-2 py-1 font-mono text-[11px] text-indigo-200 select-all"
+          >
             {url}
           </code>
           <button
