@@ -147,23 +147,14 @@ export default function LoginPage() {
                   className="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2.5 text-sm text-gray-200 placeholder:text-gray-600 focus:border-indigo-700 focus:outline-none"
                 />
               </label>
-              <div className="flex items-center gap-2">
-                <button
-                  type="submit"
-                  disabled={!ssoEmail.includes("@")}
-                  className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  <KeyRound className="h-4 w-4" />
-                  Continue
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setShowSso(false); setSsoEmail(""); }}
-                  className="rounded-lg px-3 py-2.5 text-xs text-gray-400 hover:bg-gray-800 hover:text-gray-200"
-                >
-                  Cancel
-                </button>
-              </div>
+              <button
+                type="submit"
+                disabled={!ssoEmail.includes("@")}
+                className="flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <KeyRound className="h-4 w-4" />
+                Continue
+              </button>
               <p className="text-[10px] text-gray-500">
                 Your admin must have configured SSO for your email domain.
               </p>
