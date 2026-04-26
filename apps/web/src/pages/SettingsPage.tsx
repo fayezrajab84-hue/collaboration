@@ -7,8 +7,9 @@ import { useToast } from "../hooks/useToast";
 import AIProvidersTab from "../components/settings/AIProvidersTab";
 import PoliciesTab from "../components/settings/PoliciesTab";
 import AuditLogTab from "../components/settings/AuditLogTab";
+import TeamTab from "../components/settings/TeamTab";
 
-type Tab = "github" | "ai" | "policies" | "jira" | "slack" | "teams" | "audit";
+type Tab = "github" | "team" | "ai" | "policies" | "jira" | "slack" | "teams" | "audit";
 
 function SaveButton({ isPending, saved }: { isPending: boolean; saved: boolean }) {
   return (
@@ -369,6 +370,7 @@ function TeamsTab() {
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "github",   label: "GitHub" },
+  { id: "team",     label: "Team" },
   { id: "ai",       label: "AI Providers" },
   { id: "policies", label: "Policies" },
   { id: "jira",     label: "Jira" },
@@ -389,6 +391,7 @@ export default function SettingsPage() {
 
   const connected: Record<Tab, boolean> = {
     github:   true,   // GitHub is always connected (OAuth session)
+    team:     false,  // No "connected" dot — always present
     ai:       aiProviders.length > 0,
     policies: false,  // No "connected" dot for policies
     jira:     !!jiraData,
@@ -438,6 +441,7 @@ export default function SettingsPage() {
           </div>
 
           {activeTab === "github"   && <GitHubTab />}
+          {activeTab === "team"     && <TeamTab />}
           {activeTab === "ai"       && <AIProvidersTab />}
           {activeTab === "policies" && <PoliciesTab />}
           {activeTab === "jira"     && <JiraTab />}

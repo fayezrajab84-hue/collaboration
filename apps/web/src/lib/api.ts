@@ -608,6 +608,43 @@ export const auditApi = {
   },
 };
 
+// ── Members + invitations ─────────────────────────────────────────────────
+
+export type MemberRole = "OWNER" | "ADMIN" | "SECURITY" | "DEVELOPER" | "VIEWER";
+
+export interface Member {
+  userId:    string;
+  username:  string;
+  email:     string | null;
+  avatarUrl: string | null;
+  role:      MemberRole;
+  joinedAt:  string;
+  isYou:     boolean;
+}
+
+export interface Invitation {
+  id:             string;
+  githubUsername: string;
+  role:           MemberRole;
+  expiresAt:      string;
+  createdAt:      string;
+  invitedBy:      { id: string; username: string; avatarUrl: string | null } | null;
+}
+
+export const membersApi = {
+  list:        () => apiClient.get<{ members: Member[] }>("/members").then((r) => r.data.members),
+  changeRole:  (userId: string, role: MemberRole) =>
+                 apiClient.patch(`/members/${userId}`, { role }).then((r) => r.data),
+  remove:      (userId: string) => apiClient.delete(`/members/${userId}`).then((r) => r.data),
+
+  listInvitations: () =>
+    apiClient.get<{ invitations: Invitation[] }>("/members/invitations").then((r) => r.data.invitations),
+  createInvitation: (data: { githubUsername: string; role: MemberRole; expiresInDays?: number }) =>
+    apiClient.post<Invitation>("/members/invitations", data).then((r) => r.data),
+  revokeInvitation: (id: string) =>
+    apiClient.delete(`/members/invitations/${id}`).then((r) => r.data),
+};
+
 // ── Admin (queues) ────────────────────────────────────────────────────────
 
 export interface QueueCounts {

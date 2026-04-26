@@ -205,6 +205,41 @@ model Organization {
   aiCallLogs      AICallLog[]
   recordings      RecordingSession[]
   policies        Policy[]
+  invitations     Invitation[]
+}
+
+// Pending org invitations matched by GitHub username on next OAuth login.
+// Username-based (not email) because the platform uses GitHub OAuth as
+// the only auth method today. Switch to email-based when SSO (Phase 22 PR 3)
+// lands.
+//
+// Lifecycle:
+//   • created  → row inserted by ADMIN+ via POST /api/members/invitations
+//   • accepted → passport callback finds pending row matching profile.username
+//                (case-insensitive), creates OrganizationMember row, sets
+//                acceptedAt + acceptedUserId on the invitation
+//   • revoked  → row deleted by ADMIN+ via DELETE; users can't see invitations
+//                that no longer exist
+//
+// invitedById and acceptedUserId are stored as plain User.id strings without
+// Prisma relations to keep the User model clean (already has 3 back-refs).
+// Lookups go through prisma.user.findMany separately when enriching for UI.
+model Invitation {
+  id              String    @id @default(cuid())
+  orgId           String
+  githubUsername  String    // stored lowercase for case-insensitive match
+  role            Role      @default(DEVELOPER)
+  invitedById     String
+  expiresAt       DateTime
+  acceptedAt      DateTime?
+  acceptedUserId  String?
+  createdAt       DateTime  @default(now())
+
+  org             Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, githubUsername])
+  @@index([githubUsername])
+  @@index([orgId, acceptedAt])
 }
 
 model OrganizationMember {

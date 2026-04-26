@@ -71,6 +71,51 @@ passport.use(
           });
         }
 
+        // ── Accept any pending invitations matching this GitHub username ───
+        // Runs on EVERY login (not just first), so an admin can invite an
+        // existing user to a different org and the invitation lands on
+        // their next sign-in. Username match is case-insensitive — invites
+        // are stored lowercase.
+        const usernameLower = (profile.username ?? "").toLowerCase();
+        if (usernameLower) {
+          const pending = await prisma.invitation.findMany({
+            where: {
+              githubUsername: usernameLower,
+              acceptedAt:     null,
+              expiresAt:      { gt: new Date() },
+            },
+          });
+
+          for (const inv of pending) {
+            // Skip if user is already a member of that org (defensive — the
+            // invite-create path checks this, but races are possible).
+            const alreadyMember = await prisma.organizationMember.findUnique({
+              where: { userId_orgId: { userId: user.id, orgId: inv.orgId } },
+            });
+            if (alreadyMember) {
+              await prisma.invitation.update({
+                where: { id: inv.id },
+                data:  { acceptedAt: new Date(), acceptedUserId: user.id },
+              });
+              continue;
+            }
+
+            await prisma.$transaction([
+              prisma.organizationMember.create({
+                data: { userId: user.id, orgId: inv.orgId, role: inv.role },
+              }),
+              prisma.invitation.update({
+                where: { id: inv.id },
+                data:  { acceptedAt: new Date(), acceptedUserId: user.id },
+              }),
+            ]);
+
+            logger.info("Invitation accepted", {
+              userId: user.id, orgId: inv.orgId, invitationId: inv.id, role: inv.role,
+            });
+          }
+        }
+
         done(null, user);
       } catch (err) {
         logger.error("GitHub OAuth error", { error: (err as Error).message });
