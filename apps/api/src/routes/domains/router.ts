@@ -10,6 +10,8 @@ import { config } from "../../config.js";
 import { triggerScan } from "../../services/scanService.js";
 import { encrypt, decrypt } from "../../services/encryptionService.js";
 import * as recording from "../../services/recordingService.js";
+import { countOperations, validateOpenApiShape } from "../../services/openApiUrlExtractor.js";
+import * as YAML from "yaml";
 import type { ScanType } from "@devsecops/types";
 
 const router = Router();
@@ -274,7 +276,7 @@ router.patch("/:id/subdomains/:subId", async (req, res, next) => {
 router.post("/:id/pentest", async (req, res, next) => {
   try {
     const body = z.object({
-      depth: z.enum(["STANDARD", "AGGRESSIVE"]).default("STANDARD"),
+      depth: z.enum(["QUICK", "STANDARD", "AGGRESSIVE"]).default("STANDARD"),
       authorized: z.literal(true),
     }).parse(req.body);
 
@@ -373,6 +375,21 @@ const authConfigSchema = z.object({
   oauth2ClientSecret: z.string().optional(),
   oauth2Scope:       z.string().optional(),
   oauth2GrantType:   z.enum(["client_credentials", "password"]).default("client_credentials"),
+  // CSRF tracking — orthogonal to authType. All three are optional; at least
+  // one of meta-selector or cookie-name must be set for CSRF to take effect.
+  // Empty strings → undefined to avoid leaking blank columns into Prisma.
+  csrfMetaSelector:  z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+    z.string().optional(),
+  ),
+  csrfCookieName:    z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+    z.string().optional(),
+  ),
+  csrfHeaderName:    z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+    z.string().optional(),
+  ),
 });
 
 // GET /api/domains/:id/auth — return config without credentials
@@ -401,6 +418,10 @@ router.get("/:id/auth", async (req, res, next) => {
       oauth2ClientId:   cfg.oauth2ClientId,
       oauth2Scope:      cfg.oauth2Scope,
       oauth2GrantType:  cfg.oauth2GrantType,
+      // CSRF (non-secret — selector / cookie name / header name)
+      csrfMetaSelector: cfg.csrfMetaSelector,
+      csrfCookieName:   cfg.csrfCookieName,
+      csrfHeaderName:   cfg.csrfHeaderName,
       hasCredentials:   true,  // secrets stored encrypted, not returned
     });
   } catch (err) { next(err); }
@@ -446,6 +467,10 @@ router.put("/:id/auth", async (req, res, next) => {
         oauth2ClientId:   body.oauth2ClientId   ?? null,
         oauth2Scope:      body.oauth2Scope       ?? null,
         oauth2GrantType:  body.oauth2GrantType,
+        // CSRF
+        csrfMetaSelector: body.csrfMetaSelector ?? null,
+        csrfCookieName:   body.csrfCookieName   ?? null,
+        csrfHeaderName:   body.csrfHeaderName   ?? null,
         encryptedCreds,
       },
       update: {
@@ -461,6 +486,10 @@ router.put("/:id/auth", async (req, res, next) => {
         oauth2ClientId:   body.oauth2ClientId   ?? null,
         oauth2Scope:      body.oauth2Scope       ?? null,
         oauth2GrantType:  body.oauth2GrantType,
+        // CSRF
+        csrfMetaSelector: body.csrfMetaSelector ?? null,
+        csrfCookieName:   body.csrfCookieName   ?? null,
+        csrfHeaderName:   body.csrfHeaderName   ?? null,
         encryptedCreds,
       },
     });
@@ -514,7 +543,7 @@ router.get("/:id/apispec", requireAuth, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// PUT /domains/:id/apispec
+// PUT /domains/:id/apispec — caller provides pre-parsed JSON
 router.put("/:id/apispec", requireAuth, async (req, res, next) => {
   try {
     const user = req.user as { id: string };
@@ -523,13 +552,12 @@ router.put("/:id/apispec", requireAuth, async (req, res, next) => {
 
     const body = upsertApiSpec.parse(req.body);
 
-    // Count endpoints from OpenAPI 3.x or Swagger 2.x spec
-    const paths = (body.specJson as Record<string, unknown>)["paths"] as Record<string, Record<string, unknown>> ?? {};
-    const methods = ["get","post","put","patch","delete","options","head"];
-    let endpoints = 0;
-    for (const pathItem of Object.values(paths)) {
-      endpoints += methods.filter(m => pathItem[m] !== undefined).length;
-    }
+    // Validate spec shape so we don't store nonsense (e.g. random JSON files
+    // a user dragged in) — protects every downstream consumer.
+    const reason = validateOpenApiShape(body.specJson);
+    if (reason) { res.status(400).json({ error: `Invalid OpenAPI spec: ${reason}` }); return; }
+
+    const endpoints = countOperations(body.specJson);
 
     const domainId = req.params["id"]!;
     const spec = await prisma.domainApiSpec.upsert({
@@ -538,6 +566,63 @@ router.put("/:id/apispec", requireAuth, async (req, res, next) => {
       update: { filename: body.filename, specJson: body.specJson as object, endpoints },
     });
     res.json(spec);
+  } catch (err) { next(err); }
+});
+
+// POST /domains/:id/apispec/import — accepts raw YAML or JSON file content
+//
+// Why a separate endpoint vs the PUT above? YAML parsing belongs server-side:
+//   - We can return precise parse errors (line/col from the yaml lib)
+//   - Spec validation runs against the *parsed* object, so client-side YAML
+//     bugs can't store malformed JSON in the DB
+//   - Client just streams raw bytes — no need for a YAML lib in the bundle
+//
+// Body: raw text (Content-Type: application/json | application/yaml | text/yaml | text/plain)
+// Query: ?filename=openapi.yaml  (purely cosmetic; shown in UI)
+router.post("/:id/apispec/import", requireAuth, async (req, res, next) => {
+  try {
+    const user = req.user as { id: string };
+    const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
+    if (!member) { res.status(403).json({ error: "Forbidden" }); return; }
+
+    const filename = String(req.query["filename"] ?? "openapi.yaml").slice(0, 255);
+    // Body may arrive as raw text (text/* or application/yaml) or as a parsed
+    // object (application/json — Express's json middleware already parsed it).
+    let parsed: unknown;
+    if (typeof req.body === "string") {
+      const text = req.body.trim();
+      if (!text) { res.status(400).json({ error: "Empty body" }); return; }
+      // Try JSON first (cheap, common). Fall back to YAML — YAML is a strict
+      // superset of JSON in practice, but the YAML parser is slower and gives
+      // worse JSON errors, so JSON-first is faster on the hot path.
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        try {
+          parsed = YAML.parse(text);
+        } catch (yamlErr) {
+          res.status(400).json({ error: `Could not parse as JSON or YAML: ${(yamlErr as Error).message}` });
+          return;
+        }
+      }
+    } else if (req.body && typeof req.body === "object") {
+      parsed = req.body;
+    } else {
+      res.status(400).json({ error: "Body must be JSON object or raw YAML/JSON text" });
+      return;
+    }
+
+    const reason = validateOpenApiShape(parsed);
+    if (reason) { res.status(400).json({ error: `Invalid OpenAPI spec: ${reason}` }); return; }
+
+    const endpoints = countOperations(parsed);
+    const domainId = req.params["id"]!;
+    const spec = await prisma.domainApiSpec.upsert({
+      where:  { domainId },
+      create: { domainId, filename, specJson: parsed as object, endpoints },
+      update: { filename, specJson: parsed as object, endpoints },
+    });
+    res.status(201).json(spec);
   } catch (err) { next(err); }
 });
 
@@ -615,7 +700,9 @@ router.post("/:id/recording/promote", async (req, res, next) => {
     const user = req.user as { id: string };
     const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
     if (!member) { res.status(403).json({ error: "Forbidden" }); return; }
-    const depth = req.body?.depth === "AGGRESSIVE" ? "AGGRESSIVE" : "STANDARD";
+    const depth =
+      req.body?.depth === "AGGRESSIVE" ? "AGGRESSIVE" :
+      req.body?.depth === "QUICK"      ? "QUICK"      : "STANDARD";
     const result = await recording.promote(member.orgId, req.params["id"]!, { depth });
     res.status(202).json(result);
   } catch (err) {

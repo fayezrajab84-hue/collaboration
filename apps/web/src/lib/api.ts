@@ -102,6 +102,30 @@ export const domainsApi = {
     apiClient.get<DomainApiSpecView | null>(`/domains/${id}/apispec`).then((r) => r.data),
   saveApiSpec: (id: string, data: { filename: string; specJson: Record<string, unknown> }) =>
     apiClient.put<DomainApiSpecView>(`/domains/${id}/apispec`, data).then((r) => r.data),
+  /**
+   * Upload raw OpenAPI / Swagger file content (YAML or JSON). The server
+   * parses + validates, so we don't ship a YAML lib in the bundle and shape
+   * validation stays centralized.
+   */
+  importApiSpec: (id: string, fileText: string, filename: string) => {
+    // Sniff content type so the API uses the right body parser. JSON files
+    // come through express.json; YAML through express.text — getting this
+    // wrong yields an empty req.body, not a clear error.
+    const trimmed = fileText.trimStart();
+    const isJson = trimmed.startsWith("{") || trimmed.startsWith("[");
+    return apiClient
+      .post<DomainApiSpecView>(
+        `/domains/${id}/apispec/import`,
+        fileText,
+        {
+          params:  { filename },
+          headers: { "Content-Type": isJson ? "application/json" : "application/yaml" },
+          // Stop axios from JSON.stringify-ing our raw text body
+          transformRequest: [(d) => d],
+        },
+      )
+      .then((r) => r.data);
+  },
   deleteApiSpec: (id: string) =>
     apiClient.delete(`/domains/${id}/apispec`).then((r) => r.data),
   // Interactive DAST recording
@@ -198,11 +222,35 @@ export const scansApi = {
   generateSummary: (id: string) => apiClient.post<{ queued: boolean }>(`/scans/${id}/summary`).then((r) => r.data),
   diff: (id: string, compareTo?: string) =>
     apiClient.get<{
-      scanA: { id: string; startedAt: string | null; completedAt: string | null; status: string } | null;
-      scanB: { id: string; startedAt: string | null; completedAt: string | null; status: string };
+      scanA: {
+        id: string; startedAt: string | null; completedAt: string | null;
+        status?: string; scanTypes?: string[]; failedScanTypes?: string[];
+        // Number of URLs the scanner actually examined this run; null when
+        // not captured (legacy scans, code-only scan types).
+        targetUrlCount?: number | null;
+      } | null;
+      scanB: {
+        id: string; startedAt: string | null; completedAt: string | null;
+        status?: string; scanTypes?: string[]; failedScanTypes?: string[];
+        targetUrlCount?: number | null;
+      };
       added:        Array<Pick<Finding, "id"|"title"|"severity"|"scanType"|"fingerprint"|"filePath"|"lineStart">>;
       removed:      Array<Pick<Finding, "id"|"title"|"severity"|"scanType"|"fingerprint"|"filePath"|"lineStart">>;
+      // Scope-aware additions: findings whose URL was NOT in the other
+      // scan's recorded URL list — meaning we can't claim they were
+      // "fixed" (URL never re-visited) or "newly introduced" (URL never
+      // visited before). Empty arrays when neither scan recorded URLs.
+      outOfScopeAdded:   Array<Pick<Finding, "id"|"title"|"severity"|"scanType"|"fingerprint"|"filePath"|"lineStart">>;
+      outOfScopeRemoved: Array<Pick<Finding, "id"|"title"|"severity"|"scanType"|"fingerprint"|"filePath"|"lineStart">>;
+      // True when at least one scan has a recorded URL list; the UI can
+      // hide the out-of-scope buckets entirely when this is false.
+      scopeAware?: boolean;
       unchangedCount: number;
+      // Populated when one or both scans are FAILED, when scanTypes don't
+      // overlap, or when every shared type failed in either scan. The UI
+      // displays this in place of the diff body.
+      effectiveScanTypes?: string[];
+      reason?: string;
     }>(`/scans/${id}/diff`, { params: compareTo ? { compareTo } : {} }).then((r) => r.data),
 };
 
@@ -243,13 +291,19 @@ export const findingsApi = {
       {},
       { params: force ? { force: "true" } : undefined, timeout: 200_000 },
     ).then((r) => r.data),
-  stats: () =>
+  /**
+   * Dashboard summary counts. Pass `scanType` (comma-joined) to scope
+   * severity / status / confidence breakdowns to a subset (e.g. "code"
+   * vs "web" tab). `scanTypeCounts` always returns the full unfiltered
+   * breakdown so the tab badges themselves don't depend on the active tab.
+   */
+  stats: (scanType?: string) =>
     apiClient.get<{
       severityCounts: Array<{ severity: string; _count: number }>;
       scanTypeCounts: Array<{ scanType: string; _count: number }>;
       statusCounts: Array<{ status: string; _count: number }>;
       confidenceCounts: Array<{ confidence: string; _count: number }>;
-    }>("/findings/summary/stats").then((r) => r.data),
+    }>("/findings/summary/stats", { params: scanType ? { scanType } : undefined }).then((r) => r.data),
   topTargets: (limit = 5) =>
     apiClient.get<Array<{
       targetType: "REPOSITORY" | "CONTAINER" | "DOMAIN";

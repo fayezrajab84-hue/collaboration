@@ -57,8 +57,19 @@ const apiLimiter = rateLimit({
 });
 
 // ── Body parsing ──────────────────────────────────────────────────────────
-app.use(express.json({ limit: "1mb" }));
+// 5mb cap because large vendor OpenAPI specs (AWS, Stripe) routinely exceed
+// 1mb and we accept them via /api/domains/:id/apispec/import.
+app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true }));
+// Accept raw YAML / plain text bodies for OpenAPI spec import
+// (POST /api/domains/:id/apispec/import). Limit bumped to 5mb because
+// large vendor specs (e.g. AWS, Stripe) routinely exceed 1mb.
+app.use(
+  express.text({
+    type: ["application/yaml", "application/x-yaml", "text/yaml", "text/plain"],
+    limit: "5mb",
+  }),
+);
 
 // ── Session (Redis-backed via ioredis) ────────────────────────────────────
 // connect-redis v7 accepts ioredis clients; cast to satisfy its type signature

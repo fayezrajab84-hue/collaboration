@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { requireAuth } from "../../middleware/requireAuth.js";
 import prisma from "../../db.js";
-import { addClient, removeClient, emitStatusChange, emit } from "../../services/sseService.js";
+import { addClient, removeClient, emitStatusChange, emit, setLatestProgress, getLatestProgress } from "../../services/sseService.js";
 import { scanQueues } from "../../queues/definitions.js";
 import { generateScanSummary } from "../../services/scanSummaryService.js";
 import type { ScanType } from "@devsecops/types";
@@ -12,10 +12,15 @@ const router = Router();
 router.post("/:id/progress", async (req, res) => {
   const { pct, phase } = req.body as { pct?: number; phase?: string };
   if (typeof pct === "number") {
+    const clampedPct = Math.min(100, Math.max(0, Math.round(pct)));
+    const phaseName  = phase ?? "scanning";
+    // Persist last-known progress so a fresh page load (or SSE reconnect)
+    // can hydrate the bar without waiting for the next phase boundary.
+    setLatestProgress(req.params["id"]!, phaseName, clampedPct);
     emit(req.params["id"], {
       type: "PHASE_PROGRESS",
-      phase: phase ?? "scanning",
-      pct: Math.min(100, Math.max(0, Math.round(pct))),
+      phase: phaseName,
+      pct: clampedPct,
     });
   }
   res.json({ ok: true });
@@ -75,7 +80,21 @@ router.get("/", async (req, res, next) => {
       prisma.scanJob.count({ where: { orgId: member.orgId } }),
     ]);
 
-    res.json({ data, total, page, limit, totalPages: Math.ceil(total / limit) });
+    // Hydrate active scans with the API's in-memory phase progress so each
+    // row's <ScanProgressBar/> can render the live label/% on first paint
+    // (otherwise a page reload mid-scan shows "Scanning…" until the next
+    // emit, which during Nuclei is up to 25 minutes away).
+    const dataWithProgress = data.map((scan) => {
+      if (scan.status !== "RUNNING" && scan.status !== "PENDING") return scan;
+      const live = getLatestProgress(scan.id);
+      return {
+        ...scan,
+        currentPhase:    live?.phase ?? null,
+        currentPhasePct: live?.pct   ?? null,
+      };
+    });
+
+    res.json({ data: dataWithProgress, total, page, limit, totalPages: Math.ceil(total / limit) });
   } catch (err) { next(err); }
 });
 
@@ -130,7 +149,17 @@ router.get("/:id", async (req, res, next) => {
       ]);
     }
 
-    res.json({ ...scan, confirmedCount, newThisScan });
+    // Attach last-known phase progress so the UI can hydrate the progress bar
+    // on a fresh page load — phase emits sit silent for ~25 min during Nuclei,
+    // and without this the frontend fell back to "Scanning…" with no %.
+    const liveProgress = getLatestProgress(scan.id);
+    res.json({
+      ...scan,
+      confirmedCount,
+      newThisScan,
+      currentPhase:    liveProgress?.phase ?? null,
+      currentPhasePct: liveProgress?.pct   ?? null,
+    });
   } catch (err) { next(err); }
 });
 
@@ -142,6 +171,14 @@ router.get("/:id", async (req, res, next) => {
 // "Added"    = fingerprints observed in B but not A (firstSeen > A.completedAt)
 // "Removed"  = fingerprints observed in A but not B (lastSeen  < B.startedAt)
 // "Unchanged"= fingerprints in both windows
+//
+// IMPORTANT — scan-type scoping:
+//   The diff is computed only over scanTypes that ran AND succeeded in BOTH
+//   scans. Without this, comparing a SAST-only scan to a SAST+DAST scan would
+//   make every DAST finding look "added" or "removed". And a failed sub-scan
+//   produces zero findings — without filtering, the prior run's findings
+//   would all look "removed/fixed" (which is what triggered the bogus
+//   auto-fix display the user saw on scan cypa35pcbh2b).
 router.get("/:id/diff", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
@@ -154,6 +191,29 @@ router.get("/:id/diff", async (req, res, next) => {
     if (!scanB) { res.status(404).json({ error: "Scan not found" }); return; }
     if (!scanB.startedAt) { res.status(409).json({ error: "Scan has not started" }); return; }
 
+    // Diffing a fully-failed scan is meaningless: every comparison reduces to
+    // "B has no findings → everything in A looks removed". Bail with a clear
+    // reason so the UI can show "no comparison available" instead of a
+    // misleading "11 findings removed/fixed" panel.
+    if (scanB.status === "FAILED") {
+      res.json({
+        scanA: null,
+        scanB: {
+          id: scanB.id,
+          startedAt: scanB.startedAt,
+          completedAt: scanB.completedAt,
+          scanTypes: scanB.scanTypes,
+          status: scanB.status,
+          failedScanTypes: scanB.failedScanTypes,
+        },
+        added: [],
+        removed: [],
+        unchangedCount: 0,
+        reason: "Cannot diff against a failed scan — no findings were collected.",
+      });
+      return;
+    }
+
     // Resolve scanA — either the explicit ?compareTo or the previous scan of the
     // same target. Must share targetType + targetId and be COMPLETED before B started.
     const targetMatch =
@@ -161,19 +221,53 @@ router.get("/:id/diff", async (req, res, next) => {
       : scanB.targetType === "CONTAINER" ? { containerId:  scanB.containerId }
       : { domainId: scanB.domainId };
 
+    // PENTEST and PENTEST_FULL are aliases — the latter superseded the former
+    // during a refactor, but old ScanJob/Finding rows still carry "PENTEST".
+    // Normalize to a canonical symbol so a {PENTEST_FULL} scan can be diffed
+    // against an older {PENTEST} run on the same target without the strict
+    // intersection collapsing to ∅. Add new aliases here when scan types
+    // get renamed in the future.
+    const normalizeType = (t: string): string =>
+      t === "PENTEST" ? "PENTEST_FULL" : t;
+    // Reverse mapping for the DB query — when "PENTEST_FULL" survives the
+    // intersection, look up findings written under either label so the
+    // legacy/canonical boundary doesn't drop rows. Anything not aliased
+    // returns just itself.
+    const expandType = (t: string): string[] =>
+      t === "PENTEST_FULL" ? ["PENTEST", "PENTEST_FULL"] : [t];
+
+    const normalizedB = new Set(scanB.scanTypes.map(normalizeType));
+
     const compareToId = req.query["compareTo"] as string | undefined;
-    const scanA = compareToId
-      ? await prisma.scanJob.findFirst({ where: { id: compareToId, orgId: member.orgId, ...targetMatch } })
-      : await prisma.scanJob.findFirst({
-          where: {
-            orgId: member.orgId,
-            id: { not: scanB.id },
-            status: "COMPLETED",
-            completedAt: { lt: scanB.startedAt, not: null },
-            ...targetMatch,
-          },
-          orderBy: { completedAt: "desc" },
-        });
+    let scanA;
+    if (compareToId) {
+      scanA = await prisma.scanJob.findFirst({
+        where: { id: compareToId, orgId: member.orgId, ...targetMatch },
+      });
+    } else {
+      // Auto-pick: prefer the most recent COMPLETED scan that shares at least
+      // one normalized scan type with scanB. The naive "previous COMPLETED"
+      // pick used to land on a chronologically-prior run with no overlap
+      // (e.g. a DAST-only scan before a PENTEST_FULL one), which then bailed
+      // with "no shared scan types" even though an older comparable run
+      // existed earlier in history. Cap the lookback so we don't scan the
+      // entire scan history for a target that's been around forever.
+      const candidates = await prisma.scanJob.findMany({
+        where: {
+          orgId: member.orgId,
+          id: { not: scanB.id },
+          status: "COMPLETED",
+          completedAt: { lt: scanB.startedAt, not: null },
+          ...targetMatch,
+        },
+        orderBy: { completedAt: "desc" },
+        take: 20,
+      });
+      scanA =
+        candidates.find((c) =>
+          c.scanTypes.some((t) => normalizedB.has(normalizeType(t))),
+        ) ?? candidates[0] ?? null;
+    }
     if (!scanA || !scanA.startedAt || !scanA.completedAt) {
       res.status(404).json({ error: "No earlier scan available to compare against" });
       return;
@@ -181,13 +275,58 @@ router.get("/:id/diff", async (req, res, next) => {
 
     const windowEndB = scanB.completedAt ?? new Date();
 
-    // Fingerprint sets in each scan's window (target-scoped).
+    // Effective scan types = (A.scanTypes ∩ B.scanTypes) − (A.failed ∪ B.failed),
+    // computed in the *normalized* space so PENTEST↔PENTEST_FULL collapses
+    // to one symbol. A failed sub-scan returns zero findings, so including
+    // its type in the diff would falsely classify all of the OTHER scan's
+    // findings of that type as "removed". Same logic for non-overlap: a
+    // SAST scan can't say anything about DAST findings.
+    const failedUnion = new Set<string>([
+      ...scanA.failedScanTypes.map(normalizeType),
+      ...scanB.failedScanTypes.map(normalizeType),
+    ]);
+    const sharedNormalized = [
+      ...new Set(
+        scanA.scanTypes
+          .map(normalizeType)
+          .filter((t) => normalizedB.has(t)),
+      ),
+    ];
+    const effectiveTypes = sharedNormalized.filter((t) => !failedUnion.has(t));
+    // Expand back to concrete DB enum values for the Finding query — the
+    // canonical symbol may map to multiple stored labels (PENTEST_FULL →
+    // ["PENTEST", "PENTEST_FULL"]).
+    const dbScanTypes = [...new Set(effectiveTypes.flatMap(expandType))];
+
+    if (effectiveTypes.length === 0) {
+      res.json({
+        scanA: {
+          id: scanA.id, startedAt: scanA.startedAt, completedAt: scanA.completedAt,
+          scanTypes: scanA.scanTypes, failedScanTypes: scanA.failedScanTypes,
+        },
+        scanB: {
+          id: scanB.id, startedAt: scanB.startedAt, completedAt: windowEndB,
+          scanTypes: scanB.scanTypes, failedScanTypes: scanB.failedScanTypes,
+        },
+        added: [],
+        removed: [],
+        unchangedCount: 0,
+        reason:
+          sharedNormalized.length === 0
+            ? "These scans don't share any scan types — nothing comparable."
+            : "All shared scan types failed in one of the two scans — diff would be misleading.",
+      });
+      return;
+    }
+
+    // Fingerprint sets in each scan's window (target-scoped + scan-type-scoped).
     // "Present in X" = firstSeen <= X.completedAt AND lastSeen >= X.startedAt
     const presentIn = async (sa: Date, sb: Date) => {
       const rows = await prisma.finding.findMany({
         where: {
           orgId: member.orgId,
           ...targetMatch,
+          scanType:  { in: dbScanTypes as ScanType[] },
           firstSeen: { lte: sb },
           lastSeen:  { gte: sa },
         },
@@ -207,25 +346,157 @@ router.get("/:id/diff", async (req, res, next) => {
 
     // Hydrate added/removed with finding details (unchanged returns count only to
     // keep payload small — the UI rarely needs the full list of stable findings).
-    const hydrate = (fps: string[]) =>
-      fps.length === 0 ? Promise.resolve([]) : prisma.finding.findMany({
-        where: { orgId: member.orgId, fingerprint: { in: fps } },
-        select: {
-          id: true, fingerprint: true, title: true, severity: true, scanType: true,
-          status: true, confidence: true, ruleId: true, cveId: true,
-          filePath: true, lineStart: true, firstSeen: true, lastSeen: true,
-        },
-        orderBy: [{ severity: "asc" }, { firstSeen: "desc" }],
-        take: 500,
-      });
+    // Type the function explicitly so the empty-fps short circuit doesn't
+    // collapse to never[] — the scope-aware classifier below depends on
+    // this concrete row shape to push into the in-scope / out-of-scope
+    // buckets.
+    type HydratedFinding = {
+      id:          string;
+      fingerprint: string;
+      title:       string;
+      severity:    Awaited<ReturnType<typeof prisma.finding.findMany>>[number]["severity"];
+      scanType:    Awaited<ReturnType<typeof prisma.finding.findMany>>[number]["scanType"];
+      status:      Awaited<ReturnType<typeof prisma.finding.findMany>>[number]["status"];
+      confidence:  Awaited<ReturnType<typeof prisma.finding.findMany>>[number]["confidence"];
+      ruleId:      string | null;
+      cveId:       string | null;
+      filePath:    string | null;
+      lineStart:   number | null;
+      firstSeen:   Date;
+      lastSeen:    Date;
+    };
+    const hydrate = (fps: string[]): Promise<HydratedFinding[]> =>
+      fps.length === 0
+        ? Promise.resolve([] as HydratedFinding[])
+        : prisma.finding.findMany({
+            where: { orgId: member.orgId, fingerprint: { in: fps } },
+            select: {
+              id: true, fingerprint: true, title: true, severity: true, scanType: true,
+              status: true, confidence: true, ruleId: true, cveId: true,
+              filePath: true, lineStart: true, firstSeen: true, lastSeen: true,
+            },
+            orderBy: [{ severity: "asc" }, { firstSeen: "desc" }],
+            take: 500,
+          });
 
-    const [added, removed] = await Promise.all([hydrate(addedFps), hydrate(removedFps)]);
+    const [addedHydrated, removedHydrated] = await Promise.all([
+      hydrate(addedFps),
+      hydrate(removedFps),
+    ]);
+
+    // ── Scope-aware classification ────────────────────────────────────────
+    // A finding "removed" between A → B has two very different meanings:
+    //   1. Genuinely fixed   — the URL was re-scanned in B and the vuln is gone
+    //   2. Out of scope       — B never visited that URL, so we can't claim
+    //                            the vuln is fixed (the crawler may have
+    //                            walked a different path, login may have
+    //                            broken, recording may have skipped pages)
+    //
+    // Same logic in reverse for "added": a brand-new URL that wasn't in
+    // scope of A means the finding could have existed all along — A just
+    // didn't look there.
+    //
+    // To distinguish them we use the per-scan targetUrls list (populated
+    // by PENTEST_FULL crawler / DAST recording). Scans that don't carry
+    // a URL surface (SAST / SCA / SECRET / IAC / CONTAINER) leave
+    // targetUrls null, in which case we fall back to the legacy behavior
+    // (classify everything as in-scope) — code findings don't have an
+    // analogous "this file wasn't visited" concept yet.
+    //
+    // Matching is path-prefix sensitive: the Finding's filePath holds the
+    // full URL (e.g. http://dvwa/login.php?id=1) for pentest findings.
+    // We compare exact strings first (cheap), then fall back to prefix
+    // matching to tolerate trailing-slash and query-string variation.
+    const scanAUrls: string[] | null = Array.isArray(scanA.targetUrls)
+      ? (scanA.targetUrls as unknown as string[])
+      : null;
+    const scanBUrls: string[] | null = Array.isArray(scanB.targetUrls)
+      ? (scanB.targetUrls as unknown as string[])
+      : null;
+
+    const buildUrlIndex = (urls: string[] | null) => {
+      if (!urls || urls.length === 0) return null;
+      const exact   = new Set<string>();
+      const noQuery = new Set<string>();
+      for (const u of urls) {
+        exact.add(u);
+        const idx = u.indexOf("?");
+        noQuery.add(idx >= 0 ? u.slice(0, idx) : u);
+      }
+      return { exact, noQuery };
+    };
+    const urlsAIdx = buildUrlIndex(scanAUrls);
+    const urlsBIdx = buildUrlIndex(scanBUrls);
+
+    // A URL is "in scope" of a scan if either the exact URL or its
+    // path-only form (query-string stripped) appears in that scan's
+    // recorded URL list. Findings without a filePath (or non-pentest
+    // findings) are assumed in-scope — see comment above.
+    const isInScope = (
+      filePath: string | null,
+      scanType: string,
+      idx: ReturnType<typeof buildUrlIndex>,
+    ): boolean => {
+      if (!idx) return true; // no URL list captured → can't classify, treat as in-scope
+      // Code-level scan types don't operate on URLs; the filePath is a
+      // source path, never a URL. Always in-scope for them.
+      if (
+        scanType === "SAST" || scanType === "SCA" || scanType === "SECRET" ||
+        scanType === "IAC"  || scanType === "CONTAINER"
+      ) return true;
+      if (!filePath) return true; // pentest finding without a URL field — can't classify
+      if (idx.exact.has(filePath)) return true;
+      const q = filePath.indexOf("?");
+      const noQ = q >= 0 ? filePath.slice(0, q) : filePath;
+      return idx.noQuery.has(noQ);
+    };
+
+    const removed: HydratedFinding[]         = [];
+    const outOfScopeRemoved: HydratedFinding[] = [];
+    for (const f of removedHydrated) {
+      // For "removed" we ask: was the URL visited in scanB? If yes, the
+      // vuln is genuinely gone. If no, scanB never looked there — out of
+      // scope, can't claim fixed.
+      if (isInScope(f.filePath, f.scanType, urlsBIdx)) {
+        removed.push(f);
+      } else {
+        outOfScopeRemoved.push(f);
+      }
+    }
+
+    const added: HydratedFinding[]             = [];
+    const outOfScopeAdded: HydratedFinding[]   = [];
+    for (const f of addedHydrated) {
+      // For "added" we ask: was the URL visited in scanA? If yes, the
+      // vuln is genuinely new. If no, scanA never looked there — could
+      // have existed all along, just newly discovered.
+      if (isInScope(f.filePath, f.scanType, urlsAIdx)) {
+        added.push(f);
+      } else {
+        outOfScopeAdded.push(f);
+      }
+    }
 
     res.json({
-      scanA: { id: scanA.id, startedAt: scanA.startedAt, completedAt: scanA.completedAt, scanTypes: scanA.scanTypes },
-      scanB: { id: scanB.id, startedAt: scanB.startedAt, completedAt: scanB.completedAt, scanTypes: scanB.scanTypes },
+      scanA: {
+        id: scanA.id, startedAt: scanA.startedAt, completedAt: scanA.completedAt,
+        scanTypes: scanA.scanTypes, failedScanTypes: scanA.failedScanTypes,
+        targetUrlCount: scanAUrls?.length ?? null,
+      },
+      scanB: {
+        id: scanB.id, startedAt: scanB.startedAt, completedAt: scanB.completedAt,
+        scanTypes: scanB.scanTypes, failedScanTypes: scanB.failedScanTypes,
+        targetUrlCount: scanBUrls?.length ?? null,
+      },
+      effectiveScanTypes: effectiveTypes,
       added,
       removed,
+      // Scope-aware additions: empty arrays when neither scan has a URL
+      // list (legacy / code scans). Always present in the response so
+      // clients don't have to feature-detect.
+      outOfScopeAdded,
+      outOfScopeRemoved,
+      scopeAware: Boolean(urlsAIdx || urlsBIdx),
       unchangedCount: unchangedFps.length,
     });
   } catch (err) { next(err); }
