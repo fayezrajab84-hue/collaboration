@@ -664,8 +664,8 @@ function TestResultPanel({ result }: { result: SsoTestResult }) {
     const missing   = REQUESTED_SCOPES.filter((s) => supported.length > 0 && !supported.includes(s));
 
     return (
-      <div className="rounded-md border border-teal-900/40 bg-teal-950/30 px-3 py-2 text-xs text-gray-300">
-        <div className="flex items-center gap-2 text-teal-300 font-semibold">
+      <div className="rounded-md border border-indigo-900/40 bg-indigo-950/30 px-3 py-2 text-xs text-gray-300">
+        <div className="flex items-center gap-2 text-indigo-300 font-semibold">
           <Check className="h-3.5 w-3.5" />
           Discovery OK · {result.latencyMs}ms
         </div>
@@ -693,11 +693,8 @@ function TestResultPanel({ result }: { result: SsoTestResult }) {
           </div>
         </div>
         {missing.length > 0 && (
-          <p className="mt-2 flex items-start gap-1.5 text-[10px] text-amber-300/90">
-            <AlertCircle className="h-3 w-3 mt-0.5 shrink-0 text-amber-400" />
-            <span>
-              IdP doesn&apos;t advertise <code className="text-amber-200">{missing.join(", ")}</code> as a supported scope. Most IdPs (Entra, Okta) silently ignore unknown scopes — for group → role mapping with Entra, configure <em>Token configuration → Optional claims → groups</em> at the IdP instead. <code>User.Read</code> Graph permission is enough for the standard openid/email/profile claims.
-            </span>
+          <p className="mt-2 text-[10px] leading-relaxed text-gray-400">
+            IdP doesn&apos;t advertise <code className="text-indigo-300">{missing.join(", ")}</code> as a supported scope. Most IdPs (Entra, Okta) silently ignore unknown scopes — for group → role mapping with Entra, configure <em>Token configuration → Optional claims → groups</em> at the IdP instead. <code className="text-indigo-300">User.Read</code> Graph permission is enough for the standard openid/email/profile claims.
           </p>
         )}
       </div>
