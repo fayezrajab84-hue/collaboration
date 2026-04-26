@@ -124,6 +124,28 @@ export default function SSOTab() {
   // Detect from existing issuerUrl when hydrating, default to "generic".
   const [provider, setProvider] = useState<ProviderPreset>("generic");
 
+  // When the user picks a different provider, pre-fill the issuer URL with
+  // that provider's template so they can edit the tenant ID / domain part
+  // rather than typing the whole thing. We DON'T overwrite a custom URL the
+  // user has already typed — the value is only replaced when:
+  //   • it's empty, or
+  //   • it matches an existing preset's template exactly (signals an
+  //     unedited starting point — including the auto-detected hydrated
+  //     value when the saved config was a Google/Okta/etc. URL)
+  // If they've typed a real Entra tenant URL, picking Okta won't blow it
+  // away.
+  function handleProviderChange(newProvider: ProviderPreset) {
+    setProvider(newProvider);
+    const current = form.issuerUrl.trim();
+    const isTemplateOrSavedDefault =
+      current === "" ||
+      Object.values(PROVIDER_PRESETS).some((p) => p.issuerTemplate === current) ||
+      detectProvider(current) === provider;
+    if (isTemplateOrSavedDefault) {
+      setForm((f) => ({ ...f, issuerUrl: PROVIDER_PRESETS[newProvider].issuerTemplate }));
+    }
+  }
+
   // Hydrate form from existing config when it loads. Also infer the provider
   // preset from the issuer URL so the right guidance shows for already-saved
   // configs.
@@ -269,7 +291,7 @@ export default function SSOTab() {
           </p>
           <select
             value={provider}
-            onChange={(e) => setProvider(e.target.value as ProviderPreset)}
+            onChange={(e) => handleProviderChange(e.target.value as ProviderPreset)}
             className="w-full rounded bg-gray-800 px-3 py-2 text-xs text-gray-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
           >
             {(Object.entries(PROVIDER_PRESETS) as [ProviderPreset, typeof PROVIDER_PRESETS["generic"]][]).map(
