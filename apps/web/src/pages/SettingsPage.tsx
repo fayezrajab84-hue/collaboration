@@ -43,7 +43,7 @@ function GitHubTab() {
     <div className="space-y-6">
       <div>
         <h2 className="text-base font-semibold text-white">GitHub Account</h2>
-        <p className="mt-1 text-sm text-gray-400">Connected via GitHub OAuth.</p>
+        <p className="mt-1 text-xs text-gray-400">Connected via GitHub OAuth.</p>
       </div>
       <div className="rounded-lg border border-gray-700 bg-gray-800/50 p-4 flex items-center gap-4">
         {user?.avatarUrl && (
@@ -51,7 +51,7 @@ function GitHubTab() {
         )}
         <div>
           <p className="font-medium text-gray-100">{user?.username ?? "—"}</p>
-          <p className="text-sm text-gray-400">{user?.email ?? "No email"}</p>
+          <p className="text-xs text-gray-400">{user?.email ?? "No email"}</p>
         </div>
         <Github className="ml-auto h-5 w-5 text-gray-500" />
       </div>
@@ -111,13 +111,13 @@ function JiraTab() {
 
   const field = (label: string, key: keyof typeof form, type = "text", placeholder = "") => (
     <div>
-      <label className="mb-1.5 block text-sm font-medium text-gray-300">{label}</label>
+      <label className="mb-1.5 block text-xs font-medium text-gray-300">{label}</label>
       <input
         type={type}
         value={form[key]}
         placeholder={placeholder}
         onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))}
-        className="w-full rounded bg-gray-800 px-3 py-2 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+        className="w-full rounded bg-gray-800 px-3 py-2 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-500"
       />
     </div>
   );
@@ -127,7 +127,7 @@ function JiraTab() {
       <div className="flex items-start justify-between">
         <div>
           <h2 className="text-base font-semibold text-white">Jira Integration</h2>
-          <p className="mt-1 text-sm text-gray-400">
+          <p className="mt-1 text-xs text-gray-400">
             Automatically create Jira issues for security findings.
           </p>
         </div>
@@ -139,7 +139,7 @@ function JiraTab() {
       </div>
 
       {existing && (
-        <div className="rounded-lg border border-gray-700 bg-gray-800/50 p-3 text-sm text-gray-300">
+        <div className="rounded-lg border border-gray-700 bg-gray-800/50 p-3 text-xs text-gray-300">
           <span className="font-medium">{(existing as unknown as Record<string, string>)["host"]}</span> · Project:{" "}
           <span className="font-medium">{(existing as unknown as Record<string, string>)["projectKey"]}</span> · {(existing as unknown as Record<string, string>)["email"]}
         </div>
@@ -158,11 +158,11 @@ function JiraTab() {
         <div className="grid grid-cols-2 gap-4">
           {field("Project Key", "projectKey", "text", "SEC")}
           <div>
-            <label className="mb-1.5 block text-sm font-medium text-gray-300">Issue Type</label>
+            <label className="mb-1.5 block text-xs font-medium text-gray-300">Issue Type</label>
             <select
               value={form.issueType}
               onChange={(e) => setForm((f) => ({ ...f, issueType: e.target.value }))}
-              className="w-full rounded bg-gray-800 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              className="w-full rounded bg-gray-800 px-3 py-2 text-xs text-gray-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
             >
               <option>Bug</option>
               <option>Task</option>
@@ -220,7 +220,7 @@ function SlackTab() {
       <div className="flex items-start justify-between">
         <div>
           <h2 className="text-base font-semibold text-white">Slack Integration</h2>
-          <p className="mt-1 text-sm text-gray-400">
+          <p className="mt-1 text-xs text-gray-400">
             Receive alerts in Slack for new CRITICAL and HIGH findings.
           </p>
         </div>
@@ -232,7 +232,7 @@ function SlackTab() {
       </div>
 
       {existing && (
-        <div className="rounded-lg border border-gray-700 bg-gray-800/50 p-3 text-sm text-gray-300">
+        <div className="rounded-lg border border-gray-700 bg-gray-800/50 p-3 text-xs text-gray-300">
           Incoming webhook configured.
         </div>
       )}
@@ -250,17 +250,17 @@ function SlackTab() {
         className="space-y-4"
       >
         <div>
-          <label className="mb-1.5 block text-sm font-medium text-gray-300">Webhook URL</label>
+          <label className="mb-1.5 block text-xs font-medium text-gray-300">Webhook URL</label>
           <input
             type="url"
             value={webhookUrl}
             onChange={(e) => setWebhookUrl(e.target.value)}
             placeholder="https://hooks.slack.com/services/T.../B.../..."
-            className="w-full rounded bg-gray-800 px-3 py-2 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            className="w-full rounded bg-gray-800 px-3 py-2 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-500"
           />
         </div>
         <div>
-          <label className="mb-1.5 block text-sm font-medium text-gray-300">
+          <label className="mb-1.5 block text-xs font-medium text-gray-300">
             Channel <span className="text-gray-600">(optional)</span>
           </label>
           <input
@@ -268,7 +268,7 @@ function SlackTab() {
             value={channel}
             onChange={(e) => setChannel(e.target.value)}
             placeholder="#security-alerts"
-            className="w-full rounded bg-gray-800 px-3 py-2 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            className="w-full rounded bg-gray-800 px-3 py-2 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-500"
           />
         </div>
         <div className="flex items-center gap-3 pt-1">
@@ -319,7 +319,7 @@ function TeamsTab() {
       <div className="flex items-start justify-between">
         <div>
           <h2 className="text-base font-semibold text-white">Microsoft Teams Integration</h2>
-          <p className="mt-1 text-sm text-gray-400">
+          <p className="mt-1 text-xs text-gray-400">
             Receive alerts in Microsoft Teams for new CRITICAL and HIGH findings.
           </p>
         </div>
@@ -331,7 +331,7 @@ function TeamsTab() {
       </div>
 
       {existing && (
-        <div className="rounded-lg border border-gray-700 bg-gray-800/50 p-3 text-sm text-gray-300">
+        <div className="rounded-lg border border-gray-700 bg-gray-800/50 p-3 text-xs text-gray-300">
           Incoming webhook configured.
         </div>
       )}
@@ -348,13 +348,13 @@ function TeamsTab() {
         className="space-y-4"
       >
         <div>
-          <label className="mb-1.5 block text-sm font-medium text-gray-300">Webhook URL</label>
+          <label className="mb-1.5 block text-xs font-medium text-gray-300">Webhook URL</label>
           <input
             type="url"
             value={webhookUrl}
             onChange={(e) => setWebhookUrl(e.target.value)}
             placeholder="https://company.webhook.office.com/webhookb2/..."
-            className="w-full rounded bg-gray-800 px-3 py-2 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            className="w-full rounded bg-gray-800 px-3 py-2 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-500"
           />
         </div>
         <div className="flex items-center gap-3 pt-1">
