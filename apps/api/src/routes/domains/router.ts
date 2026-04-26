@@ -662,6 +662,11 @@ router.post("/:id/recording/start", async (req, res, next) => {
       domainId: req.params["id"]!,
       userId:   user.id,
     });
+    await audit.log({
+      orgId: member.orgId, userId: user.id,
+      action: "recording.start", resourceType: "RecordingSession", resourceId: req.params["id"]!,
+      metadata: { domainId: req.params["id"] },
+    });
     res.json(result);
   } catch (err) {
     const code = (err as Error & { code?: string }).code;
@@ -687,6 +692,11 @@ router.post("/:id/recording/scan", async (req, res, next) => {
     const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
     if (!member) { res.status(403).json({ error: "Forbidden" }); return; }
     const result = await recording.runScan(member.orgId, req.params["id"]!);
+    await audit.log({
+      orgId: member.orgId, userId: user.id,
+      action: "recording.scan", resourceType: "RecordingSession", resourceId: req.params["id"]!,
+      metadata: { domainId: req.params["id"] },
+    });
     res.status(202).json(result);
   } catch (err) {
     const code = (err as Error & { code?: string }).code;
@@ -704,6 +714,11 @@ router.post("/:id/recording/promote", async (req, res, next) => {
       req.body?.depth === "AGGRESSIVE" ? "AGGRESSIVE" :
       req.body?.depth === "QUICK"      ? "QUICK"      : "STANDARD";
     const result = await recording.promote(member.orgId, req.params["id"]!, { depth });
+    await audit.log({
+      orgId: member.orgId, userId: user.id,
+      action: "recording.promote", resourceType: "RecordingSession", resourceId: req.params["id"]!,
+      metadata: { domainId: req.params["id"], depth },
+    });
     res.status(202).json(result);
   } catch (err) {
     const code = (err as Error & { code?: string }).code;
@@ -719,6 +734,11 @@ router.post("/:id/recording/stop", async (req, res, next) => {
     const member = await prisma.organizationMember.findFirst({ where: { userId: user.id } });
     if (!member) { res.status(403).json({ error: "Forbidden" }); return; }
     const result = await recording.stop(member.orgId, req.params["id"]!);
+    await audit.log({
+      orgId: member.orgId, userId: user.id,
+      action: "recording.stop", resourceType: "RecordingSession", resourceId: req.params["id"]!,
+      metadata: { domainId: req.params["id"] },
+    });
     res.json(result);
   } catch (err) { next(err); }
 });

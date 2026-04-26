@@ -24,6 +24,7 @@ import { requireAuth } from "../../middleware/requireAuth.js";
 import prisma from "../../db.js";
 import { encrypt } from "../../services/encryptionService.js";
 import { invokeAI, AIError } from "../../services/aiClient.js";
+import * as audit from "../../services/auditService.js";
 import { logger } from "../../logger.js";
 
 const router = Router();
@@ -130,6 +131,17 @@ router.put("/:type", async (req, res, next) => {
       },
     });
 
+    await audit.log({
+      orgId, userId: user.id,
+      action: existing ? "ai_provider.update" : "ai_provider.create",
+      resourceType: "AIProvider", resourceId: row.id,
+      metadata: {
+        type, defaultModel: body.defaultModel,
+        keyChanged: !!body.apiKey,
+        isDefault:  body.isDefault ?? false,
+      },
+    });
+
     res.json({ ok: true, id: row.id, type: row.type });
   } catch (err) { next(err); }
 });
@@ -140,7 +152,14 @@ router.delete("/:type", async (req, res, next) => {
     const user  = req.user as { id: string };
     const orgId = await getOrgId(user.id);
     if (orgId) {
-      await prisma.aIProvider.deleteMany({ where: { orgId, type } });
+      const result = await prisma.aIProvider.deleteMany({ where: { orgId, type } });
+      if (result.count > 0) {
+        await audit.log({
+          orgId, userId: user.id,
+          action: "ai_provider.delete", resourceType: "AIProvider", resourceId: type,
+          metadata: { type },
+        });
+      }
     }
     res.json({ ok: true });
   } catch (err) { next(err); }
@@ -162,6 +181,12 @@ router.post("/:type/default", async (req, res, next) => {
       prisma.aIProvider.updateMany({ where: { orgId, isDefault: true }, data: { isDefault: false } }),
       prisma.aIProvider.update({    where: { id: target.id },           data: { isDefault: true  } }),
     ]);
+
+    await audit.log({
+      orgId, userId: user.id,
+      action: "ai_provider.set_default", resourceType: "AIProvider", resourceId: target.id,
+      metadata: { type },
+    });
 
     res.json({ ok: true });
   } catch (err) { next(err); }
@@ -275,6 +300,11 @@ router.put("/routings/:service", async (req, res, next) => {
       create: { orgId, service, providerId: body.providerId, modelOverride: body.modelOverride },
       update: { providerId: body.providerId, modelOverride: body.modelOverride ?? null },
     });
+    await audit.log({
+      orgId, userId: user.id,
+      action: "ai_routing.set", resourceType: "AIServiceRouting", resourceId: service,
+      metadata: { service, providerType: provider.type, modelOverride: body.modelOverride ?? null },
+    });
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
@@ -285,7 +315,14 @@ router.delete("/routings/:service", async (req, res, next) => {
     const user    = req.user as { id: string };
     const orgId   = await getOrgId(user.id);
     if (orgId) {
-      await prisma.aIServiceRouting.deleteMany({ where: { orgId, service } });
+      const result = await prisma.aIServiceRouting.deleteMany({ where: { orgId, service } });
+      if (result.count > 0) {
+        await audit.log({
+          orgId, userId: user.id,
+          action: "ai_routing.clear", resourceType: "AIServiceRouting", resourceId: service,
+          metadata: { service },
+        });
+      }
     }
     res.json({ ok: true });
   } catch (err) { next(err); }

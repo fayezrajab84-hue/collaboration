@@ -6,8 +6,9 @@ import { useAuth } from "../hooks/useAuth";
 import { useToast } from "../hooks/useToast";
 import AIProvidersTab from "../components/settings/AIProvidersTab";
 import PoliciesTab from "../components/settings/PoliciesTab";
+import AuditLogTab from "../components/settings/AuditLogTab";
 
-type Tab = "github" | "ai" | "policies" | "jira" | "slack" | "teams";
+type Tab = "github" | "ai" | "policies" | "jira" | "slack" | "teams" | "audit";
 
 function SaveButton({ isPending, saved }: { isPending: boolean; saved: boolean }) {
   return (
@@ -373,6 +374,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "jira",     label: "Jira" },
   { id: "slack",  label: "Slack" },
   { id: "teams",  label: "Microsoft Teams" },
+  { id: "audit",  label: "Audit Log" },
 ];
 
 export default function SettingsPage() {
@@ -392,6 +394,7 @@ export default function SettingsPage() {
     jira:     !!jiraData,
     slack:    !!slackData,
     teams:    !!teamsData,
+    audit:    false,  // No "connected" dot — read-only view
   };
 
   return (
@@ -440,6 +443,7 @@ export default function SettingsPage() {
           {activeTab === "jira"     && <JiraTab />}
           {activeTab === "slack"  && <SlackTab />}
           {activeTab === "teams"  && <TeamsTab />}
+          {activeTab === "audit"  && <AuditLogTab />}
         </div>
       </div>
     </div>

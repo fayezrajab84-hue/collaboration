@@ -560,6 +560,54 @@ export const aiProvidersApi = {
   usage: () => apiClient.get<AIUsageRollup>("/ai-providers/usage").then((r) => r.data),
 };
 
+// ── Audit log ─────────────────────────────────────────────────────────────
+
+export interface AuditEvent {
+  id:           string;
+  orgId:        string;
+  userId:       string;
+  action:       string;
+  resourceType: string;
+  resourceId:   string | null;
+  metadata:     Record<string, unknown>;
+  createdAt:    string;
+  user:         { id: string; username: string; avatarUrl: string | null } | null;
+}
+
+export interface AuditListResponse {
+  rows:   AuditEvent[];
+  total:  number;
+  limit:  number;
+  offset: number;
+}
+
+export interface AuditFilters {
+  actionPrefix?: string;
+  resourceType?: string;
+  userId?:       string;
+  fromDate?:     string;
+  toDate?:       string;
+  limit?:        number;
+  offset?:       number;
+}
+
+export const auditApi = {
+  list: (filters: AuditFilters = {}) =>
+    apiClient
+      .get<AuditListResponse>("/audit", { params: filters })
+      .then((r) => r.data),
+
+  /** Returns the export URL — caller should `window.location` to it (sets attachment headers). */
+  exportCsvUrl: (filters: AuditFilters = {}): string => {
+    const params = new URLSearchParams();
+    for (const [k, v] of Object.entries(filters)) {
+      if (v !== undefined && v !== null && v !== "") params.set(k, String(v));
+    }
+    const qs = params.toString();
+    return `/api/audit/export.csv${qs ? `?${qs}` : ""}`;
+  },
+};
+
 // ── Admin (queues) ────────────────────────────────────────────────────────
 
 export interface QueueCounts {

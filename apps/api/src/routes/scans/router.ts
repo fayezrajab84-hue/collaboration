@@ -4,6 +4,7 @@ import prisma from "../../db.js";
 import { addClient, removeClient, emitStatusChange, emit, setLatestProgress, getLatestProgress } from "../../services/sseService.js";
 import { scanQueues } from "../../queues/definitions.js";
 import { generateScanSummary } from "../../services/scanSummaryService.js";
+import * as audit from "../../services/auditService.js";
 import type { ScanType } from "@devsecops/types";
 
 const router = Router();
@@ -537,6 +538,15 @@ router.post("/:id/cancel", async (req, res, next) => {
     });
 
     emitStatusChange(scan.id, "CANCELLED");
+
+    if (member?.orgId) {
+      await audit.log({
+        orgId: member.orgId, userId: user.id,
+        action: "scan.cancel", resourceType: "ScanJob", resourceId: scan.id,
+        metadata: { previousStatus: scan.status, scanTypes: scan.scanTypes },
+      });
+    }
+
     res.json({ success: true });
   } catch (err) { next(err); }
 });
@@ -552,6 +562,15 @@ router.delete("/:id", async (req, res, next) => {
     if (!scan) { res.status(404).json({ error: "Scan job not found" }); return; }
 
     await prisma.scanJob.delete({ where: { id: scan.id } });
+
+    if (member?.orgId) {
+      await audit.log({
+        orgId: member.orgId, userId: user.id,
+        action: "scan.delete", resourceType: "ScanJob", resourceId: scan.id,
+        metadata: { status: scan.status, scanTypes: scan.scanTypes },
+      });
+    }
+
     res.json({ success: true });
   } catch (err) { next(err); }
 });
@@ -570,6 +589,15 @@ router.delete("/", async (req, res, next) => {
     const { count } = await prisma.scanJob.deleteMany({
       where: { orgId: member.orgId, status: "FAILED" },
     });
+
+    if (count > 0) {
+      await audit.log({
+        orgId: member.orgId, userId: user.id,
+        action: "scan.bulk_delete", resourceType: "ScanJob", resourceId: `bulk:${count}`,
+        metadata: { count, status: "FAILED" },
+      });
+    }
+
     res.json({ count });
   } catch (err) { next(err); }
 });

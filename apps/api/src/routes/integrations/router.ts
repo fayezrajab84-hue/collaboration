@@ -3,6 +3,7 @@ import { z } from "zod";
 import { requireAuth } from "../../middleware/requireAuth.js";
 import prisma from "../../db.js";
 import { encrypt, decrypt } from "../../services/encryptionService.js";
+import * as audit from "../../services/auditService.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -43,6 +44,12 @@ router.put("/jira", async (req, res, next) => {
       update: { encryptedData, isActive: true },
     });
 
+    await audit.log({
+      orgId, userId: user.id,
+      action: "integration.jira.upsert", resourceType: "Integration", resourceId: "JIRA",
+      metadata: { projectKey: body.projectKey, issueType: body.issueType },
+    });
+
     res.json({ ok: true, type: "JIRA" });
   } catch (err) { next(err); }
 });
@@ -73,7 +80,15 @@ router.delete("/jira", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
     const orgId = await getOrgId(user.id);
-    if (orgId) await prisma.integration.deleteMany({ where: { orgId, type: "JIRA" } });
+    if (orgId) {
+      const result = await prisma.integration.deleteMany({ where: { orgId, type: "JIRA" } });
+      if (result.count > 0) {
+        await audit.log({
+          orgId, userId: user.id,
+          action: "integration.jira.delete", resourceType: "Integration", resourceId: "JIRA",
+        });
+      }
+    }
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
@@ -103,6 +118,12 @@ router.put("/slack", async (req, res, next) => {
       update: { encryptedData, isActive: true },
     });
 
+    await audit.log({
+      orgId, userId: user.id,
+      action: "integration.slack.upsert", resourceType: "Integration", resourceId: "SLACK",
+      metadata: { hasChannel: !!body.channel },
+    });
+
     res.json({ ok: true, type: "SLACK" });
   } catch (err) { next(err); }
 });
@@ -123,7 +144,15 @@ router.delete("/slack", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
     const orgId = await getOrgId(user.id);
-    if (orgId) await prisma.integration.deleteMany({ where: { orgId, type: "SLACK" } });
+    if (orgId) {
+      const result = await prisma.integration.deleteMany({ where: { orgId, type: "SLACK" } });
+      if (result.count > 0) {
+        await audit.log({
+          orgId, userId: user.id,
+          action: "integration.slack.delete", resourceType: "Integration", resourceId: "SLACK",
+        });
+      }
+    }
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
@@ -143,6 +172,11 @@ router.put("/teams", async (req, res, next) => {
       where: { orgId_type: { orgId, type: "MICROSOFT_TEAMS" } },
       create: { orgId, type: "MICROSOFT_TEAMS", encryptedData: { webhookUrl: encrypt(body.webhookUrl) }, isActive: true },
       update: { encryptedData: { webhookUrl: encrypt(body.webhookUrl) }, isActive: true },
+    });
+
+    await audit.log({
+      orgId, userId: user.id,
+      action: "integration.teams.upsert", resourceType: "Integration", resourceId: "MICROSOFT_TEAMS",
     });
 
     res.json({ ok: true, type: "MICROSOFT_TEAMS" });
@@ -165,7 +199,15 @@ router.delete("/teams", async (req, res, next) => {
   try {
     const user = req.user as { id: string };
     const orgId = await getOrgId(user.id);
-    if (orgId) await prisma.integration.deleteMany({ where: { orgId, type: "MICROSOFT_TEAMS" } });
+    if (orgId) {
+      const result = await prisma.integration.deleteMany({ where: { orgId, type: "MICROSOFT_TEAMS" } });
+      if (result.count > 0) {
+        await audit.log({
+          orgId, userId: user.id,
+          action: "integration.teams.delete", resourceType: "Integration", resourceId: "MICROSOFT_TEAMS",
+        });
+      }
+    }
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
