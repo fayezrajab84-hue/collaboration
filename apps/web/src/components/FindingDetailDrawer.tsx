@@ -588,7 +588,7 @@ function DastSubissuesPanel({ rawOut, findingId, onViewCode, subStatus, onSubSta
                 {onViewCode && (
                   <button
                     onClick={() => onViewCode(occ)}
-                    className="inline-flex items-center gap-1.5 rounded-md border border-indigo-700/40 bg-indigo-900/20 px-2.5 py-1 text-[10px] font-medium text-indigo-300 hover:bg-indigo-900/40 hover:text-indigo-200 transition-colors"
+                    className="mr-auto inline-flex items-center gap-1.5 rounded-md border border-indigo-700/40 bg-indigo-900/20 px-2.5 py-1 text-[10px] font-medium text-indigo-300 hover:bg-indigo-900/40 hover:text-indigo-200 transition-colors"
                   >
                     <Sparkles className="h-3 w-3" />
                     View Evidence + AI Analysis
