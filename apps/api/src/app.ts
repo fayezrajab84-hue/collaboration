@@ -29,6 +29,7 @@ import policiesRouter from "./routes/policies/router.js";
 import auditRouter from "./routes/audit/router.js";
 import membersRouter from "./routes/members/router.js";
 import ssoRouter from "./routes/sso/router.js";
+import sbomRouter from "./routes/sbom/router.js";
 
 import "./auth/passport.js"; // side-effect: registers passport strategies
 
@@ -120,6 +121,7 @@ app.use("/api/policies", apiLimiter, policiesRouter);
 app.use("/api/audit", apiLimiter, auditRouter);
 app.use("/api/members", apiLimiter, membersRouter);
 app.use("/api/sso", apiLimiter, ssoRouter);
+app.use("/api/sbom", apiLimiter, sbomRouter);
 
 // ── Error handler (must be last) ──────────────────────────────────────────
 app.use(errorHandler);

@@ -270,11 +270,15 @@ router.get("/:id/sbom", async (req, res, next) => {
     let sbom: unknown;
     let cacheHit = false;
     let generatedAt: Date | null = null;
+    let signature: string | null = null;
+    let signatureKeyId: string | null = null;
     const cached = await getLatestRepoSbom({ repositoryId: repo.id, format });
     if (cached) {
-      sbom        = cached.document;
-      cacheHit    = true;
-      generatedAt = cached.generatedAt;
+      sbom           = cached.document;
+      cacheHit       = true;
+      generatedAt    = cached.generatedAt;
+      signature      = cached.signature;
+      signatureKeyId = cached.signatureKeyId;
     } else {
       sbom = await generateRepoSbom({
         repoUrl:           repo.url,
@@ -305,7 +309,13 @@ router.get("/:id/sbom", async (req, res, next) => {
     // Operator-facing breadcrumb so curl + browser DevTools surface whether the
     // SBOM came from cache or was just generated. Also useful in support cases.
     res.setHeader("X-Sbom-Source",       cacheHit ? "cache" : "on-demand");
-    if (generatedAt) res.setHeader("X-Sbom-Generated-At", generatedAt.toISOString());
+    if (generatedAt)    res.setHeader("X-Sbom-Generated-At",    generatedAt.toISOString());
+    // Phase 15 Slice C: cosign-compatible signature headers when available.
+    // Verify with: openssl base64 -d -A <<<$X_SBOM_SIGNATURE > sig.bin
+    //              openssl dgst -sha256 -verify pub.pem -signature sig.bin sbom.json
+    // Or: cosign verify-blob --key pub.pem --signature sig.bin sbom.json
+    if (signature)      res.setHeader("X-Sbom-Signature",        signature);
+    if (signatureKeyId) res.setHeader("X-Sbom-Signature-Key-Id", signatureKeyId);
     res.send(JSON.stringify(sbom, null, 2));
   } catch (err) { next(err); }
 });

@@ -14,6 +14,7 @@ import prisma from "../db.js";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
 import { decrypt } from "./encryptionService.js";
+import { signBuffer } from "./sbomSigningService.js";
 
 export type SbomFormat = "cyclonedx" | "spdx";
 
@@ -136,6 +137,10 @@ export async function persistRepoSbom(input: {
         logger.info("[sbom] dedup hit — bumped generatedAt", {
           repositoryId: input.repositoryId, format, sbomId: latest.id,
         });
+        // If the existing row has no signature (created pre-Slice C, or sign
+        // failed last time), backfill it now. The dedup path is the cheapest
+        // place to do this — we already know the document hasn't changed.
+        await maybeBackfillSignature(latest.id);
         continue;
       }
 
@@ -155,6 +160,33 @@ export async function persistRepoSbom(input: {
       logger.info("[sbom] persisted", {
         repositoryId: input.repositoryId, format, components: componentCount, sbomId: created.id,
       });
+
+      // ── Sign (Phase 15 Slice C) ──────────────────────────────────────────
+      // Critical detail: Postgres JSONB normalises documents — strips
+      // whitespace, may reorder object keys. So `JSON.stringify(doc)` does
+      // NOT match `JSON.stringify(<retrieved JSONB>)` byte-for-byte. The
+      // download endpoint serves the post-JSONB form. To make the signature
+      // verify against what the endpoint serves, we must sign the
+      // post-JSONB bytes — fetch the row back, stringify, then sign.
+      try {
+        const persisted = await prisma.sbom.findUniqueOrThrow({
+          where:  { id: created.id },
+          select: { document: true },
+        });
+        const documentBytes  = Buffer.from(JSON.stringify(persisted.document, null, 2), "utf8");
+        const { signature, keyId } = await signBuffer(documentBytes);
+        await prisma.sbom.update({
+          where: { id: created.id },
+          data:  { signature, signatureKeyId: keyId, signedAt: new Date() },
+        });
+        logger.info("[sbom] signed", { sbomId: created.id, keyId });
+      } catch (signErr) {
+        // Signing failure leaves the row unsigned — download endpoint just
+        // omits the X-Sbom-Signature header. Loud-but-harmless degradation.
+        logger.warn("[sbom] sign failed", {
+          sbomId: created.id, error: (signErr as Error).message,
+        });
+      }
     } catch (err) {
       logger.warn("[sbom] persist failed", {
         repositoryId: input.repositoryId, format, error: (err as Error).message,
@@ -163,17 +195,62 @@ export async function persistRepoSbom(input: {
   }
 }
 
-/** Get the latest persisted SBOM for a repo + format, or null. */
+/**
+ * Sign an existing Sbom row if it isn't signed yet. Used by the dedup path
+ * to backfill signatures for rows created before Slice C landed (they have
+ * the document but no signature/keyId).
+ */
+async function maybeBackfillSignature(sbomId: string): Promise<void> {
+  try {
+    const row = await prisma.sbom.findUnique({
+      where:  { id: sbomId },
+      select: { signature: true, document: true },
+    });
+    if (!row || row.signature) return;
+    const documentBytes = Buffer.from(JSON.stringify(row.document, null, 2), "utf8");
+    const { signature, keyId } = await signBuffer(documentBytes);
+    await prisma.sbom.update({
+      where: { id: sbomId },
+      data:  { signature, signatureKeyId: keyId, signedAt: new Date() },
+    });
+    logger.info("[sbom] signature backfilled", { sbomId, keyId });
+  } catch (err) {
+    logger.warn("[sbom] signature backfill failed", { sbomId, error: (err as Error).message });
+  }
+}
+
+/** Get the latest persisted SBOM for a repo + format, or null.
+ *
+ * Returns the signature + keyId when present so the download endpoint can
+ * emit `X-Sbom-Signature` headers. Both null when the row was created
+ * before signing landed or signing failed.
+ */
 export async function getLatestRepoSbom(input: {
   repositoryId: string;
   format:       SbomFormat;
-}): Promise<{ document: unknown; generatedAt: Date; componentCount: number } | null> {
+}): Promise<{
+  document:       unknown;
+  generatedAt:    Date;
+  componentCount: number;
+  signature:      string | null;
+  signatureKeyId: string | null;
+} | null> {
   const row = await prisma.sbom.findFirst({
     where:   { repositoryId: input.repositoryId, format: FORMAT_TO_PRISMA[input.format] },
     orderBy: { generatedAt: "desc" },
-    select:  { document: true, generatedAt: true, componentCount: true },
+    select:  {
+      document: true, generatedAt: true, componentCount: true,
+      signature: true, signatureKeyId: true,
+    },
   });
-  return row ? { document: row.document, generatedAt: row.generatedAt, componentCount: row.componentCount } : null;
+  if (!row) return null;
+  return {
+    document:       row.document,
+    generatedAt:    row.generatedAt,
+    componentCount: row.componentCount,
+    signature:      row.signature,
+    signatureKeyId: row.signatureKeyId,
+  };
 }
 
 /**
