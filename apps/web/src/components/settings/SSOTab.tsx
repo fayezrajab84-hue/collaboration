@@ -653,6 +653,16 @@ function Field({
 
 function TestResultPanel({ result }: { result: SsoTestResult }) {
   if (result.ok) {
+    // Scopes BreachLens hard-codes in the authorization URL (see
+    // apps/api/src/auth/oidcService.ts buildAuthorizationUrl). Surfaced
+    // here so operators can compare against what the IdP advertises —
+    // particularly important for the `groups` scope which Entra ignores
+    // (groups arrive via Token configuration → Optional claims, not via
+    // scope grants).
+    const REQUESTED_SCOPES = ["openid", "email", "profile", "groups"];
+    const supported = result.scopesSupported ?? [];
+    const missing   = REQUESTED_SCOPES.filter((s) => supported.length > 0 && !supported.includes(s));
+
     return (
       <div className="rounded-md border border-teal-900/40 bg-teal-950/30 px-3 py-2 text-xs text-gray-300">
         <div className="flex items-center gap-2 text-teal-300 font-semibold">
@@ -669,12 +679,27 @@ function TestResultPanel({ result }: { result: SsoTestResult }) {
             </>
           )}
           <dt>jwks</dt>            <dd className="break-all text-gray-300">{result.jwksUri}</dd>
-          {result.scopesSupported && result.scopesSupported.length > 0 && (
-            <>
-              <dt>scopes</dt>      <dd className="text-gray-300">{result.scopesSupported.join(", ")}</dd>
-            </>
-          )}
         </dl>
+        {/* Scopes shown as two distinct rows so operators don't confuse
+            "what the IdP advertises" with "what BreachLens requests". */}
+        <div className="mt-3 space-y-1.5 rounded bg-gray-950/60 px-2.5 py-2 font-mono text-[10px]">
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <span className="shrink-0 text-gray-500">supported by IdP</span>
+            <span className="text-gray-300">{supported.length > 0 ? supported.join(", ") : "—"}</span>
+          </div>
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <span className="shrink-0 text-gray-500">requested by BreachLens</span>
+            <span className="text-indigo-200">{REQUESTED_SCOPES.join(", ")}</span>
+          </div>
+        </div>
+        {missing.length > 0 && (
+          <p className="mt-2 flex items-start gap-1.5 text-[10px] text-amber-300/90">
+            <AlertCircle className="h-3 w-3 mt-0.5 shrink-0 text-amber-400" />
+            <span>
+              IdP doesn&apos;t advertise <code className="text-amber-200">{missing.join(", ")}</code> as a supported scope. Most IdPs (Entra, Okta) silently ignore unknown scopes — for group → role mapping with Entra, configure <em>Token configuration → Optional claims → groups</em> at the IdP instead. <code>User.Read</code> Graph permission is enough for the standard openid/email/profile claims.
+            </span>
+          </p>
+        )}
       </div>
     );
   }
