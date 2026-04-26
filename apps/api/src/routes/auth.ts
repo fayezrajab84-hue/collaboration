@@ -125,6 +125,13 @@ router.get("/sso/callback", async (req, res, next) => {
     const code  = req.query["code"];
     const state = req.query["state"];
     if (typeof code !== "string" || typeof state !== "string") {
+      // Surface IdP-returned error params so operators can diagnose
+      // misconfigured app registrations (most common: invalid_client,
+      // unauthorized_client, invalid_redirect_uri, consent_required).
+      logger.warn("[sso] callback missing code/state", {
+        query: req.query,
+        hasSession: Boolean(req.session.ssoState),
+      });
       res.redirect(ssoErrorRedirect("invalid_callback"));
       return;
     }
