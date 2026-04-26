@@ -79,13 +79,23 @@
 
 ---
 
-### Phase 15 — SBOM generation ❌ *(MUST-HAVE, 🚪 govt/regulated procurement, 3–5 days)*
+### Phase 15 — SBOM generation 🟨 *(MUST-HAVE, 🚪 govt/regulated procurement, ~2 days remaining)*
 
-- Generate CycloneDX + SPDX per repo on each scan
-- Store under `Repository`, expose via `GET /api/repos/:id/sbom?format=cyclonedx`
-- Sign with `cosign` for attestation
+**Shipped (Slice A — `14bedf5` + earlier):**
 
-**Why:** US Executive Order 14028 + EU Cyber Resilience Act make SBOMs mandatory for selling to government and large enterprise. No SBOM = no procurement.
+- ✅ CycloneDX generation via Trivy (repos: `trivy fs`; containers: `trivy image`)
+- ✅ SPDX (ISO/IEC 5962) generation alongside CycloneDX
+- ✅ `GET /api/repos/:id/sbom?format=cyclonedx|spdx` + `GET /api/containers/:id/sbom?format=…`
+- ✅ Right Content-Type + filename per format (.cdx.json / .spdx.json)
+- ✅ Audit log on every download (`sbom.download`) — visible in Audit Log tab for compliance
+- ✅ UI: split-button group on Repositories + Containers pages — primary CycloneDX + smaller SPDX
+
+**Remaining (Slices B + C):**
+
+- ❌ **Slice B — per-scan persistence** (~1-2 hours): currently regenerates on every download (re-clone + re-scan). Persisting per scan enables (a) instant downloads, (b) historical SBOMs ("what did the BOM look like at scan T?"), (c) delta tracking (new/removed components scan-over-scan). Schema: new `Sbom` model 1:N with Repository, JSONB document, indexed by scanJobId.
+- ❌ **Slice C — Cosign signing** (~2-3 hours): real procurement evidence. Keypair management runbook, sign on generation, verify on download. EO 14028 explicitly calls out attestation, not just availability.
+
+**Why:** US Executive Order 14028 + EU Cyber Resilience Act make SBOMs mandatory for selling to government and large enterprise. No SBOM = no procurement. Slice A clears the format-availability gate; Slices B+C add the historical+attested evidence procurement actually wants.
 **World-class equivalent:** Snyk SBOM, Anchore.
 
 ---
