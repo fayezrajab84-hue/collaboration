@@ -47,6 +47,12 @@ export interface OidcUserProfile {
   picture?: string;
   /** Group memberships — IdP-dependent. Okta+Azure AD: present in token if scope+config allow. Google: usually absent. */
   groups?:  string[];
+  /**
+   * True when the IdP signalled that the groups claim was too large to inline
+   * (Entra ID: `_claim_names.groups` indirection, fired at ≥150 groups).
+   * Caller should warn the operator since defaultRole will be assigned.
+   */
+  groupOverage?: boolean;
 }
 
 // ── Discovery cache ──────────────────────────────────────────────────────────
@@ -158,21 +164,75 @@ export async function exchangeCodeForUserProfile(
 
   // Normalise the groups claim — different IdPs use different keys.
   // Okta:     "groups"
-  // Azure AD: "groups" (object IDs) or "roles"
+  // Entra ID: "groups" (object IDs by default; configurable to sam_account_name)
+  // Azure AD: same as Entra
   // Auth0:    custom-namespaced ("https://yourdomain/groups")
   // Keycloak: "groups" (with leading slash)
   const groups = extractGroups(profile);
 
+  // Entra ID returns >150 groups as a `_claim_names`/`_claim_sources`
+  // indirection rather than inline. Without a Microsoft Graph call we
+  // can't enumerate them, so we surface a loud warning + fall back to
+  // defaultRole. Operators can remediate by configuring the app
+  // registration to emit `sam_account_name` (Entra) or by reducing the
+  // user's group membership.
+  if (!groups && profile["_claim_names"] && typeof profile["_claim_names"] === "object") {
+    const claimNames = profile["_claim_names"] as Record<string, unknown>;
+    if (claimNames["groups"]) {
+      // Surfaced via the OidcUserProfile.groupOverage flag for the route
+      // handler to log; not a hard failure.
+      return {
+        sub:          extractSubject(profile),
+        email:        extractEmail(profile),
+        name:         typeof profile.name === "string" ? profile.name : undefined,
+        picture:      typeof profile.picture === "string" ? profile.picture : undefined,
+        groups:       undefined,
+        groupOverage: true,
+      };
+    }
+  }
+
   return {
-    sub:     String(profile.sub ?? ""),
-    email:   typeof profile.email === "string" ? profile.email : undefined,
+    sub:     extractSubject(profile),
+    email:   extractEmail(profile),
     name:    typeof profile.name === "string" ? profile.name : undefined,
     picture: typeof profile.picture === "string" ? profile.picture : undefined,
     groups,
   };
 }
 
+function extractSubject(profile: Record<string, unknown>): string {
+  // Entra also emits `oid` (object ID) which is more stable than `sub` across
+  // app re-registrations. Prefer `sub` (standard) but fall through.
+  return String(profile["sub"] ?? profile["oid"] ?? "");
+}
+
+/**
+ * Resolve a user-facing email from the userinfo response. Entra is the
+ * common case where `email` is null but `preferred_username` (the UPN)
+ * is present and looks like an email. Try in standards-preferred order.
+ *
+ * Returns undefined if nothing email-shaped is found — caller surfaces
+ * `no_email_in_profile` to the operator with a remediation pointer.
+ */
+function extractEmail(profile: Record<string, unknown>): string | undefined {
+  const candidates = [
+    profile["email"],
+    profile["preferred_username"],
+    profile["upn"],          // Entra legacy claim, sometimes still present
+    profile["unique_name"],  // Entra v1 token claim
+  ];
+  for (const c of candidates) {
+    if (typeof c === "string" && c.includes("@")) {
+      return c.toLowerCase();
+    }
+  }
+  return undefined;
+}
+
 function extractGroups(profile: Record<string, unknown>): string[] | undefined {
+  // `roles` is included as a fallback for Entra ID app registrations that
+  // expose role assignments instead of group membership.
   const candidates = [profile["groups"], profile["roles"]];
   for (const c of candidates) {
     if (Array.isArray(c)) {

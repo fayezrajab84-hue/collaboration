@@ -20,6 +20,72 @@ import { useToast } from "../../hooks/useToast";
 
 const ROLES: MemberRole[] = ["OWNER", "ADMIN", "SECURITY", "DEVELOPER", "VIEWER"];
 
+// Provider presets — pre-fill issuer URL placeholder + show provider-specific
+// setup notes. These are guidance only; the actual config is generic OIDC.
+type ProviderPreset = "generic" | "entra" | "okta" | "auth0" | "google" | "keycloak";
+
+const PROVIDER_PRESETS: Record<ProviderPreset, {
+  label:           string;
+  issuerTemplate:  string;
+  notes:           string[];
+}> = {
+  generic: {
+    label:          "Generic OIDC",
+    issuerTemplate: "https://your-idp.example.com",
+    notes: [
+      "Any standards-compliant OIDC IdP works. Discovery happens at <issuerUrl>/.well-known/openid-configuration.",
+    ],
+  },
+  entra: {
+    label:          "Microsoft Entra ID (Azure AD)",
+    issuerTemplate: "https://login.microsoftonline.com/<tenant-id>/v2.0",
+    notes: [
+      "Register an app at Azure Portal → Microsoft Entra ID → App registrations → New registration.",
+      "Set Redirect URI to your /auth/sso/callback URL.",
+      "Add a Client Secret under Certificates & secrets — copy the VALUE (not the secret ID).",
+      "Token configuration → Optional claims → emit 'groups' as 'sam_account_name' (otherwise groups arrive as opaque GUIDs).",
+      "Use '/common/v2.0' instead of '<tenant-id>/v2.0' to accept any Microsoft account (multi-tenant).",
+      "Users in ≥150 groups: the IdP returns a _claim_names indirection that we can't expand without Graph API access — those users fall back to the default role.",
+    ],
+  },
+  okta: {
+    label:          "Okta",
+    issuerTemplate: "https://<your-tenant>.okta.com/oauth2/default",
+    notes: [
+      "Applications → Create App Integration → OIDC + Web Application.",
+      "Sign-in redirect URIs: your /auth/sso/callback URL.",
+      "Assignments → Allow your users + grant groups claim via the default authorization server's claim editor.",
+    ],
+  },
+  auth0: {
+    label:          "Auth0",
+    issuerTemplate: "https://<your-tenant>.auth0.com",
+    notes: [
+      "Applications → Create Application → Regular Web Application.",
+      "Allowed Callback URLs: your /auth/sso/callback URL.",
+      "Auth0 doesn't include a 'groups' claim by default — add a custom Action to inject one if you want group → role mapping.",
+    ],
+  },
+  google: {
+    label:          "Google Workspace",
+    issuerTemplate: "https://accounts.google.com",
+    notes: [
+      "Cloud Console → APIs & Services → Credentials → OAuth 2.0 Client IDs → Web Application.",
+      "Authorized redirect URIs: your /auth/sso/callback URL.",
+      "⚠ Google does NOT include groups in OIDC claims. All users get the default role unless you build a Directory API integration on top.",
+    ],
+  },
+  keycloak: {
+    label:          "Keycloak",
+    issuerTemplate: "https://<your-keycloak>/realms/<realm-name>",
+    notes: [
+      "Clients → Create → Client type: openid-connect, Confidential.",
+      "Valid redirect URIs: your /auth/sso/callback URL.",
+      "Client scopes → groups → Mappers: add a 'Group Membership' mapper, set Token Claim Name = 'groups', Full group path = OFF.",
+    ],
+  },
+};
+
 interface FormState {
   issuerUrl:           string;
   clientId:            string;
@@ -54,8 +120,13 @@ export default function SSOTab() {
   const [groupInput, setGroupInput]   = useState("");
   const [groupRole, setGroupRole]     = useState<MemberRole>("DEVELOPER");
   const [testResult, setTestResult]   = useState<SsoTestResult | null>(null);
+  // Provider preset is local-only — guidance for the form, not persisted.
+  // Detect from existing issuerUrl when hydrating, default to "generic".
+  const [provider, setProvider] = useState<ProviderPreset>("generic");
 
-  // Hydrate form from existing config when it loads
+  // Hydrate form from existing config when it loads. Also infer the provider
+  // preset from the issuer URL so the right guidance shows for already-saved
+  // configs.
   useEffect(() => {
     if (existing) {
       setForm({
@@ -67,6 +138,7 @@ export default function SSOTab() {
         defaultRole:         existing.defaultRole,
         isActive:            existing.isActive,
       });
+      setProvider(detectProvider(existing.issuerUrl));
     }
   }, [existing]);
 
@@ -166,7 +238,7 @@ export default function SSOTab() {
           </p>
         </div>
         {isConfigured && (
-          <span className="rounded-full bg-teal-900/40 border border-teal-800/40 px-2.5 py-0.5 text-xs text-teal-300">
+          <span className="rounded-full bg-indigo-900/40 border border-indigo-800/40 px-2.5 py-0.5 text-xs text-indigo-300">
             {existing.isActive ? "Configured" : "Configured (disabled)"}
           </span>
         )}
@@ -188,9 +260,37 @@ export default function SSOTab() {
         onSubmit={(e) => { e.preventDefault(); save.mutate(); }}
         className="space-y-4"
       >
+        {/* Provider preset — guidance only, not persisted. Selecting changes
+            the issuer URL placeholder + reveals provider-specific setup notes. */}
+        <div>
+          <label className="mb-1.5 block text-sm font-medium text-gray-300">Provider</label>
+          <p className="mb-2 text-xs text-gray-500">
+            Select your IdP for setup guidance — saved config is generic OIDC.
+          </p>
+          <select
+            value={provider}
+            onChange={(e) => setProvider(e.target.value as ProviderPreset)}
+            className="w-full rounded bg-gray-800 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+          >
+            {(Object.entries(PROVIDER_PRESETS) as [ProviderPreset, typeof PROVIDER_PRESETS["generic"]][]).map(
+              ([key, p]) => <option key={key} value={key}>{p.label}</option>,
+            )}
+          </select>
+          {provider !== "generic" && (
+            <ul className="mt-2 space-y-1 rounded-md border border-gray-800 bg-gray-950/60 px-3 py-2 text-[11px] text-gray-400">
+              {PROVIDER_PRESETS[provider].notes.map((n, i) => (
+                <li key={i} className="flex items-start gap-1.5">
+                  <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-indigo-400" />
+                  <span className="leading-relaxed">{n}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
         <Field
           label="Issuer URL"
-          placeholder="https://<tenant>.okta.com/oauth2/default"
+          placeholder={PROVIDER_PRESETS[provider].issuerTemplate}
           help="OIDC discovery happens at <issuerUrl>/.well-known/openid-configuration"
           value={form.issuerUrl}
           onChange={(v) => setForm((f) => ({ ...f, issuerUrl: v }))}
@@ -371,7 +471,7 @@ export default function SSOTab() {
                 }
               }}
               disabled={remove.isPending}
-              className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-red-900/50 bg-red-950/30 px-3 py-1.5 text-xs font-semibold text-red-300 hover:bg-red-950/50 disabled:opacity-40"
+              className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-indigo-900/50 bg-indigo-950/30 px-3 py-1.5 text-xs font-semibold text-indigo-300 hover:bg-indigo-950/50 disabled:opacity-40"
             >
               <Trash2 className="h-3 w-3" />
               Remove
@@ -384,6 +484,17 @@ export default function SSOTab() {
       </form>
     </div>
   );
+}
+
+/** Best-effort guess at which preset matches an issuer URL. */
+function detectProvider(issuerUrl: string): ProviderPreset {
+  const u = issuerUrl.toLowerCase();
+  if (u.includes("login.microsoftonline.com") || u.includes("sts.windows.net")) return "entra";
+  if (u.includes(".okta.com") || u.includes(".oktapreview.com"))                return "okta";
+  if (u.includes(".auth0.com"))                                                  return "auth0";
+  if (u.includes("accounts.google.com"))                                         return "google";
+  if (u.includes("/realms/"))                                                    return "keycloak";
+  return "generic";
 }
 
 function Field({

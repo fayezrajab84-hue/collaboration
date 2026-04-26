@@ -146,8 +146,22 @@ router.get("/sso/callback", async (req, res, next) => {
     const profile     = await exchangeCodeForUserProfile(orgConfig, code, redirectUri);
 
     if (!profile.email) {
+      logger.warn("[sso] no email in IdP profile", { orgId: stored.orgId, sub: profile.sub });
       res.redirect(ssoErrorRedirect("no_email_in_profile"));
       return;
+    }
+
+    // Entra ID returns >150 groups as a `_claim_names` indirection. We can't
+    // resolve it without Graph API access; user falls back to defaultRole.
+    // Surface this loudly so operators can fix their app-registration claim
+    // config or migrate the user to fewer groups.
+    if (profile.groupOverage) {
+      logger.warn(
+        "[sso] groups overage — IdP returned _claim_names indirection (typical Entra ≥150 groups). " +
+        "Falling back to defaultRole. To fix: configure Entra app registration → Token configuration → " +
+        "Optional claims → groups → 'sam_account_name' (returns inline names).",
+        { orgId: stored.orgId, sub: profile.sub, email: profile.email },
+      );
     }
 
     // ── JIT user provisioning ────────────────────────────────────────────────
