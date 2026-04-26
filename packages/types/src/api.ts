@@ -23,12 +23,25 @@ export interface AuthMeResponse {
   username: string;
   email: string | null;
   avatarUrl: string | null;
+  // The org that subsequent /api/* calls will be scoped to. Drives the
+  // sidebar's org-switcher selection state. Null only if the user has no
+  // memberships at all (transient pre-onboarding state).
+  activeOrgId: string | null;
   orgs: Array<{
     id: string;
     name: string;
     slug: string;
+    type: "PERSONAL" | "TEAM";
     role: string;
   }>;
+}
+
+export interface SwitchOrgRequest {
+  orgId: string;
+}
+
+export interface SwitchOrgResponse {
+  activeOrgId: string;
 }
 
 // ── Repositories ──────────────────────────────────────────────────────────

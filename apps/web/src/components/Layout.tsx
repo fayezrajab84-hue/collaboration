@@ -1,8 +1,11 @@
+import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import {
   Gauge, FolderGit2, Container, Network, Bug,
   Workflow, Settings, LogOut, Radar, BrainCircuit, FileBarChart, Layers,
+  Building2, ChevronsUpDown, Check,
 } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../hooks/useAuth";
 import { authApi } from "../lib/api";
 import { cn } from "../lib/utils";
@@ -73,6 +76,105 @@ function BreachLensLogo({ className = "" }: { className?: string }) {
 
 const ADMIN_ROLES = new Set(["OWNER", "ADMIN"]);
 
+/**
+ * OrgSwitcher — shows the active org in the sidebar; opens a dropdown of
+ * all the user's memberships when they have more than one. Switching
+ * persists to `session.activeOrgId` server-side, then we invalidate every
+ * query because every list is org-scoped (findings, scans, repos, etc).
+ *
+ * Hidden entirely when the user has exactly one org — that's the common
+ * single-tenant case and an unclickable "switcher" reads as broken.
+ */
+function OrgSwitcher({
+  orgs,
+  activeOrgId,
+}: {
+  orgs: NonNullable<ReturnType<typeof useAuth>["user"]>["orgs"];
+  activeOrgId: string | null;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const queryClient = useQueryClient();
+
+  useEffect(() => {
+    if (!open) return;
+    function handler(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  const active = orgs.find((o) => o.id === activeOrgId) ?? orgs[0];
+  if (!active) return null;
+  if (orgs.length < 2) {
+    // Single-org case — just label, no dropdown affordance.
+    return (
+      <div className="flex items-center gap-2 px-3 py-2 text-xs text-gray-400">
+        <Building2 className="h-3.5 w-3.5 flex-shrink-0 text-indigo-400" />
+        <span className="truncate">{active.name}</span>
+      </div>
+    );
+  }
+
+  async function handleSwitch(orgId: string) {
+    setOpen(false);
+    if (orgId === activeOrgId) return;
+    await authApi.switchOrg(orgId);
+    // Every org-scoped list (findings, scans, repos, etc) needs to refetch
+    // with the new active org. Easiest correct option: blow the entire
+    // cache rather than try to enumerate which queryKeys touch org data.
+    await queryClient.invalidateQueries();
+  }
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-gray-800"
+      >
+        <Building2 className="h-3.5 w-3.5 flex-shrink-0 text-indigo-400" />
+        <span className="flex-1 truncate text-xs font-medium text-gray-200">
+          {active.name}
+        </span>
+        <ChevronsUpDown className="h-3.5 w-3.5 flex-shrink-0 text-gray-500" />
+      </button>
+      {open && (
+        <div className="absolute bottom-full left-0 right-0 mb-1 overflow-hidden rounded-lg border border-indigo-900/40 bg-gray-900 shadow-xl shadow-black/50">
+          <div className="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+            Switch organization
+          </div>
+          {orgs.map((o) => {
+            const isActive = o.id === activeOrgId;
+            return (
+              <button
+                key={o.id}
+                type="button"
+                onClick={() => handleSwitch(o.id)}
+                className={cn(
+                  "flex w-full items-center gap-2 px-3 py-2 text-left text-xs transition-colors",
+                  isActive
+                    ? "bg-indigo-950/40 text-indigo-200"
+                    : "text-gray-300 hover:bg-gray-800",
+                )}
+              >
+                <span className="flex-1 truncate">
+                  <span className="font-medium">{o.name}</span>
+                  <span className="ml-2 text-[10px] uppercase tracking-wide text-gray-500">
+                    {o.role}
+                  </span>
+                </span>
+                {isActive && <Check className="h-3.5 w-3.5 flex-shrink-0 text-indigo-400" />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Layout() {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -126,6 +228,13 @@ export default function Layout() {
             </NavLink>
           ))}
         </nav>
+
+        {/* Org switcher — single label for solo-org users, dropdown for 2+ */}
+        {user?.orgs && user.orgs.length > 0 && (
+          <div className="border-t border-gray-800 px-3 pt-3">
+            <OrgSwitcher orgs={user.orgs} activeOrgId={user.activeOrgId} />
+          </div>
+        )}
 
         {/* User footer */}
         <div className="border-t border-gray-800 p-3">

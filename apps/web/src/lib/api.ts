@@ -9,7 +9,7 @@ import type {
   FindingFilterParams, UpdateFindingRequest,
   CreateTicketRequest, UpdateTicketRequest,
   JiraIntegrationConfig, SlackIntegrationConfig, TeamsIntegrationConfig,
-  PaginatedResponse, AuthMeResponse,
+  PaginatedResponse, AuthMeResponse, SwitchOrgResponse,
 } from "@devsecops/types";
 
 export const apiClient = axios.create({
@@ -34,6 +34,10 @@ apiClient.interceptors.response.use(
 export const authApi = {
   me: () => axios.get<AuthMeResponse>("/auth/me", { withCredentials: true }).then((r) => r.data),
   logout: () => axios.post("/auth/logout", {}, { withCredentials: true }),
+  switchOrg: (orgId: string) =>
+    axios
+      .post<SwitchOrgResponse>("/auth/org/switch", { orgId }, { withCredentials: true })
+      .then((r) => r.data),
 };
 
 // ── Repositories ──────────────────────────────────────────────────────────

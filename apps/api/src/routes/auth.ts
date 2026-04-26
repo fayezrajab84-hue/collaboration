@@ -3,6 +3,7 @@ import passport from "passport";
 import { randomBytes } from "node:crypto";
 import { requireAuth } from "../middleware/requireAuth.js";
 import prisma from "../db.js";
+import { getActiveMembership } from "../services/activeOrgService.js";
 import { config } from "../config.js";
 import { encrypt, decrypt } from "../services/encryptionService.js";
 import * as audit from "../services/auditService.js";
@@ -267,18 +268,57 @@ router.get("/me", requireAuth, async (req, res, next) => {
       return;
     }
 
+    // `activeOrgId` is what every other route will scope to — surface it so
+    // the UI can render the right org name + dropdown selection state. Same
+    // resolver as the org-scoped routes; `getActiveMembership` may also
+    // mutate `req.session` (clear stale activeOrgId), so call it before the
+    // response is sent.
+    const active = await getActiveMembership(req);
+
     res.json({
       id: fullUser.id,
       username: fullUser.username,
       email: fullUser.email,
       avatarUrl: fullUser.avatarUrl,
+      activeOrgId: active?.orgId ?? null,
       orgs: orgs.map((m) => ({
         id: m.org.id,
         name: m.org.name,
         slug: m.org.slug,
+        type: m.org.type,
         role: m.role,
       })),
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Switch which org is "active" for the current session. Used by the
+// sidebar's org dropdown when the user belongs to >1 org. Persists into
+// `session.activeOrgId`, which `getActiveMembership` reads first on every
+// subsequent request.
+router.post("/org/switch", requireAuth, async (req, res, next) => {
+  try {
+    const user  = req.user as { id: string };
+    const orgId = String((req.body as { orgId?: unknown })?.orgId ?? "").trim();
+    if (!orgId) {
+      res.status(400).json({ error: "orgId is required" });
+      return;
+    }
+
+    // Verify the user is actually a member of the target org — never trust
+    // the request body for authorization.
+    const membership = await prisma.organizationMember.findUnique({
+      where: { userId_orgId: { userId: user.id, orgId } },
+    });
+    if (!membership) {
+      res.status(403).json({ error: "Not a member of that organization" });
+      return;
+    }
+
+    req.session.activeOrgId = orgId;
+    res.json({ activeOrgId: orgId });
   } catch (err) {
     next(err);
   }
