@@ -7,9 +7,12 @@
  * Pagination: simple offset + limit, server returns total count.
  * Export: hits the CSV endpoint with the same filters as a file download.
  */
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Download, Search, ScrollText, X } from "lucide-react";
+import {
+  ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Download,
+  Search, ScrollText, X,
+} from "lucide-react";
 import { auditApi, type AuditFilters } from "../../lib/api";
 import { formatDate } from "../../lib/utils";
 
@@ -18,6 +21,19 @@ const PAGE_SIZE = 50;
 export default function AuditLogTab() {
   const [filters, setFilters] = useState<AuditFilters>({});
   const [page, setPage] = useState(0);
+  // Click a metadata cell to expand a pretty-printed JSON payload row
+  // beneath. Multiple rows can be open simultaneously — auditors often
+  // compare two events side-by-side. Set is keyed by AuditEvent.id.
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+
+  function toggleExpand(id: string) {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
 
   const queryFilters: AuditFilters = {
     ...filters,
@@ -154,43 +170,67 @@ export default function AuditLogTab() {
                 </td>
               </tr>
             )}
-            {rows.map((row) => (
-              <tr key={row.id} className="hover:bg-gray-800/30">
-                <td className="px-3 py-2 font-mono text-[11px] text-gray-400 whitespace-nowrap">
-                  {formatDate(row.createdAt)}
-                </td>
-                <td className="px-3 py-2 text-gray-300 whitespace-nowrap">
-                  {row.user ? (
-                    <span className="inline-flex items-center gap-1.5">
-                      {row.user.avatarUrl && (
-                        <img src={row.user.avatarUrl} alt="" className="h-4 w-4 rounded-full ring-1 ring-gray-700" />
+            {rows.map((row) => {
+              const fieldCount = Object.keys(row.metadata ?? {}).length;
+              const isExpanded = expandedIds.has(row.id);
+              return (
+                <Fragment key={row.id}>
+                  <tr className="hover:bg-gray-800/30">
+                    <td className="px-3 py-2 font-mono text-[11px] text-gray-400 whitespace-nowrap">
+                      {formatDate(row.createdAt)}
+                    </td>
+                    <td className="px-3 py-2 text-gray-300 whitespace-nowrap">
+                      {row.user ? (
+                        <span className="inline-flex items-center gap-1.5">
+                          {row.user.avatarUrl && (
+                            <img src={row.user.avatarUrl} alt="" className="h-4 w-4 rounded-full ring-1 ring-gray-700" />
+                          )}
+                          {row.user.username}
+                        </span>
+                      ) : (
+                        <span className="text-gray-500 italic">{row.userId}</span>
                       )}
-                      {row.user.username}
-                    </span>
-                  ) : (
-                    <span className="text-gray-500 italic">{row.userId}</span>
+                    </td>
+                    <td className="px-3 py-2 font-mono text-[11px] text-indigo-300 whitespace-nowrap">
+                      {row.action}
+                    </td>
+                    <td className="px-3 py-2 text-gray-400 whitespace-nowrap">
+                      <span className="text-gray-500">{row.resourceType}</span>
+                      {row.resourceId && (
+                        <span className="ml-1 font-mono text-[10px] text-gray-600">{row.resourceId}</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2">
+                      {fieldCount > 0 ? (
+                        <button
+                          onClick={() => toggleExpand(row.id)}
+                          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-gray-400 hover:bg-gray-800 hover:text-indigo-300"
+                          aria-expanded={isExpanded}
+                          title={isExpanded ? "Collapse metadata" : "Expand metadata"}
+                        >
+                          {isExpanded
+                            ? <ChevronUp   className="h-3 w-3" />
+                            : <ChevronDown className="h-3 w-3" />}
+                          {fieldCount} field{fieldCount === 1 ? "" : "s"}
+                        </button>
+                      ) : (
+                        <span className="text-gray-700">—</span>
+                      )}
+                    </td>
+                  </tr>
+                  {isExpanded && (
+                    <tr className="bg-indigo-950/20 border-l-2 border-l-indigo-700/50">
+                      {/* colSpan covers all 5 columns; pre wraps long values */}
+                      <td colSpan={5} className="px-3 pb-3 pt-1">
+                        <pre className="overflow-x-auto rounded-md bg-gray-950 px-3 py-2 font-mono text-[10px] leading-relaxed text-indigo-200">
+{JSON.stringify(row.metadata, null, 2)}
+                        </pre>
+                      </td>
+                    </tr>
                   )}
-                </td>
-                <td className="px-3 py-2 font-mono text-[11px] text-indigo-300 whitespace-nowrap">
-                  {row.action}
-                </td>
-                <td className="px-3 py-2 text-gray-400 whitespace-nowrap">
-                  <span className="text-gray-500">{row.resourceType}</span>
-                  {row.resourceId && (
-                    <span className="ml-1 font-mono text-[10px] text-gray-600">{row.resourceId}</span>
-                  )}
-                </td>
-                <td className="px-3 py-2">
-                  {Object.keys(row.metadata ?? {}).length > 0 ? (
-                    <code className="block max-w-md truncate text-[10px] text-gray-500" title={JSON.stringify(row.metadata)}>
-                      {JSON.stringify(row.metadata)}
-                    </code>
-                  ) : (
-                    <span className="text-gray-700">—</span>
-                  )}
-                </td>
-              </tr>
-            ))}
+                </Fragment>
+              );
+            })}
           </tbody>
         </table>
       </div>
