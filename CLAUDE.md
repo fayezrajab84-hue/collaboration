@@ -283,6 +283,22 @@ shows up in `docker compose logs api` instead of being invisible.
   external auth endpoints. Test SSO in a real browser tab against
   `http://localhost:5173`, not in Preview.
 
+### RBAC — 5-role hierarchy (OWNER > ADMIN > SECURITY > DEVELOPER > VIEWER)
+
+ADMIN handles almost all elevation gates; OWNER differs only in
+last-owner protection (org can't be demoted to zero OWNERs).
+SECURITY gates risk-acceptance + bulk finding ops. DEVELOPER is
+UI-gated only (the API accepts any authenticated user for scan-trigger
+operations — layered defense). MEMBER is a legacy alias for DEVELOPER.
+
+**Full reference:** [`docs/rbac.md`](./docs/rbac.md) — 5-role table,
+per-route capability matrix (every `requireRole(X)` site), how to pick
+the right gate for a new route, OWNER special-case rationale.
+
+`apps/api/src/services/rbac.ts` is the canonical source; both backend
+middleware (`requireRole`) and frontend (`<Can role="X">`) flow through
+the same rank map.
+
 ---
 
 ## Pentest pipeline (`apps/scanner/scanners/pentest_full/`)
