@@ -109,7 +109,7 @@ router.get("/sso/initiate", async (req, res) => {
     req.session.ssoState = { state, nonce, orgId: sso.orgId, configId: sso.id };
 
     const redirectUri = `${config.API_PUBLIC_URL}${SSO_CALLBACK_PATH}`;
-    const authUrl     = await buildAuthorizationUrl(orgConfig, state, nonce, redirectUri);
+    const authUrl     = await buildAuthorizationUrl(orgConfig, state, nonce, redirectUri, email);
 
     logger.info("[sso] initiating login", { email, orgId: sso.orgId, issuer: sso.issuerUrl });
     res.redirect(authUrl);

@@ -87,6 +87,7 @@ export async function buildAuthorizationUrl(
   state: string,
   nonce: string,
   redirectUri: string,
+  loginHint?: string,
 ): Promise<string> {
   const doc = await discover(config.issuerUrl);
   const params = new URLSearchParams({
@@ -105,6 +106,13 @@ export async function buildAuthorizationUrl(
     state,
     nonce,
   });
+  // Pre-fill the username on the IdP login screen so the user doesn't have
+  // to re-type the email they already entered on /login. Standard OIDC
+  // parameter — honoured by Entra (skips username step entirely if SSO
+  // applies), Okta, Google, Auth0.
+  if (loginHint) {
+    params.set("login_hint", loginHint);
+  }
   return `${doc.authorization_endpoint}?${params.toString()}`;
 }
 
