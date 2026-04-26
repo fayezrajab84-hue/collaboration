@@ -93,10 +93,15 @@ export async function buildAuthorizationUrl(
     response_type: "code",
     client_id:     config.clientId,
     redirect_uri:  redirectUri,
-    // `groups` scope is non-standard but commonly supported (Okta, Auth0,
-    // Keycloak). Google ignores it; Azure AD requires it to be configured.
-    // Harmless to request — IdPs that don't recognise it just skip the claim.
-    scope:         "openid email profile groups",
+    // Bare-minimum scope. We deliberately do NOT request `email`, `profile`,
+    // `groups`, or `User.Read` here — those should be driven by the IdP-side
+    // app/client registration (Entra: API permissions + Token Configuration →
+    // Optional Claims; Okta: ID Token claims; Auth0: rules/actions). Sending
+    // them from our side just causes "scope doesn't exist on resource"
+    // failures on tenants that haven't exposed them. `openid` is the protocol
+    // minimum — without it, Entra/Okta won't return an ID token and /userinfo
+    // is unreachable.
+    scope:         "openid",
     state,
     nonce,
   });
