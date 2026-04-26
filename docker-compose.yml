@@ -139,10 +139,15 @@ services:
     cpus: '0.5'
 
   # ── DVWA DB init (one-shot) ─────────────────────────────────────────────────
-  # Automatically initialises the DVWA database on first start so you don't
-  # have to visit setup.php manually. Safe to re-run — CREATE TABLE IF NOT EXISTS.
-  # Run via DVWA's own image so the mysqli extension is available (the
-  # generic php:8-cli-alpine image ships without it and the loop fails forever).
+  # Drives DVWA's own /setup.php → "Create / Reset Database" button via curl.
+  # Manually creating tables via mysqli isn't enough: DVWA's index.php also
+  # checks that the DB schema matches the version it expects, and forces a
+  # 302 → /setup.php whenever it doesn't. Submitting setup.php properly
+  # (with the CSRF user_token) lets DVWA build the schema itself, after
+  # which /login.php returns 200 and scans (DAST/Pentest) work end-to-end.
+  #
+  # Safe to re-run — clicking "Create / Reset Database" idempotently rebuilds
+  # everything. Compose's `restart: "no"` ensures it runs once per `up`.
   dvwa-init:
     image: ghcr.io/digininja/dvwa:latest
     restart: "no"
@@ -152,20 +157,43 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        echo "Waiting for MariaDB to accept connections..."
-        until php -r "new mysqli('dvwa-db','dvwa','p@ssw0rd','',3306);" 2>/dev/null; do sleep 2; done
-        php -r "
-          \$c = new mysqli('dvwa-db','dvwa','p@ssw0rd','dvwa',3306);
-          if(\$c->connect_error){ die('DB connect failed: '.\$c->connect_error); }
-          \$c->query('CREATE TABLE IF NOT EXISTS users (user_id int(6), first_name varchar(15), last_name varchar(15), user varchar(15), password varchar(32), avatar varchar(70), last_login TIMESTAMP, failed_login INT(3), PRIMARY KEY (user_id))');
-          \$r = \$c->query('SELECT COUNT(*) c FROM users');
-          if(\$r->fetch_assoc()['c'] == 0) {
-            \$c->query(\"INSERT INTO users VALUES (1,'admin','admin','admin','5f4dcc3b5aa765d61d8327deb882cf99','/hackable/users/admin.jpg',NOW(),0),(2,'Gordon','Brown','gordonb','e99a18c428cb38d5f260853678922e03','/hackable/users/gordonb.jpg',NOW(),0),(3,'Hack','Me','1337','8d3533d75ae2c3966d7e0d4fcc69216b','/hackable/users/1337.jpg',NOW(),0),(4,'Pablo','Picasso','pablo','0d107d09f5bbe40cade3de5c71e9e9b7','/hackable/users/pablo.jpg',NOW(),0),(5,'Bob','Smith','smithy','5f4dcc3b5aa765d61d8327deb882cf99','/hackable/users/smithy.jpg',NOW(),0)\");
-          }
-          \$c->query('CREATE TABLE IF NOT EXISTS guestbook (comment_id SMALLINT UNSIGNED NOT NULL AUTO_INCREMENT, comment varchar(300), name varchar(100), PRIMARY KEY (comment_id))');
-          \$r2 = \$c->query('SELECT COUNT(*) c FROM users'); echo 'DVWA ready. Users: '.\$r2->fetch_assoc()['c'].PHP_EOL;
-          \$c->close();
-        "
+        set -eu
+        echo "[dvwa-init] waiting for DVWA web service..."
+        # DVWA's apache binds before MariaDB is reachable, so /setup.php may
+        # 500 briefly. Retry until we get a non-error response.
+        until curl -fsS -o /dev/null http://dvwa/setup.php; do sleep 2; done
+
+        COOKIE_JAR=/tmp/dvwa-cookies.txt
+        rm -f "$$COOKIE_JAR"
+
+        echo "[dvwa-init] fetching /setup.php to capture CSRF user_token..."
+        HTML=$$(curl -fsS -c "$$COOKIE_JAR" http://dvwa/setup.php)
+        # CSRF field shape:  <input type='hidden' name='user_token' value='<32+ hex>' />
+        TOKEN=$$(printf '%s' "$$HTML" \
+          | grep -oE "name=['\"]user_token['\"][^>]*value=['\"][a-f0-9]+" \
+          | grep -oE "[a-f0-9]{16,}" \
+          | head -n1)
+
+        if [ -z "$${TOKEN:-}" ]; then
+          echo "[dvwa-init] ERROR: could not extract user_token from /setup.php" >&2
+          printf '%s\n' "$$HTML" | head -n40 >&2
+          exit 1
+        fi
+
+        echo "[dvwa-init] POSTing create_db with user_token..."
+        curl -fsS -b "$$COOKIE_JAR" -c "$$COOKIE_JAR" \
+          --data-urlencode "create_db=Create / Reset Database" \
+          --data-urlencode "user_token=$$TOKEN" \
+          http://dvwa/setup.php -o /dev/null
+
+        # Verify: /login.php should return 200 now (no 302 → /setup.php).
+        CODE=$$(curl -s -o /dev/null -w "%{http_code}" http://dvwa/login.php)
+        echo "[dvwa-init] /login.php returns HTTP $$CODE"
+        if [ "$$CODE" = "200" ]; then
+          echo "[dvwa-init] DVWA setup complete. Default login: admin / password"
+        else
+          echo "[dvwa-init] WARN: /login.php returned $$CODE (expected 200)" >&2
+        fi
     networks:
       - internal
 
@@ -182,15 +210,31 @@ services:
     mem_reservation: 2g
     environment:
       JVM_PROPERTIES: "-Xmx3584m -Xms512m -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
-    command: >
-      zap.sh
-      -daemon
-      -host 0.0.0.0
-      -port 8080
-      -config api.key=${ZAP_API_KEY:?ZAP_API_KEY is required}
-      -config api.addrs.addr.name=.*
-      -config api.addrs.addr.regex=true
-      -config api.disablekey=false
+    # ZAP ships an alpha "Insights" addon (telemetry/observability) that
+    # will issue Control.shutdown() mid-scan when its heuristic decides ZAP
+    # is in a bad state. The log line is:
+    #     [ZAP-Insights] Shutting down ZAP due to High Level Insight
+    # which manifested as DAST scans completing in ~80 s with
+    # `Connection refused` from the scanner — ZAP was actively terminating
+    # itself during the spider/active-scan phase.
+    #
+    # The addon has no documented config to disable the auto-shutdown
+    # behavior, so we delete the .zap plugin files before starting the daemon.
+    # ZAP's addon loader simply skips the plugin directory entries it can't
+    # find. Wrapped in `sh -c` so the rm runs before exec'ing zap.sh; `exec`
+    # so signals (SIGTERM from `docker stop`) propagate correctly.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        rm -f /zap/plugin/insights-*.zap;
+        exec zap.sh
+        -daemon
+        -host 0.0.0.0
+        -port 8080
+        -config api.key=${ZAP_API_KEY:?ZAP_API_KEY is required}
+        -config api.addrs.addr.name=.*
+        -config api.addrs.addr.regex=true
+        -config api.disablekey=false
     networks:
       - internal
       - public       # ZAP needs outbound access to scan external domains
@@ -350,8 +394,12 @@ services:
     mem_limit: 6g
 
   # ── Ollama — local LLM inference (CPU mode, no GPU required) ─────────────
+  # Opt-in service. Enable with COMPOSE_PROFILES=ai (or pentest,ai) in .env,
+  # or run: docker compose --profile ai up -d
+  # When disabled, AI features (autofix, triage, chat, FP detection, etc.) fail open.
   ollama:
     image: ollama/ollama:latest
+    profiles: ["ai"]
     restart: unless-stopped
     volumes:
       - ollama_data:/root/.ollama
@@ -373,6 +421,7 @@ services:
   # Safe to re-run — ollama pull is a no-op when model is already present.
   ollama-init:
     image: ollama/ollama:latest
+    profiles: ["ai"]
     depends_on:
       ollama:
         condition: service_healthy
