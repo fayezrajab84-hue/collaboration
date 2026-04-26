@@ -25,7 +25,7 @@ services:
 
   # ── PostgreSQL ─────────────────────────────────────────────────────────────
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:20edbde7749f822887a1a022ad526fde0a47d6b2be9a8364433605cf65099416
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-devsecops}
@@ -46,7 +46,7 @@ services:
 
   # ── Redis ──────────────────────────────────────────────────────────────────
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:8b81dd37ff027bec4e516d41acfbe9fe2460070dc6d4a4570a2ac5b9d59df065
     restart: unless-stopped
     command: redis-server --save 60 1 --loglevel warning --maxmemory 128mb --maxmemory-policy allkeys-lru
     volumes:
@@ -85,7 +85,7 @@ services:
   # ── DVWA — MariaDB backend ─────────────────────────────────────────────────
   # Dedicated DB for DVWA — kept separate from the platform's Postgres.
   dvwa-db:
-    image: mariadb:10
+    image: mariadb:10@sha256:407fccb51e710f34752c1a3ef9b936d1f55f38d4ac7fa043b3759742d266fd9a
     restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: dvwa
@@ -110,7 +110,7 @@ services:
   # First-time setup: visit http://localhost:4280/setup.php → click "Create / Reset Database"
   # ⚠️  Never expose this service to the internet — it is intentionally insecure.
   dvwa:
-    image: ghcr.io/digininja/dvwa:latest
+    image: ghcr.io/digininja/dvwa:latest@sha256:79c68f08bed0a862dc55363b90619fd2837270a6d4f235f05a7abf6679b37915
     restart: unless-stopped
     depends_on:
       dvwa-db:
@@ -149,7 +149,7 @@ services:
   # Safe to re-run — clicking "Create / Reset Database" idempotently rebuilds
   # everything. Compose's `restart: "no"` ensures it runs once per `up`.
   dvwa-init:
-    image: ghcr.io/digininja/dvwa:latest
+    image: ghcr.io/digininja/dvwa:latest@sha256:79c68f08bed0a862dc55363b90619fd2837270a6d4f235f05a7abf6679b37915
     restart: "no"
     depends_on:
       dvwa:
@@ -200,7 +200,7 @@ services:
   # ── OWASP ZAP (DAST sidecar) ───────────────────────────────────────────────
   # Remove this service (and scanner's depends_on) if you don't need DAST scans.
   zap:
-    image: ghcr.io/zaproxy/zaproxy:stable
+    image: ghcr.io/zaproxy/zaproxy:stable@sha256:c4da4c234258d444d9988fce9d034b00323724818daa4c91ca46f09aa04b46db
     restart: unless-stopped
     # Cap JVM heap — without this Java will grab 25% of host RAM.
     # 3.5 GiB heap handles long proxy recordings + pentest traffic buffering
