@@ -133,6 +133,7 @@ enum ReportTrigger {
 }
 
 enum PentestDepth {
+  QUICK       // Nuclei (high+critical only) — skip Nikto/testssl/exploit (~5-10 min)
   STANDARD    // recon + discovery + vuln scan (no exploitation)
   AGGRESSIVE  // + exploitation phase (SQLMap, XSStrike) — requires authorization
 }
@@ -344,6 +345,18 @@ model DomainAuthConfig {
   oauth2ClientId   String?
   oauth2Scope      String?                   // space-separated, e.g. "openid profile api:read"
   oauth2GrantType  String   @default("client_credentials")  // client_credentials | password
+  // CSRF token tracking for SPAs that protect mutating endpoints with a
+  // header (X-CSRF-Token / X-XSRF-TOKEN). Independent of authType — works
+  // standalone or layered on top of FORM/HEADER/OAUTH2. Set one of:
+  //   csrfMetaSelector — CSS selector for an HTML element whose `content`
+  //                       attr holds the token (Rails / Laravel / .NET)
+  //   csrfCookieName   — cookie name for double-submit pattern (Django,
+  //                       Express csurf, Angular)
+  // ``csrfHeaderName`` defaults to X-CSRF-Token but per-app overrides are
+  // common.
+  csrfMetaSelector String?
+  csrfCookieName   String?
+  csrfHeaderName   String?  // null = use crawler default ("X-CSRF-Token")
   // Encrypted payload — AES-256-GCM JSON blob:
   //   FORM         → { username, password }
   //   HEADER       → { headerValue }
@@ -395,6 +408,13 @@ model ScanJob {
   bullJobIds     Json       @default("{}")
   totalScans     Int        @default(0)
   completedScans Int        @default(0)
+  // Per-scan-type failure tracking. A sub-scan that errors at the scanner
+  // (e.g. ZAP unreachable, Nuclei crash, scanner HTTP 5xx) appends its
+  // scanType here. Used by:
+  //   - parent ScanJob status:  all-failed → FAILED, partial → COMPLETED + error
+  //   - /scans/:id/diff:        excludes failed types so a broken DAST scan
+  //                             can't make prior DAST findings look "fixed"
+  failedScanTypes ScanType[] @default([])
   status         ScanStatus @default(PENDING)
   startedAt      DateTime?
   completedAt    DateTime?
@@ -410,6 +430,13 @@ model ScanJob {
   // Non-empty → incremental scan. Scanners use this list to limit Semgrep
   // --include / Trivy / Checkov / TruffleHog targets. Empty/null → full scan.
   changedFiles   String[]    @default([])
+  // The set of URLs the scanner actually examined this run (PENTEST_FULL,
+  // DAST recordings). Persisted as JSON so the diff endpoint can distinguish
+  // "URL was in scope but vuln gone" (genuinely fixed) from "URL was never
+  // re-visited" (out of scope). Null on legacy scans + repo/container scans.
+  // Stored as Json (not String[]) because the array can be 100s of URLs and
+  // a TEXT[] column would index slowly + we never query individual URLs.
+  targetUrls     Json?
   // Severity counts
   criticalCount  Int        @default(0)
   highCount      Int        @default(0)
