@@ -17,9 +17,15 @@ import { Router } from "express";
 import { z } from "zod";
 import { Role } from "@prisma/client";
 import prisma from "../../db.js";
+import { config } from "../../config.js";
 import { requireRole } from "../../middleware/requireRole.js";
 import { encrypt, decrypt } from "../../services/encryptionService.js";
 import * as audit from "../../services/auditService.js";
+
+// The OIDC callback path the auth router serves. Operators must register
+// `${API_PUBLIC_URL}${SSO_CALLBACK_PATH}` as a Redirect URI in their IdP
+// (Entra app registration → Authentication → Web → Redirect URIs).
+const SSO_CALLBACK_PATH = "/auth/sso/callback";
 
 const router = Router();
 
@@ -53,20 +59,31 @@ router.get("/", requireRole("ADMIN"), async (req, res, next) => {
     const row = await prisma.ssoConfig.findUnique({
       where: { orgId: req.orgId! },
     });
-    if (!row) { res.json(null); return; }
+
+    // redirectUri is server-derived (API_PUBLIC_URL + callback path) so the
+    // UI can display the exact URL the operator must register at their IdP.
+    // Returned even when no config exists yet — the operator needs the URL
+    // BEFORE saving the BreachLens-side SSO config in order to register it
+    // upstream first.
+    const redirectUri = `${config.API_PUBLIC_URL}${SSO_CALLBACK_PATH}`;
+
+    if (!row) { res.json({ redirectUri, config: null }); return; }
 
     res.json({
-      id:                  row.id,
-      issuerUrl:           row.issuerUrl,
-      clientId:            row.clientId,
-      // Never return the plaintext secret — UI shows "***configured***" so
-      // the operator knows it's set without exposing the value.
-      clientSecretSet:     !!(row.encryptedSecrets as { apiKey?: string } | null),
-      allowedEmailDomains: row.allowedEmailDomains,
-      groupRoleMapping:    row.groupRoleMapping,
-      defaultRole:         row.defaultRole,
-      isActive:            row.isActive,
-      updatedAt:           row.updatedAt,
+      redirectUri,
+      config: {
+        id:                  row.id,
+        issuerUrl:           row.issuerUrl,
+        clientId:            row.clientId,
+        // Never return the plaintext secret — UI shows "***configured***" so
+        // the operator knows it's set without exposing the value.
+        clientSecretSet:     !!(row.encryptedSecrets as { apiKey?: string } | null),
+        allowedEmailDomains: row.allowedEmailDomains,
+        groupRoleMapping:    row.groupRoleMapping,
+        defaultRole:         row.defaultRole,
+        isActive:            row.isActive,
+        updatedAt:           row.updatedAt,
+      },
     });
   } catch (err) { next(err); }
 });

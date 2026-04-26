@@ -13,7 +13,7 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
-  KeyRound, Loader2, Check, AlertCircle, Trash2, Info, Plug, Plus, X,
+  KeyRound, Loader2, Check, AlertCircle, Trash2, Info, Plug, Plus, X, Copy,
 } from "lucide-react";
 import { ssoApi, type MemberRole, type SsoUpsert, type SsoTestResult } from "../../lib/api";
 import { useToast } from "../../hooks/useToast";
@@ -110,10 +110,15 @@ export default function SSOTab() {
   const qc      = useQueryClient();
   const { toast } = useToast();
 
-  const { data: existing } = useQuery({
+  const { data: ssoData } = useQuery({
     queryKey: ["sso"],
     queryFn:  ssoApi.get,
   });
+  // GET /api/sso returns { redirectUri, config }. The redirectUri is always
+  // present (server-derived from API_PUBLIC_URL); config is null until the
+  // operator saves SSO settings.
+  const existing    = ssoData?.config ?? null;
+  const redirectUri = ssoData?.redirectUri ?? null;
 
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [domainInput, setDomainInput] = useState("");
@@ -266,14 +271,17 @@ export default function SSOTab() {
         )}
       </header>
 
-      {/* ── Slice-B-coming notice ──────────────────────────────────────────── */}
+      {/* OIDC login flow is wired (Phase 22 PR 3 Slice B) — login page has
+          a "Sign in with SSO" button that consumes this config. This notice
+          confirms what that requires upstream so operators don't get stuck
+          at "I saved the config but login still fails". */}
       <div className="flex items-start gap-2 rounded-md border border-indigo-900/40 bg-indigo-950/30 px-3 py-2 text-xs text-gray-300">
         <Info className="h-3.5 w-3.5 mt-0.5 shrink-0 text-indigo-400" />
         <div className="leading-relaxed">
-          <strong className="text-gray-100">Configuration only.</strong>{" "}
-          The OIDC login flow (passport-openidconnect strategy + JIT user provisioning + group → role mapping)
-          ships in the next slice. Saved configs are validated and stored encrypted but won't yet drive any login.
-          Use this tab now to capture IdP details ahead of the rollout.
+          <strong className="text-gray-100">SSO is live.</strong>{" "}
+          Once configured here, users can sign in via the &quot;Sign in with SSO&quot; button on the login page —
+          provided the redirect URI below is also registered at your IdP and the user&apos;s email domain
+          appears in the allowed list.
         </div>
       </div>
 
@@ -308,6 +316,12 @@ export default function SSOTab() {
               ))}
             </ul>
           )}
+
+          {/* Redirect URI to register at the IdP — always shown so operators
+              can register it BEFORE saving the BreachLens config. Server-
+              derived from API_PUBLIC_URL so it stays correct across
+              dev/staging/prod without client-side URL guessing. */}
+          {redirectUri && <RedirectUriBlock url={redirectUri} toast={toast} />}
         </div>
 
         <Field
@@ -517,6 +531,49 @@ function detectProvider(issuerUrl: string): ProviderPreset {
   if (u.includes("accounts.google.com"))                                         return "google";
   if (u.includes("/realms/"))                                                    return "keycloak";
   return "generic";
+}
+
+function RedirectUriBlock({
+  url, toast,
+}: {
+  url:   string;
+  toast: ReturnType<typeof useToast>["toast"];
+}) {
+  const [copied, setCopied] = useState(false);
+  function handleCopy() {
+    navigator.clipboard.writeText(url).then(
+      () => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      },
+      () => toast.error("Couldn't copy — please select the URL manually"),
+    );
+  }
+  return (
+    <div className="mt-2 flex items-start gap-2 rounded-md border border-indigo-900/40 bg-indigo-950/30 px-3 py-2 text-[11px]">
+      <Info className="h-3.5 w-3.5 mt-0.5 shrink-0 text-indigo-400" />
+      <div className="min-w-0 flex-1">
+        <div className="font-semibold text-gray-100">Redirect URI to register at your IdP</div>
+        <div className="mt-1 flex items-center gap-2">
+          <code className="flex-1 min-w-0 truncate rounded bg-gray-950 px-2 py-1 font-mono text-[11px] text-indigo-200 select-all">
+            {url}
+          </code>
+          <button
+            type="button"
+            onClick={handleCopy}
+            className="inline-flex shrink-0 items-center gap-1 rounded border border-indigo-800/50 bg-indigo-900/30 px-2 py-1 text-[10px] font-medium text-indigo-300 hover:bg-indigo-900/50"
+            title="Copy redirect URI"
+          >
+            {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+            {copied ? "Copied" : "Copy"}
+          </button>
+        </div>
+        <p className="mt-1 text-gray-500">
+          Paste exactly this — including scheme + port — into your IdP's allowed redirect URIs. Trailing slash matters; <code className="text-indigo-300">http</code> is allowed for localhost only.
+        </p>
+      </div>
+    </div>
+  );
 }
 
 function Field({

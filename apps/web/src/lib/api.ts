@@ -663,6 +663,17 @@ export interface SsoConfigView {
   updatedAt:           string;
 }
 
+/**
+ * Response shape from GET /api/sso. The redirect URI is server-derived
+ * (API_PUBLIC_URL + /auth/sso/callback) so the UI can display the exact
+ * URL the operator must register at their IdP — returned even when no
+ * config exists yet (operator needs it BEFORE saving BreachLens config).
+ */
+export interface SsoSettingsResponse {
+  redirectUri: string;
+  config:      SsoConfigView | null;
+}
+
 export interface SsoUpsert {
   issuerUrl:           string;
   clientId:            string;
@@ -688,7 +699,7 @@ export interface SsoTestResult {
 }
 
 export const ssoApi = {
-  get:    () => apiClient.get<SsoConfigView | null>("/sso").then((r) => r.data),
+  get:    () => apiClient.get<SsoSettingsResponse>("/sso").then((r) => r.data),
   save:   (data: SsoUpsert) => apiClient.put("/sso", data).then((r) => r.data),
   remove: () => apiClient.delete("/sso").then((r) => r.data),
   test:   (issuerUrl: string) =>
