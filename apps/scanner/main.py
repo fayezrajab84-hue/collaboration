@@ -234,26 +234,48 @@ async def dast_recording_scan(payload: dict) -> ScanResult:
     session = InteractiveDASTSession()
     start_ms = int(time.time() * 1000)
     loop = asyncio.get_event_loop()
+
+    # Ask ZAP for the recorded URL list — the same call /dast/recording/stats
+    # uses, filtered by baseurl. This is the authoritative scope of the
+    # interactive scan: every URL the user proxied through ZAP. Done after the
+    # active scan so any URLs ZAP may have synthesized during ascan are
+    # captured too.
+    def _fetch_recorded_urls() -> list[str]:
+        try:
+            resp = session._zap("/JSON/core/view/urls/", {"baseurl": target_url})
+            urls = resp.get("urls", []) or []
+            # Cap defensively — same reasoning as in /scan above.
+            return [u for u in urls if u][:5000]
+        except Exception:
+            return []
+
     try:
         findings = await loop.run_in_executor(
             _executor,
             lambda: session.run_active_scan(ctx_id, context_name, target_url, scan_request),
         )
+        recorded_urls = await loop.run_in_executor(_executor, _fetch_recorded_urls)
         return ScanResult(
             scan_job_id=scan_request.scan_job_id,
             scan_type=ScanType.DAST,
             scanner="zap-interactive",
             success=True,
             findings=findings,
+            target_urls=recorded_urls,
             duration_ms=int(time.time() * 1000) - start_ms,
         )
     except Exception as exc:
+        # Even on failure, try to capture whatever URLs ZAP recorded —
+        # they're useful context for the user's "scan failed but here's what
+        # we observed" UI.
+        recorded_urls = await loop.run_in_executor(_executor, _fetch_recorded_urls)
         return ScanResult(
             scan_job_id=scan_request.scan_job_id,
             scan_type=ScanType.DAST,
             scanner="zap-interactive",
             success=False,
             findings=[],
+            target_urls=recorded_urls,
             error=str(exc)[:1000],
             duration_ms=int(time.time() * 1000) - start_ms,
         )
@@ -307,9 +329,33 @@ async def run_scan(request: ScanRequest) -> ScanResult:
     workspace = scanner_instance.make_workspace()
     start_ms = int(time.time() * 1000)
 
+    # Captured by the closure so we can read it AFTER scan() but BEFORE
+    # cleanup() wipes the workspace. PENTEST_FULL writes its in-scope URL list
+    # to crawler_urls.txt (Phase 0.5); other scanners don't, so the file
+    # simply doesn't exist and target_urls stays [].
+    target_urls: list[str] = []
+
     def _run():
+        import os as _os
         try:
-            return scanner_instance.scan(request, workspace)
+            findings = scanner_instance.scan(request, workspace)
+            # Capture the in-scope URL list while the workspace still exists.
+            crawler_file = _os.path.join(workspace, "crawler_urls.txt")
+            if _os.path.exists(crawler_file):
+                try:
+                    with open(crawler_file) as fh:
+                        # Cap at 5000 to prevent pathological payload sizes;
+                        # the crawler itself caps at 500 in normal runs, but
+                        # paranoid bound here protects the API JSON column.
+                        for i, line in enumerate(fh):
+                            if i >= 5000:
+                                break
+                            url = line.strip()
+                            if url:
+                                target_urls.append(url)
+                except Exception:
+                    pass  # capture failure is non-fatal — scan succeeded
+            return findings
         finally:
             scanner_instance.cleanup(workspace)
 
@@ -322,6 +368,7 @@ async def run_scan(request: ScanRequest) -> ScanResult:
             scanner=findings[0].scanner if findings else request.scan_type.lower(),
             success=True,
             findings=findings,
+            target_urls=target_urls,
             duration_ms=int(time.time() * 1000) - start_ms,
         )
     except Exception as exc:
@@ -331,6 +378,7 @@ async def run_scan(request: ScanRequest) -> ScanResult:
             scanner=request.scan_type.value.lower(),
             success=False,
             findings=[],
+            target_urls=target_urls,
             error=str(exc)[:1000],
             duration_ms=int(time.time() * 1000) - start_ms,
         )
