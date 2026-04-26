@@ -21,7 +21,19 @@ declare module "express-serve-static-core" {
   }
 }
 
-export function requireRole(minRole: Role): RequestHandler {
+/**
+ * The membership resolver `requireRole` calls. Defaults to the real
+ * `getActiveMembership`; tests inject a stub so they don't need to
+ * mock the entire module via vi.mock (which is brittle under ESM).
+ */
+export type MembershipResolver = (
+  req: Request,
+) => Promise<{ orgId: string; role: Role } | null>;
+
+export function requireRole(
+  minRole: Role,
+  resolveMember: MembershipResolver = getActiveMembership,
+): RequestHandler {
   return async (req: Request, res, next) => {
     try {
       if (!req.isAuthenticated || !req.isAuthenticated()) {
@@ -29,7 +41,7 @@ export function requireRole(minRole: Role): RequestHandler {
         return;
       }
       const user = req.user as { id: string };
-      const member = await getActiveMembership(req);
+      const member = await resolveMember(req);
       if (!member) {
         res.status(403).json({ error: "No organization membership" });
         return;
