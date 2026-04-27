@@ -9,6 +9,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, Trash2, ShieldCheck, Edit3, Check, X } from "lucide-react";
 import { apiClient } from "../../lib/api";
 import { useToast } from "../../hooks/useToast";
+import Can from "../Can";
 
 type RuleType =
   | "SEVERITY_THRESHOLD"
@@ -79,6 +80,15 @@ export default function PoliciesTab() {
   }
 
   return (
+    <Can
+      role="ADMIN"
+      fallback={
+        <div className="rounded-md border border-gray-800 bg-gray-900/40 p-6 text-center text-xs text-gray-500">
+          Policy editing is restricted to ADMIN+ roles. View-only access
+          to applied policies will surface here once that's wired up.
+        </div>
+      }
+    >
     <div>
       <div className="mb-4 flex items-center justify-between">
         <div>
@@ -150,6 +160,7 @@ export default function PoliciesTab() {
         </ul>
       )}
     </div>
+    </Can>
   );
 }
 

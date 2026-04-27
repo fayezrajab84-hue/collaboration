@@ -1,16 +1,28 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Settings, Github, ShieldCheck } from "lucide-react";
 import { integrationsApi, aiProvidersApi, ssoApi } from "../lib/api";
 import { useAuth } from "../hooks/useAuth";
+import { useRole, type Role } from "../hooks/useRole";
 import { useToast } from "../hooks/useToast";
 import AIProvidersTab from "../components/settings/AIProvidersTab";
 import PoliciesTab from "../components/settings/PoliciesTab";
 import AuditLogTab from "../components/settings/AuditLogTab";
+import SuppressionsTab from "../components/settings/SuppressionsTab";
 import TeamTab from "../components/settings/TeamTab";
 import SSOTab from "../components/settings/SSOTab";
 
-type Tab = "github" | "team" | "sso" | "ai" | "policies" | "jira" | "slack" | "teams" | "audit";
+type Tab =
+  | "github"
+  | "team"
+  | "sso"
+  | "ai"
+  | "policies"
+  | "jira"
+  | "slack"
+  | "teams"
+  | "audit"
+  | "suppressions";
 
 function SaveButton({ isPending, saved }: { isPending: boolean; saved: boolean }) {
   return (
@@ -369,20 +381,42 @@ function TeamsTab() {
   );
 }
 
-const TABS: { id: Tab; label: string }[] = [
-  { id: "github",   label: "GitHub" },
-  { id: "team",     label: "Team" },
-  { id: "sso",      label: "SSO" },
-  { id: "ai",       label: "AI Providers" },
-  { id: "policies", label: "Policies" },
-  { id: "jira",     label: "Jira" },
-  { id: "slack",  label: "Slack" },
-  { id: "teams",  label: "Microsoft Teams" },
-  { id: "audit",  label: "Audit Log" },
+// Tabs declare a `minRole` only when the entire tab content / underlying
+// API requires elevation. Non-gated tabs (GitHub, Team, AI, integrations)
+// are visible to every member — Team has its own internal <Can role="ADMIN">
+// gates around the destructive controls.
+const TABS: { id: Tab; label: string; minRole?: Role }[] = [
+  { id: "github",       label: "GitHub" },
+  { id: "team",         label: "Team" },
+  { id: "sso",          label: "SSO",            minRole: "ADMIN" },
+  { id: "ai",           label: "AI Providers" },
+  { id: "policies",     label: "Policies",       minRole: "ADMIN" },
+  { id: "suppressions", label: "Suppressions",   minRole: "SECURITY" },
+  { id: "jira",         label: "Jira" },
+  { id: "slack",        label: "Slack" },
+  { id: "teams",        label: "Microsoft Teams" },
+  { id: "audit",        label: "Audit Log",      minRole: "ADMIN" },
 ];
 
 export default function SettingsPage() {
+  const { can } = useRole();
   const [activeTab, setActiveTab] = useState<Tab>("github");
+
+  // Hide tabs the active-org role can't reach. ADMIN-only tabs (SSO,
+  // Policies, Audit Log) and SECURITY-only (Suppressions) drop out for
+  // VIEWER / DEVELOPER. Tab list is rebuilt on every render so a role
+  // change via the org switcher repopulates immediately.
+  const visibleTabs = TABS.filter((t) => !t.minRole || can(t.minRole));
+
+  // If the active tab gets filtered out (e.g. user switched orgs and is
+  // no longer ADMIN there) snap back to the first visible tab. The
+  // visibleTabs array is always non-empty because "github" has no
+  // minRole, so this is safe.
+  useEffect(() => {
+    if (!visibleTabs.some((t) => t.id === activeTab)) {
+      setActiveTab(visibleTabs[0]?.id ?? "github");
+    }
+  }, [visibleTabs, activeTab]);
 
   // Fetch all integration statuses at the page level so tab nav can show
   // connected indicators without the user having to open each tab first.
@@ -391,18 +425,19 @@ export default function SettingsPage() {
   const { data: teamsData }     = useQuery({ queryKey: ["integrations", "teams"], queryFn: integrationsApi.getTeams, retry: false });
   const { data: aiProviders = [] } = useQuery({ queryKey: ["ai-providers"], queryFn: aiProvidersApi.list, retry: false });
 
-  const { data: ssoData } = useQuery({ queryKey: ["sso"], queryFn: ssoApi.get, retry: false });
+  const { data: ssoData } = useQuery({ queryKey: ["sso"], queryFn: ssoApi.get, retry: false, enabled: can("ADMIN") });
 
   const connected: Record<Tab, boolean> = {
-    github:   true,   // GitHub is always connected (OAuth session)
-    team:     false,  // No "connected" dot — always present
-    sso:      !!ssoData?.isActive,
-    ai:       aiProviders.length > 0,
-    policies: false,  // No "connected" dot for policies
-    jira:     !!jiraData,
-    slack:    !!slackData,
-    teams:    !!teamsData,
-    audit:    false,  // No "connected" dot — read-only view
+    github:       true,   // GitHub is always connected (OAuth session)
+    team:         false,  // No "connected" dot — always present
+    sso:          !!ssoData?.isActive,
+    ai:           aiProviders.length > 0,
+    policies:     false,  // No "connected" dot for policies
+    suppressions: false,  // No "connected" dot — read-only list
+    jira:         !!jiraData,
+    slack:        !!slackData,
+    teams:        !!teamsData,
+    audit:        false,  // No "connected" dot — read-only view
   };
 
   return (
@@ -413,9 +448,9 @@ export default function SettingsPage() {
       </div>
 
       <div className="flex gap-6">
-        {/* Sidebar tabs */}
+        {/* Sidebar tabs — filtered by role */}
         <nav className="w-44 shrink-0 space-y-1">
-          {TABS.map(({ id, label }) => (
+          {visibleTabs.map(({ id, label }) => (
             <button
               key={id}
               onClick={() => setActiveTab(id)}
@@ -445,15 +480,16 @@ export default function SettingsPage() {
             </p>
           </div>
 
-          {activeTab === "github"   && <GitHubTab />}
-          {activeTab === "team"     && <TeamTab />}
-          {activeTab === "sso"      && <SSOTab />}
-          {activeTab === "ai"       && <AIProvidersTab />}
-          {activeTab === "policies" && <PoliciesTab />}
-          {activeTab === "jira"     && <JiraTab />}
-          {activeTab === "slack"  && <SlackTab />}
-          {activeTab === "teams"  && <TeamsTab />}
-          {activeTab === "audit"  && <AuditLogTab />}
+          {activeTab === "github"       && <GitHubTab />}
+          {activeTab === "team"         && <TeamTab />}
+          {activeTab === "sso"          && <SSOTab />}
+          {activeTab === "ai"           && <AIProvidersTab />}
+          {activeTab === "policies"     && <PoliciesTab />}
+          {activeTab === "suppressions" && <SuppressionsTab />}
+          {activeTab === "jira"         && <JiraTab />}
+          {activeTab === "slack"        && <SlackTab />}
+          {activeTab === "teams"        && <TeamsTab />}
+          {activeTab === "audit"        && <AuditLogTab />}
         </div>
       </div>
     </div>

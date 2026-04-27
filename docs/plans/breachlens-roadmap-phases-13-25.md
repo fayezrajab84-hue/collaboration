@@ -79,6 +79,24 @@
 
 ---
 
+### Phase 22.7 — Close UI/API role-gate parity gaps ✅ *(SHIPPED)*
+
+The frontend parity test from Phase 22.6 surfaced 5 places where
+ADMIN/SECURITY-only API endpoints were exposed to all roles in the UI.
+This phase closed every one. Plus a critical bug fix to `useRole` —
+it had been reading `orgs[0].role` ignoring `activeOrgId`, so multi-org
+users were getting the role from the wrong org.
+
+Now: `SettingsPage` filters tabs by role; AuditLogTab / SSOTab /
+PoliciesTab wrap their content in `<Can role="ADMIN">` with explanatory
+fallbacks; DomainsPage delete + FindingsPage bulk toolbar gated;
+new `SuppressionsTab` so accepted-risk records are auditable at the
+org level. 53 tests still green.
+
+Full retro: [`docs/plans/phase-22.7-ui-role-gating.md`](./phase-22.7-ui-role-gating.md).
+
+---
+
 ### Phase 22.5 — GitHub Enterprise + GitHub App ❌ *(MUST-HAVE for GHES customers, NOT STARTED)*
 
 Closes the Phase 22 gap that bites Entra-federated-GitHub-Enterprise customers: today they can sign in via Entra OIDC (Phase 22 PR 3), but the JIT-provisioned user has a placeholder access token (`encrypt("oidc-no-token")`) — they literally cannot scan their private GHES repos.

@@ -1,9 +1,34 @@
 # Phase 22.7 — Close the UI/API role-gate parity gaps
 
-**Status:** scoped, not started
+**Status:** ✅ shipped
 **Predecessor:** Phase 22.6 (RBAC test scaffold) — ✅ shipped
 **Surfaced by:** the `apps/web/src/role-contract.test.ts` parity test caught
 real drift between the contract and live UI on first run.
+
+## Outcome
+
+All 5 surfaced gaps closed in a single commit cluster. Specifically:
+
+- `SettingsPage.tsx` — tab list filtered by `useRole().can(tab.minRole)`;
+  Audit Log / SSO / Policies tabs (ADMIN-only) + Suppressions tab
+  (SECURITY-only) hidden from users without the role
+- `AuditLogTab.tsx` / `SSOTab.tsx` / `PoliciesTab.tsx` — wrapped in
+  `<Can role="ADMIN">` with explanatory fallback; defense-in-depth
+  for deep-link / direct-render scenarios
+- `DomainsPage.tsx` — Delete row action wrapped in `<Can role="ADMIN">`
+- `FindingsPage.tsx` — bulk action toolbar wrapped in
+  `<Can role="SECURITY">`
+- `SuppressionsTab.tsx` — new component (was missing entirely);
+  org-level list of accepted-risk records with per-row Revoke gated
+  by `<Can role="SECURITY">`
+- `useRole` — fixed to read the active org's role
+  (`orgs.find(o => o.id === user.activeOrgId)`) instead of always
+  `orgs[0]` — the underlying bug that would have made all the new
+  `<Can>` wrappers useless for multi-org users
+
+Contract entries in `roleContract.ts` had their `ui:` pointers
+restored from the `// TODO Phase 22.7` placeholders. All 53 tests pass
+(50 api + 3 web).
 
 ---
 

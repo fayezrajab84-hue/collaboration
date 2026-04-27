@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { auditApi, type AuditFilters } from "../../lib/api";
 import { formatDate } from "../../lib/utils";
+import Can from "../Can";
 
 const PAGE_SIZE = 50;
 
@@ -64,6 +65,15 @@ export default function AuditLogTab() {
   const to    = Math.min((page + 1) * PAGE_SIZE, total);
 
   return (
+    <Can
+      role="ADMIN"
+      fallback={
+        <div className="rounded-md border border-gray-800 bg-gray-900/40 p-6 text-center text-xs text-gray-500">
+          The audit log is restricted to ADMIN+ roles. Ask an org admin
+          to view it on your behalf or grant you elevated access.
+        </div>
+      }
+    >
     <div>
       {/* ── Header ─────────────────────────────────────────────────────────── */}
       <div className="mb-4 flex items-center gap-2">
@@ -269,6 +279,7 @@ export default function AuditLogTab() {
         </div>
       )}
     </div>
+    </Can>
   );
 }
 

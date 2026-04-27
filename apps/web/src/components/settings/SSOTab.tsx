@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { ssoApi, type MemberRole, type SsoUpsert, type SsoTestResult } from "../../lib/api";
 import { useToast } from "../../hooks/useToast";
+import Can from "../Can";
 
 const ROLES: MemberRole[] = ["OWNER", "ADMIN", "SECURITY", "DEVELOPER", "VIEWER"];
 
@@ -252,6 +253,15 @@ export default function SSOTab() {
   const isConfigured = !!existing;
 
   return (
+    <Can
+      role="ADMIN"
+      fallback={
+        <div className="rounded-md border border-gray-800 bg-gray-900/40 p-6 text-center text-xs text-gray-500">
+          SSO configuration is restricted to ADMIN+ roles. Ask an org
+          admin to configure or modify the IdP connection.
+        </div>
+      }
+    >
     <div className="space-y-6">
       {/* ── Header ─────────────────────────────────────────────────────────── */}
       <header className="flex items-start justify-between">
@@ -519,6 +529,7 @@ export default function SSOTab() {
         {testResult && <TestResultPanel result={testResult} />}
       </form>
     </div>
+    </Can>
   );
 }
 

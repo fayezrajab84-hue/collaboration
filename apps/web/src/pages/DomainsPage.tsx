@@ -8,6 +8,7 @@ import RecordingPanel from "../components/RecordingPanel";
 import RiskScoreBadge from "../components/RiskScoreBadge";
 import type { Domain } from "@devsecops/types";
 import ScanStatusBadge from "../components/ScanStatusBadge";
+import Can from "../components/Can";
 import FindingCountBadges from "../components/FindingCountBadges";
 import PentestWizard from "../components/PentestWizard";
 import ChecksTab from "../components/ChecksTab";
@@ -341,9 +342,11 @@ export default function DomainsPage() {
                           <button onClick={() => setEditDomain(d)} className="rounded p-1 text-gray-600 hover:text-indigo-400" title="Edit domain">
                             <Pencil className="h-3.5 w-3.5" />
                           </button>
-                          <button onClick={() => del.mutate(d.id)} className="rounded p-1 text-gray-600 hover:text-red-400" title="Remove domain">
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
+                          <Can role="ADMIN">
+                            <button onClick={() => del.mutate(d.id)} className="rounded p-1 text-gray-600 hover:text-red-400" title="Remove domain (ADMIN only)">
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </Can>
                         </span>
                       </div>
                     </td>

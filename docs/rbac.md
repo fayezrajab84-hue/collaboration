@@ -127,24 +127,27 @@ who need visibility without operational responsibility.
 
 ---
 
-## Known UI gaps (Phase 22.7 follow-up)
+## UI gates as of Phase 22.7
 
-The frontend parity test surfaced 5 places where the UI shows an
-affordance to all roles even though the API enforces ADMIN or SECURITY.
-Clicking the button works as a security boundary (API returns 403) but
-the UX is confusing — VIEWER sees the buttons.
+The frontend parity test originally surfaced 5 affordances visible to
+all roles despite ADMIN/SECURITY API enforcement. Phase 22.7 closed
+all of them via:
 
-Affected today:
+- **`SettingsPage` tab-level filter** — drops Audit Log, SSO, Policies
+  (ADMIN-only) and Suppressions (SECURITY-only) from the sidebar nav
+  for users without the role
+- **Per-tab `<Can role="X">` wrappers** in AuditLogTab, SSOTab,
+  PoliciesTab — defense in depth in case a tab is reached via
+  deep-link
+- **Per-affordance `<Can role>`** on DomainsPage delete row action and
+  FindingsPage bulk toolbar
+- **New `SuppressionsTab`** so accepted-risk records are auditable at
+  the org level (revoke button gated by `<Can role="SECURITY">`)
+- **`useRole` fixed** to read the active org's role (was reading
+  `orgs[0]` and ignoring `activeOrgId`, so multi-org users got the
+  role from the wrong org)
 
-- Settings → Audit Log tab visibility + Export CSV button
-- Settings → SSO tab visibility + Save / Remove / Test buttons
-- Settings → Policies tab Create / Edit / Delete buttons
-- Domains page — Delete row action
-- Findings page — Bulk status / Bulk tickets toolbar
-
-Tracked in `docs/plans/phase-22.7-ui-role-gating.md`. Workaround until
-that phase ships: tell non-admin users the buttons won't work — the
-API still enforces correctly.
+VIEWERs no longer see buttons that 403 on click.
 
 ---
 

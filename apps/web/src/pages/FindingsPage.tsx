@@ -1,16 +1,19 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
-import { ShieldAlert, Search, Globe, Layers, Sparkles, ChevronDown, ChevronRight, ChevronsUpDown, ArrowUp, ArrowDown, KeyRound, Bot, Wrench, X, EyeOff, Eye, Download, CheckSquare, CheckCircle2, ShieldOff, RotateCcw, Ticket as TicketIcon } from "lucide-react";
+import { ShieldAlert, Search, Globe, Layers, Sparkles, ChevronDown, ChevronRight, ChevronsUpDown, ArrowUp, ArrowDown, KeyRound, Bot, Wrench, X, EyeOff, Eye, Download, CheckSquare, CheckCircle2, ShieldOff, RotateCcw, Ticket as TicketIcon, Code2, ExternalLink } from "lucide-react";
 import { findingsApi, reposApi, containersApi, domainsApi, suppressionsApi } from "../lib/api";
 import type { Finding, FindingGroup } from "@devsecops/types";
+import Can from "../components/Can";
 import SeverityBadge from "../components/SeverityBadge";
 import ConfidenceBadge from "../components/ConfidenceBadge";
+import ProofOfExploitBadge from "../components/ProofOfExploitBadge";
 import FindingStatusBadge from "../components/FindingStatusBadge";
 import FindingDetailDrawer from "../components/FindingDetailDrawer";
 import TargetTag from "../components/TargetTag";
 import MultiSelect from "../components/MultiSelect";
 import { formatRelative } from "../lib/utils";
+import { hasProofOfExploit } from "../lib/findings";
 import { SEVERITY_BADGE } from "../lib/colors";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 
@@ -19,16 +22,24 @@ type SortOrder = "asc" | "desc";
 const PAGE_SIZES = [25, 50, 100] as const;
 
 const SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"];
-// Label overrides for scan-type dropdown (internal enum → human-friendly)
-const SCAN_TYPE_OPTIONS: Array<{ value: string; label: string }> = [
-  { value: "SAST",             label: "SAST" },
-  { value: "SCA",              label: "SCA" },
-  { value: "SECRET",           label: "Secrets" },
-  { value: "IAC",              label: "IaC" },
-  { value: "CONTAINER",        label: "Container" },
-  { value: "DAST",             label: "DAST" },
-  { value: "PENTEST_FULL",     label: "Pentest" },
+// ── Code vs Web split ────────────────────────────────────────────────────────
+// Code findings have a file path + line number (the artefact is source).
+// Web findings have a URL + HTTP exchange (the artefact is a request/response).
+// CONTAINER lives in Code despite using image refs — its findings reference
+// packages/CVEs, not URLs, so the user-facing shape matches SCA.
+const CODE_SCAN_TYPE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "SAST",      label: "SAST" },
+  { value: "SCA",       label: "SCA" },
+  { value: "SECRET",    label: "Secrets" },
+  { value: "IAC",       label: "IaC" },
+  { value: "CONTAINER", label: "Container" },
 ];
+const WEB_SCAN_TYPE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "DAST",         label: "DAST" },
+  { value: "PENTEST_FULL", label: "Pentest" },
+];
+const CODE_SCAN_TYPES = CODE_SCAN_TYPE_OPTIONS.map((o) => o.value);
+const WEB_SCAN_TYPES  = WEB_SCAN_TYPE_OPTIONS.map((o) => o.value);
 const STATUSES = ["OPEN", "ACKNOWLEDGED", "FALSE_POSITIVE", "FIXED", "IGNORED"];
 const CONFIDENCES = ["CONFIRMED", "LIKELY", "POSSIBLE"];
 // AI triage filter values — matched server-side against aiAnalysedAt/aiFixSuggestedAt
@@ -240,7 +251,12 @@ export default function FindingsPage() {
   // browser back/forward preserves the filter context.
   const [searchParams, setSearchParams] = useSearchParams();
 
-  const tab        = (searchParams.get("tab") as "list" | "groups") ?? "list";
+  // Tab state — replaces the old "list | groups" toggle. The list view is now
+  // split into Code (file-based scanners) and Web (URL-based scanners) so the
+  // URL column only appears where it makes sense and dropdown options aren't
+  // mixed across two very different finding shapes. Default to "code" since
+  // most users add a repo first and code findings dominate volume.
+  const tab        = (searchParams.get("tab") as "code" | "web" | "groups") ?? "code";
   // Multi-select filters stored as comma-separated values in the URL so links
   // remain shareable; the server splits and parses them via `multi()`.
   const parseMulti = (v: string) => v.split(",").map((s) => s.trim()).filter(Boolean);
@@ -250,11 +266,22 @@ export default function FindingsPage() {
   const confidence = parseMulti(searchParams.get("confidence") ?? "");
   const aiFilter   = parseMulti(searchParams.get("ai") ?? "");
   const aiFilterKey = aiFilter.join(",");
-  // Stable primitives for dep arrays — arrays produced above are new every render
+  // Stable primitives for dep arrays — arrays produced above are new every render.
+  // (Note: no scanTypeKey — the API call uses `effectiveScanTypeKey` which folds
+  // the tab's allowed set in, and that's what the cache key tracks.)
   const severityKey   = severity.join(",");
-  const scanTypeKey   = scanType.join(",");
   const statusKey     = status.join(",");
   const confidenceKey = confidence.join(",");
+
+  // Effective scanType filter sent to the API: intersection of the tab's
+  // allowed set with whatever the user picked in the dropdown. If the user
+  // picked nothing, fall back to the full tab set so Code/Web tabs don't
+  // accidentally show each other's findings.
+  const tabScanTypes = tab === "web" ? WEB_SCAN_TYPES : CODE_SCAN_TYPES;
+  const effectiveScanTypes = scanType.length
+    ? scanType.filter((t) => tabScanTypes.includes(t))
+    : tabScanTypes;
+  const effectiveScanTypeKey = effectiveScanTypes.join(",");
   const urlSearch  = searchParams.get("search")     ?? "";
   const target     = searchParams.get("target")     ?? "";
   const includeSuppressed = searchParams.get("includeSuppressed") === "true";
@@ -294,7 +321,17 @@ export default function FindingsPage() {
     setFilter(key, values.join(","));
   };
 
-  const setTab = (t: "list" | "groups") => setFilter("tab", t === "list" ? "" : t);
+  // Switching tabs also clears the scanType chip filter — selections from one
+  // tab (e.g. "SAST" picked while in Code) wouldn't intersect with the other
+  // tab's allowed set anyway, so leaving them stale would just be confusing.
+  const setTab = (t: "code" | "web" | "groups") => {
+    setSearchParams((prev) => {
+      if (t === "code") prev.delete("tab"); else prev.set("tab", t);
+      prev.delete("scanType");
+      prev.delete("page");
+      return prev;
+    });
+  };
   const setPage = (p: number) => setFilter("page", p > 1 ? String(p) : "");
   const setPageSize = (size: number) => setFilter("pageSize", size === 25 ? "" : String(size));
 
@@ -352,7 +389,7 @@ export default function FindingsPage() {
   // ── Bulk selection ──────────────────────────────────────────────────────
   // Page-local selection state (cleared on filter/page change to avoid stale IDs).
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  useEffect(() => { setSelected(new Set()); }, [severityKey, scanTypeKey, statusKey, confidenceKey, aiFilterKey, search, target, page, pageSize, includeSuppressed]);
+  useEffect(() => { setSelected(new Set()); }, [severityKey, effectiveScanTypeKey, statusKey, confidenceKey, aiFilterKey, search, target, page, pageSize, includeSuppressed]);
   const queryClient = useQueryClient();
 
   const bulkMutation = useMutation({
@@ -404,12 +441,15 @@ export default function FindingsPage() {
   );
 
   const { data, isLoading } = useQuery({
-    queryKey: ["findings", { severityKey, scanTypeKey, statusKey, confidenceKey, aiFilterKey, search, target, page, pageSize, sort, sortOrder, includeSuppressed }],
+    // Use effectiveScanTypeKey (tab ∩ user) so the cache invalidates correctly
+    // when switching Code↔Web — same user-selected types but different tab
+    // produces a different effective set, hence a different query.
+    queryKey: ["findings", { severityKey, effectiveScanTypeKey, statusKey, confidenceKey, aiFilterKey, search, target, page, pageSize, sort, sortOrder, includeSuppressed }],
     queryFn: () =>
       findingsApi.list({
         // Multi-select: send comma-joined values — server splits via `multi()`.
         severity: severityKey || undefined,
-        scanType: (scanTypeKey || undefined) as never,
+        scanType: (effectiveScanTypeKey || undefined) as never,
         status: (statusKey || undefined) as never,
         confidence: (confidenceKey || undefined) as never,
         search: search || undefined,
@@ -426,18 +466,34 @@ export default function FindingsPage() {
     <div className="flex h-full flex-col p-6">
       <div className="mb-5 flex items-center justify-between">
         <h1 className="text-3xl font-bold text-white">Findings</h1>
-        {/* Tab switcher */}
+        {/* Tab switcher — Code (file-based) vs Web (URL-based) split, plus the
+            existing Smart Groups view. Switching Code↔Web wipes the scanType
+            chip filter so we don't carry over an option that's invalid in the
+            other tab. */}
         <div className="flex rounded-lg border border-gray-800 bg-gray-900 p-1 gap-1">
           <button
-            onClick={() => setTab("list")}
+            onClick={() => setTab("code")}
             className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-              tab === "list"
+              tab === "code"
                 ? "bg-indigo-700 text-white"
                 : "text-gray-400 hover:text-white"
             }`}
+            title="SAST, SCA, Secrets, IaC, Container — file/path based"
           >
-            <ShieldAlert className="h-3.5 w-3.5" />
-            All Findings
+            <Code2 className="h-3.5 w-3.5" />
+            Code
+          </button>
+          <button
+            onClick={() => setTab("web")}
+            className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+              tab === "web"
+                ? "bg-indigo-700 text-white"
+                : "text-gray-400 hover:text-white"
+            }`}
+            title="DAST, Pentest — URL based"
+          >
+            <Globe className="h-3.5 w-3.5 text-gray-300" />
+            Web
           </button>
           <button
             onClick={() => setTab("groups")}
@@ -457,8 +513,9 @@ export default function FindingsPage() {
       {/* Groups view */}
       {tab === "groups" && <FindingGroupsView />}
 
-      {/* List view */}
-      {tab === "list" && <>
+      {/* List view (shared by Code and Web tabs — they only differ in scope
+          and the URL column rendered below) */}
+      {tab !== "groups" && <>
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-500" />
@@ -492,7 +549,10 @@ export default function FindingsPage() {
 
         <MultiSelect
           label="Types"
-          options={SCAN_TYPE_OPTIONS}
+          // Tab-scoped — Code tab shows file-based scanners, Web tab shows
+          // URL-based scanners. Mixing them was confusing and made the dropdown
+          // longer than necessary.
+          options={tab === "web" ? WEB_SCAN_TYPE_OPTIONS : CODE_SCAN_TYPE_OPTIONS}
           value={scanType}
           onChange={(v) => setMultiFilter("scanType", v)}
         />
@@ -564,11 +624,12 @@ export default function FindingsPage() {
           </button>
         )}
 
-        {/* Export CSV — respects all current filters */}
+        {/* Export CSV — respects all current filters, including the active
+            tab's scope (so a Code-tab export never includes web findings). */}
         <a
           href={findingsApi.exportCsvUrl({
             severity: severityKey || undefined,
-            scanType: (scanTypeKey || undefined) as never,
+            scanType: (effectiveScanTypeKey || undefined) as never,
             status:   (statusKey   || undefined) as never,
             confidence: (confidenceKey || undefined) as never,
             search:   search   || undefined,
@@ -587,7 +648,12 @@ export default function FindingsPage() {
         )}
       </div>
 
-      {/* Bulk action toolbar — appears only when rows are selected */}
+      {/* Bulk action toolbar — appears only when rows are selected.
+          Wrapped in <Can role="SECURITY"> because the underlying APIs
+          (POST /api/findings/bulk + POST /api/findings/bulk-tickets)
+          require SECURITY+. Without this gate VIEWER/DEVELOPER could
+          select rows and see the toolbar buttons that 403 on click. */}
+      <Can role="SECURITY">
       {selected.size > 0 && (
         <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-indigo-800/60 bg-indigo-950/40 px-3 py-2">
           <CheckSquare className="h-4 w-4 text-indigo-400" />
@@ -632,6 +698,7 @@ export default function FindingsPage() {
           </button>
         </div>
       )}
+      </Can>
 
       {/* Bulk-ticket success banner */}
       {bulkTicketMsg && (
@@ -673,6 +740,11 @@ export default function FindingsPage() {
               </th>
               <SortTh field="severity"   label="Severity"   sort={sort} sortOrder={sortOrder} toggle={toggleSort} />
               <SortTh field="title"      label="Title"      sort={sort} sortOrder={sortOrder} toggle={toggleSort} />
+              {/* URL column — only on Web tab. For DAST/PENTEST_FULL the URL
+                  IS the location (no source file), so showing it as a top-level
+                  column makes navigation/triage drastically faster than digging
+                  into the drawer. */}
+              {tab === "web" && <th className="px-4 py-3 font-medium">URL</th>}
               <th className="px-4 py-3 font-medium">Target</th>
               <SortTh field="scanType"   label="Type"       sort={sort} sortOrder={sortOrder} toggle={toggleSort} />
               <SortTh field="confidence" label="Confidence" sort={sort} sortOrder={sortOrder} toggle={toggleSort} />
@@ -683,10 +755,10 @@ export default function FindingsPage() {
           </thead>
           <tbody className="divide-y divide-gray-800 bg-gray-900/50">
             {isLoading ? (
-              <tr><td colSpan={9} className="py-12 text-center text-gray-500">Loading…</td></tr>
+              <tr><td colSpan={tab === "web" ? 10 : 9} className="py-12 text-center text-gray-500">Loading…</td></tr>
             ) : data?.data.length === 0 ? (
               <tr>
-                <td colSpan={9} className="py-12 text-center">
+                <td colSpan={tab === "web" ? 10 : 9} className="py-12 text-center">
                   <ShieldAlert className="mx-auto mb-2 h-8 w-8 text-gray-700" />
                   {hasActiveFilters ? (
                     <>
@@ -773,10 +845,36 @@ export default function FindingsPage() {
                     </div>
                     {f.cveId && <p className="text-xs text-gray-500">{f.cveId}</p>}
                   </td>
+                  {/* URL cell — Web tab only. filePath holds the attacked URL
+                      for DAST/PENTEST_FULL findings (set by the scanner
+                      service). Click opens it in a new tab without bubbling
+                      up to the row's drawer-open handler. */}
+                  {tab === "web" && (
+                    <td className="px-4 py-3 max-w-[280px]">
+                      {f.filePath ? (
+                        <a
+                          href={f.filePath}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="inline-flex items-center gap-1 truncate text-xs text-sky-400 hover:text-sky-300 hover:underline max-w-full"
+                          title={f.filePath}
+                        >
+                          <span className="truncate">{f.filePath}</span>
+                          <ExternalLink className="h-3 w-3 shrink-0 opacity-60" />
+                        </a>
+                      ) : (
+                        <span className="text-xs text-gray-600">—</span>
+                      )}
+                    </td>
+                  )}
                   <td className="px-4 py-3"><TargetTag finding={f} /></td>
                   <td className="px-4 py-3 text-xs text-gray-400">{f.scanType}</td>
                   <td className="px-4 py-3">
-                    <ConfidenceBadge confidence={f.confidence} />
+                    <span className="inline-flex items-center">
+                      <ConfidenceBadge confidence={f.confidence} />
+                      {hasProofOfExploit(f) && <ProofOfExploitBadge size="sm" />}
+                    </span>
                   </td>
                   {/* AI triage status — unified neutral chip; colour only in the icon */}
                   <td className="px-4 py-3">

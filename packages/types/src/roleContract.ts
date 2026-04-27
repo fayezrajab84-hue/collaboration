@@ -74,14 +74,14 @@ export const ROLE_CONTRACT: readonly RoleProtectedAction[] = [
     description: "Read the org's audit event stream",
     minRole:     "ADMIN",
     api:         { method: "GET", path: "/api/audit" },
-    // ui: TODO Phase 22.7 — AuditLogTab is currently visible to all roles; API 403s on click
+    ui:          { file: "apps/web/src/components/settings/AuditLogTab.tsx", affordance: "Audit Log tab visibility (gated at SettingsPage + Can role=ADMIN inside the tab)" },
   },
   {
     id:          "export-audit-csv",
     description: "Download the audit log as CSV (RFC 4180)",
     minRole:     "ADMIN",
     api:         { method: "GET", path: "/api/audit/export.csv" },
-    // ui: TODO Phase 22.7 — Export button currently visible to all roles; API 403s on click
+    ui:          { file: "apps/web/src/components/settings/AuditLogTab.tsx", affordance: "Export CSV link (inside Can role=ADMIN tab wrapper)" },
   },
   {
     id:          "delete-repo",
@@ -102,7 +102,7 @@ export const ROLE_CONTRACT: readonly RoleProtectedAction[] = [
     description: "Remove a domain from the org (cascades all findings)",
     minRole:     "ADMIN",
     api:         { method: "DELETE", path: "/api/domains/:id" },
-    // ui: TODO Phase 22.7 — Delete button currently visible to all roles; API 403s on click
+    ui:          { file: "apps/web/src/pages/DomainsPage.tsx", affordance: "Delete row action (Can role=ADMIN)" },
   },
   {
     id:          "change-member-role",
@@ -144,49 +144,49 @@ export const ROLE_CONTRACT: readonly RoleProtectedAction[] = [
     description: "Create a policy (PR-check enforcement rules)",
     minRole:     "ADMIN",
     api:         { method: "POST", path: "/api/policies" },
-    // ui: TODO Phase 22.7 — Create policy button currently visible to all roles; API 403s on click
+    ui:          { file: "apps/web/src/components/settings/PoliciesTab.tsx", affordance: "Create policy button (inside Can role=ADMIN wrapper)" },
   },
   {
     id:          "update-policy",
     description: "Edit a policy",
     minRole:     "ADMIN",
     api:         { method: "PUT", path: "/api/policies/:id" },
-    // ui: TODO Phase 22.7 — Save edits visible to all roles; API 403s on click
+    ui:          { file: "apps/web/src/components/settings/PoliciesTab.tsx", affordance: "Edit policy (inside Can role=ADMIN wrapper)" },
   },
   {
     id:          "delete-policy",
     description: "Delete a policy",
     minRole:     "ADMIN",
     api:         { method: "DELETE", path: "/api/policies/:id" },
-    // ui: TODO Phase 22.7 — Delete button visible to all roles; API 403s on click
+    ui:          { file: "apps/web/src/components/settings/PoliciesTab.tsx", affordance: "Delete policy button (inside Can role=ADMIN wrapper)" },
   },
   {
     id:          "view-sso-config",
     description: "Read the org's SSO configuration",
     minRole:     "ADMIN",
     api:         { method: "GET", path: "/api/sso" },
-    // ui: TODO Phase 22.7 — SSO tab currently visible to all roles; API 403s on click
+    ui:          { file: "apps/web/src/components/settings/SSOTab.tsx", affordance: "SSO tab visibility (gated at SettingsPage + Can role=ADMIN inside the tab)" },
   },
   {
     id:          "save-sso-config",
     description: "Create or update the org's SSO configuration",
     minRole:     "ADMIN",
     api:         { method: "PUT", path: "/api/sso" },
-    // ui: TODO Phase 22.7 — Save button visible to all roles; API 403s on click
+    ui:          { file: "apps/web/src/components/settings/SSOTab.tsx", affordance: "Save SSO settings (inside Can role=ADMIN wrapper)" },
   },
   {
     id:          "delete-sso-config",
     description: "Remove the org's SSO configuration",
     minRole:     "ADMIN",
     api:         { method: "DELETE", path: "/api/sso" },
-    // ui: TODO Phase 22.7 — Remove button visible to all roles; API 403s on click
+    ui:          { file: "apps/web/src/components/settings/SSOTab.tsx", affordance: "Remove SSO button (inside Can role=ADMIN wrapper)" },
   },
   {
     id:          "test-sso-discovery",
     description: "Probe IdP discovery URL to validate connectivity + scopes",
     minRole:     "ADMIN",
     api:         { method: "POST", path: "/api/sso/test" },
-    // ui: TODO Phase 22.7 — Test connection visible to all roles; API 403s on click
+    ui:          { file: "apps/web/src/components/settings/SSOTab.tsx", affordance: "Test connection button (inside Can role=ADMIN wrapper)" },
   },
 
   // ── SECURITY tier — finding triage / risk acceptance ──
@@ -196,14 +196,14 @@ export const ROLE_CONTRACT: readonly RoleProtectedAction[] = [
     description: "Change status of many findings at once",
     minRole:     "SECURITY",
     api:         { method: "POST", path: "/api/findings/bulk" },
-    // ui: TODO Phase 22.7 — Bulk toolbar visible to all roles; API 403s on click
+    ui:          { file: "apps/web/src/pages/FindingsPage.tsx", affordance: "Bulk status change toolbar (Can role=SECURITY)" },
   },
   {
     id:          "bulk-create-tickets",
     description: "Create internal tickets for many findings at once",
     minRole:     "SECURITY",
     api:         { method: "POST", path: "/api/findings/bulk-tickets" },
-    // ui: TODO Phase 22.7 — Bulk tickets toolbar visible to all roles; API 403s on click
+    ui:          { file: "apps/web/src/pages/FindingsPage.tsx", affordance: "Bulk create tickets (inside Can role=SECURITY toolbar)" },
   },
   {
     id:          "update-finding-status",
@@ -231,7 +231,7 @@ export const ROLE_CONTRACT: readonly RoleProtectedAction[] = [
     description: "Revoke an accepted-risk record",
     minRole:     "SECURITY",
     api:         { method: "DELETE", path: "/api/suppressions/:id" },
-    // ui: SuppressionsTab.tsx doesn't exist yet — revoke is via FindingDetailDrawer; gate TBD with Phase 22.7
+    ui:          { file: "apps/web/src/components/settings/SuppressionsTab.tsx", affordance: "Revoke suppression button (Can role=SECURITY)" },
   },
 
   // ── DEVELOPER tier — UI-only gates ──
