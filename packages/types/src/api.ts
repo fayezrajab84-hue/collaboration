@@ -374,6 +374,9 @@ export interface AttackPathEdge {
 
 export interface AttackPathSummary {
   groupId:        string;
+  /** Phase 27.5.x — heuristic title (highest-severity, source-side preferred).
+   *  UI may override with the AI summary tldr when one is generated. */
+  title:          string;
   score:          number;
   length:         number;
   maxSeverity:    "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";

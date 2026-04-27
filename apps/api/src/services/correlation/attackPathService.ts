@@ -74,6 +74,11 @@ export interface AttackPathEdge {
 
 export interface AttackPathSummary {
   groupId:         string;
+  /** Phase 27.5.x — distinctive heuristic title built from the chain's
+   *  lead finding (highest-severity, source-side preferred for root-cause
+   *  framing). Always populated even when no AI summary exists. The UI
+   *  can override with the AI tldr when one is generated. */
+  title:           string;
   score:           number;
   length:          number;
   maxSeverity:     Severity;
@@ -246,6 +251,7 @@ function scoreGroup(groupId: string, members: WithTargets[]): AttackPathSummary 
 
   return {
     groupId,
+    title:         deriveChainTitle(nodes),
     score,
     length,
     maxSeverity:   maxSev,
@@ -255,4 +261,45 @@ function scoreGroup(groupId: string, members: WithTargets[]): AttackPathSummary 
     nodes,
     edges,
   };
+}
+
+/**
+ * Heuristic title for a chain — the highest-severity finding's title,
+ * preferring source-side scan types (SAST > IAC > SECRET > CONTAINER >
+ * DAST > PENTEST > runtime) as a tie-breaker so the title leads with the
+ * root cause rather than its observable effect.
+ *
+ * Examples:
+ *   "Tainted Exec"          (SAST high — DVWA command-injection chain)
+ *   "Md5 Loose Equality"    (SAST medium — login.php hashing chain)
+ *   "Reflected XSS in /vulnerabilities/xss_r/"   (DAST high if no SAST hits)
+ *
+ * Always returns a non-empty string. The frontend can override with the
+ * AI summary's tldr when one is available — this is the always-on fallback.
+ */
+function deriveChainTitle(nodes: AttackPathNode[]): string {
+  if (nodes.length === 0) return "Empty chain";
+
+  const SEV_WEIGHT: Record<string, number> = {
+    CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1, INFO: 0.5,
+  };
+  // Source-side first (root cause), then web-side (exploit angle), then
+  // package/runtime. Lower number = higher priority.
+  const TYPE_PRIORITY: Record<string, number> = {
+    SAST: 1, IAC: 1, SECRET: 1,
+    CONTAINER: 2, SCA: 2,
+    DAST: 3, PENTEST: 3, PENTEST_FULL: 3,
+    RUNTIME: 4,
+  };
+
+  const ranked = [...nodes].sort((a, b) => {
+    const sevDiff = (SEV_WEIGHT[b.severity] ?? 0) - (SEV_WEIGHT[a.severity] ?? 0);
+    if (sevDiff !== 0) return sevDiff;
+    const aPri = TYPE_PRIORITY[a.scanType] ?? 99;
+    const bPri = TYPE_PRIORITY[b.scanType] ?? 99;
+    if (aPri !== bPri) return aPri - bPri;
+    // Stable tiebreaker
+    return a.findingId.localeCompare(b.findingId);
+  });
+  return ranked[0]?.title ?? "Correlated chain";
 }

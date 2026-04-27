@@ -71,7 +71,9 @@ function AttackPathDetail({ groupId }: { groupId: string }) {
             page (not in the list-view cards) so it doesn't burn AI calls
             for chains the operator never opens. */}
         <AiSummaryPanel groupId={groupId} initialSummary={data.summary ?? null} />
-        <PathCard path={data} forceExpanded />
+        {/* Detail view: prefer the AI tldr as the chain title when present;
+            fall back to the heuristic title from the API. */}
+        <PathCard path={data} forceExpanded aiTitle={data.summary?.tldr ?? null} />
       </div>
     </FindingDrawerHost>
   );
@@ -297,20 +299,38 @@ function FindingDrawerHost({ children }: { children: React.ReactNode }) {
 
 // ── Card showing one chain — collapsible (Phase 27.5.x) ───────────────────
 
-function PathCard({ path, forceExpanded }: { path: AttackPathSummary; forceExpanded?: boolean }) {
+function PathCard({
+  path,
+  forceExpanded,
+  aiTitle,
+}: {
+  path:           AttackPathSummary;
+  forceExpanded?: boolean;
+  /** AI tldr — overrides the heuristic title when present. Detail page only. */
+  aiTitle?:       string | null;
+}) {
   // Local expand state (default collapsed for the list view; force-open on
   // the dedicated detail page).
   const [open, setOpen] = useState(Boolean(forceExpanded));
-  const verifiedOrLabel = path.hasConfirmed ? "Confirmed exploitation in chain" : "Correlated chain";
   const Icon = path.hasConfirmed ? AlertTriangle : Network;
   const iconClass = path.hasConfirmed ? "text-red-400" : "text-indigo-400";
   const isToggleable = !forceExpanded;
 
+  // Title: prefer AI tldr (when available — detail view only), fall back
+  // to the backend's heuristic title (highest-severity, source-side preferred).
+  // Never fall back to "Correlated chain" — every chain has a real title now.
+  const headline = (aiTitle && aiTitle.length > 0) ? aiTitle : path.title;
+
+  // Subtitle: confirmed-exploit qualifier OR the From→To hop story OR a
+  // generic "spans N targets" fallback. The headline above carries the
+  // "what", subtitle carries the "where" and "how proven".
   const fromName = path.nodes[0]?.targetName;
   const toName   = path.nodes[path.nodes.length - 1]?.targetName;
-  const headerSubtitle = (fromName && toName && fromName !== toName)
-    ? `From ${fromName} → ${toName}`
-    : (fromName ?? "Multi-tier chain across your stack");
+  const subtitleParts: string[] = [];
+  if (path.hasConfirmed) subtitleParts.push("Confirmed exploit");
+  if (fromName && toName && fromName !== toName) subtitleParts.push(`${fromName} → ${toName}`);
+  else if (fromName) subtitleParts.push(fromName);
+  const subtitle = subtitleParts.join(" · ");
 
   return (
     <div className={
@@ -334,14 +354,14 @@ function PathCard({ path, forceExpanded }: { path: AttackPathSummary; forceExpan
         <Icon className={`mt-0.5 h-5 w-5 ${iconClass}`} />
         <div className="flex-1 min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-base font-semibold text-white">{verifiedOrLabel}</h2>
+            <h2 className="text-base font-semibold text-white">{headline}</h2>
             <SeverityBadge severity={path.maxSeverity} />
             <span className="text-xs text-gray-500">·</span>
             <span className="text-xs text-gray-500">{path.length} hops</span>
             <span className="text-xs text-gray-500">·</span>
             <span className="text-xs text-gray-500">score {path.score.toFixed(1)}</span>
           </div>
-          <p className="mt-1 text-xs text-gray-500 truncate">{headerSubtitle}</p>
+          {subtitle && <p className="mt-1 text-xs text-gray-500 truncate">{subtitle}</p>}
         </div>
         {isToggleable && (
           <Link
