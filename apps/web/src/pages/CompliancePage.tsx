@@ -21,12 +21,13 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
-  ChevronDown, ChevronRight, ScrollText, ShieldCheck, BookOpenCheck,
+  ChevronDown, ChevronRight, ScrollText, ShieldCheck, BookOpenCheck, FileSpreadsheet, FileDown,
 } from "lucide-react";
 import { complianceApi } from "../lib/api";
 import { cn } from "../lib/utils";
 import SeverityBadge from "../components/SeverityBadge";
 import FindingStatusBadge from "../components/FindingStatusBadge";
+import Can from "../components/Can";
 import { formatRelative } from "../lib/utils";
 import type { ComplianceFramework, ControlBreakdown } from "@devsecops/types";
 
@@ -125,15 +126,44 @@ export default function CompliancePage() {
         <div className="space-y-6">
           {/* Header summary for the framework */}
           <div className="rounded-lg border border-indigo-900/40 bg-indigo-950/20 p-4">
-            <div className="flex items-center gap-2">
-              <ShieldCheck className="h-4 w-4 text-indigo-400" />
-              <h2 className="text-base font-semibold text-white">{dashboard.label}</h2>
+            <div className="flex items-start gap-2">
+              <ShieldCheck className="h-4 w-4 text-indigo-400 mt-0.5" />
+              <div className="flex-1">
+                <h2 className="text-base font-semibold text-white">{dashboard.label}</h2>
+                <p className="mt-2 text-xs text-gray-400">
+                  <span className="font-semibold text-gray-200">{dashboard.totalMappings}</span> finding-to-control links across{" "}
+                  <span className="font-semibold text-gray-200">{dashboard.controls.length}</span> controls. Each
+                  finding can satisfy multiple controls — the same SCA result lights up CC7.1 and Req-6.3.1 at the same time.
+                </p>
+              </div>
+
+              {/* Evidence export — ADMIN-gated. CSV is the spreadsheet
+                  format for ad-hoc analysis; HTML is the print-to-PDF
+                  format for the auditor's evidence folder. Both audit-
+                  logged on the API side. */}
+              <Can role="ADMIN">
+                <div className="flex shrink-0 gap-2">
+                  <a
+                    href={`/api/compliance/${activeFramework}/export.csv`}
+                    download
+                    className="inline-flex items-center gap-1.5 rounded border border-indigo-800/60 bg-indigo-950/40 px-3 py-1.5 text-xs font-medium text-indigo-200 hover:bg-indigo-950/60"
+                    title="Download per-control evidence as CSV"
+                  >
+                    <FileSpreadsheet className="h-3.5 w-3.5" />
+                    CSV
+                  </a>
+                  <a
+                    href={`/api/compliance/${activeFramework}/export.html`}
+                    download
+                    className="inline-flex items-center gap-1.5 rounded border border-indigo-800/60 bg-indigo-950/40 px-3 py-1.5 text-xs font-medium text-indigo-200 hover:bg-indigo-950/60"
+                    title="Download printable evidence report (HTML — open in browser, Cmd-P to save as PDF)"
+                  >
+                    <FileDown className="h-3.5 w-3.5" />
+                    HTML / PDF
+                  </a>
+                </div>
+              </Can>
             </div>
-            <p className="mt-2 text-xs text-gray-400">
-              <span className="font-semibold text-gray-200">{dashboard.totalMappings}</span> finding-to-control links across{" "}
-              <span className="font-semibold text-gray-200">{dashboard.controls.length}</span> controls. Each
-              finding can satisfy multiple controls — the same SCA result lights up CC7.1 and Req-6.3.1 at the same time.
-            </p>
           </div>
 
           {/* Control matrix */}

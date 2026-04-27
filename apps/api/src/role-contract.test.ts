@@ -40,6 +40,7 @@ import auditRouter         from "./routes/audit/router.js";
 import membersRouter       from "./routes/members/router.js";
 import ssoRouter           from "./routes/sso/router.js";
 import sbomRouter          from "./routes/sbom/router.js";
+import complianceRouter    from "./routes/compliance/router.js";
 
 // Mount paths must match app.ts. If you add a new router, add it here AND
 // in app.ts AND in the contract — the second assertion below will yell
@@ -62,6 +63,7 @@ const ROUTERS: Record<string, Router> = {
   "/api/members":      membersRouter,
   "/api/sso":          ssoRouter,
   "/api/sbom":         sbomRouter,
+  "/api/compliance":   complianceRouter,
 };
 
 interface LiveGate {

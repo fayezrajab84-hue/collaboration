@@ -25,8 +25,14 @@
 
 import { Router } from "express";
 import { requireAuth } from "../../middleware/requireAuth.js";
+import { requireRole } from "../../middleware/requireRole.js";
 import prisma from "../../db.js";
 import { getActiveMembership } from "../../services/activeOrgService.js";
+import * as audit from "../../services/auditService.js";
+import {
+  buildComplianceCsv,
+  buildComplianceHtml,
+} from "../../services/complianceExportService.js";
 import type { ComplianceFramework } from "@prisma/client";
 
 const router = Router();
@@ -282,6 +288,70 @@ router.get("/:framework/controls/:code/findings", async (req, res, next) => {
       page,
       limit,
     });
+  } catch (err) { next(err); }
+});
+
+// ── Evidence export (Slice E) ─────────────────────────────────────────────
+//
+// Two formats:
+//   * CSV  — RFC 4180, one row per (control × finding) tuple. Suitable for
+//            attaching to a SOC 2 evidence folder, importing into auditor
+//            spreadsheets, or running ad-hoc analysis.
+//   * HTML — printable, self-contained, no external assets. Auditors open
+//            in a browser → "Save as PDF" / Cmd-P. Matches the existing
+//            reportHtmlService pattern; avoids adding a heavy PDF runtime.
+//
+// Both ADMIN+ (auditor-facing data; same gate as the audit log itself).
+// Audit-logged so you can answer "who exported what compliance evidence
+// when" if that question ever shows up in a security-program review.
+
+router.get("/:framework/export.csv", requireRole("ADMIN"), async (req, res, next) => {
+  try {
+    const fw = req.params["framework"]!;
+    if (!isFramework(fw)) { res.status(400).json({ error: `Unknown framework: ${fw}` }); return; }
+    const member = await getActiveMembership(req);
+    if (!member) { res.status(403).json({ error: "No organization membership" }); return; }
+
+    const csv = await buildComplianceCsv(member.orgId, fw);
+
+    await audit.log({
+      orgId:        member.orgId,
+      userId:       (req.user as { id: string }).id,
+      action:       "compliance.export.csv",
+      resourceType: "ComplianceFramework",
+      resourceId:   fw,
+      metadata:     { framework: fw, format: "csv", rowCount: (csv.match(/\n/g)?.length ?? 1) - 1 },
+    });
+
+    const filename = `${fw}-evidence-${new Date().toISOString().split("T")[0]}.csv`;
+    res.setHeader("Content-Type",        "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.send(csv);
+  } catch (err) { next(err); }
+});
+
+router.get("/:framework/export.html", requireRole("ADMIN"), async (req, res, next) => {
+  try {
+    const fw = req.params["framework"]!;
+    if (!isFramework(fw)) { res.status(400).json({ error: `Unknown framework: ${fw}` }); return; }
+    const member = await getActiveMembership(req);
+    if (!member) { res.status(403).json({ error: "No organization membership" }); return; }
+
+    const html = await buildComplianceHtml(member.orgId, fw, FRAMEWORK_LABELS[fw]);
+
+    await audit.log({
+      orgId:        member.orgId,
+      userId:       (req.user as { id: string }).id,
+      action:       "compliance.export.html",
+      resourceType: "ComplianceFramework",
+      resourceId:   fw,
+      metadata:     { framework: fw, format: "html" },
+    });
+
+    const filename = `${fw}-evidence-${new Date().toISOString().split("T")[0]}.html`;
+    res.setHeader("Content-Type",        "text/html; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.send(html);
   } catch (err) { next(err); }
 });
 

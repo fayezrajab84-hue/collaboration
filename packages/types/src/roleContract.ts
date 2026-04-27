@@ -189,6 +189,21 @@ export const ROLE_CONTRACT: readonly RoleProtectedAction[] = [
     ui:          { file: "apps/web/src/components/settings/SSOTab.tsx", affordance: "Test connection button (inside Can role=ADMIN wrapper)" },
   },
 
+  {
+    id:          "export-compliance-csv",
+    description: "Export per-framework compliance evidence as CSV (one row per control × finding)",
+    minRole:     "ADMIN",
+    api:         { method: "GET", path: "/api/compliance/:framework/export.csv" },
+    ui:          { file: "apps/web/src/pages/CompliancePage.tsx", affordance: "CSV export button (Can role=ADMIN)" },
+  },
+  {
+    id:          "export-compliance-html",
+    description: "Export per-framework compliance evidence as printable HTML (auditor saves as PDF)",
+    minRole:     "ADMIN",
+    api:         { method: "GET", path: "/api/compliance/:framework/export.html" },
+    ui:          { file: "apps/web/src/pages/CompliancePage.tsx", affordance: "HTML/PDF export button (Can role=ADMIN)" },
+  },
+
   // ── SECURITY tier — finding triage / risk acceptance ──
 
   {

@@ -61,6 +61,7 @@ read / write capability except OWNER's structural one:
 - Configure single sign-on <!-- contract:view-sso-config --> <!-- contract:save-sso-config --> <!-- contract:delete-sso-config --> <!-- contract:test-sso-discovery -->
 - Edit security policies (PR-check rules) <!-- contract:create-policy --> <!-- contract:update-policy --> <!-- contract:delete-policy -->
 - Read the audit log + export it as CSV <!-- contract:view-audit-log --> <!-- contract:export-audit-csv -->
+- Export per-framework compliance evidence (CSV + printable HTML for auditors) <!-- contract:export-compliance-csv --> <!-- contract:export-compliance-html -->
 - Delete repos, containers, and domains (cascades all their findings) <!-- contract:delete-repo --> <!-- contract:delete-container --> <!-- contract:delete-domain -->
 - Inspect the BullMQ queue, retry failed jobs, delete failed jobs <!-- contract:view-admin-queues --> <!-- contract:view-failed-jobs --> <!-- contract:retry-failed-job --> <!-- contract:delete-failed-job -->
 - Plus everything SECURITY, DEVELOPER, and VIEWER can do
