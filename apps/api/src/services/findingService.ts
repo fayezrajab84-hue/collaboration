@@ -716,6 +716,25 @@ export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: n
     const shouldReopen = prev?.status === "FIXED";
     if (shouldReopen) reopenedCount += 1;
 
+    // Phase 14 — pull reachability classification out of evidence so it
+    // lands on the proper schema column. The scanner sets one of
+    // REACHABLE / NOT_REACHABLE for SCA findings; for non-SCA scan types
+    // (DAST/SAST/SECRET/IAC etc) the concept doesn't apply, so default
+    // to NOT_APPLICABLE. SCA findings whose scanner didn't classify (old
+    // images, or scanner failure) stay UNKNOWN — better than a wrong
+    // NOT_REACHABLE.
+    const ev = (f.evidence ?? {}) as Record<string, unknown>;
+    const evReach = ev["reachability"];
+    let reachability: "REACHABLE" | "NOT_REACHABLE" | "UNKNOWN" | "NOT_APPLICABLE";
+    if (f.scanType === "SCA" || f.scanType === "CONTAINER") {
+      reachability = (evReach === "REACHABLE" || evReach === "NOT_REACHABLE")
+        ? evReach
+        : "UNKNOWN";
+    } else {
+      reachability = "NOT_APPLICABLE";
+    }
+    const reachabilityEvidence = ev["reachability_evidence"];
+
     const upserted = await prisma.finding.upsert({
       where: { fingerprint: f.fingerprint },
       create: {
@@ -750,6 +769,8 @@ export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: n
         lastSeen:     now,
         confidence:   (f.confidence  ?? "POSSIBLE") as "CONFIRMED" | "LIKELY" | "POSSIBLE",
         evidence:     f.evidence ? (f.evidence as object) : undefined,
+        reachability,
+        reachabilityEvidence: reachabilityEvidence ? (reachabilityEvidence as object) : undefined,
       },
       update: {
         lastSeen:     now,
@@ -769,6 +790,11 @@ export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: n
         fixVersion:   f.fixVersion   ?? null,
         remediation:  f.remediation  ?? null,
         references:   f.references   ?? [],
+        // Phase 14 — re-classify reachability on every re-scan. A package
+        // that was REACHABLE last week may have been removed since
+        // (NOT_REACHABLE), or vice versa. Don't preserve stale verdicts.
+        reachability,
+        reachabilityEvidence: reachabilityEvidence ? (reachabilityEvidence as object) : null,
         // Refresh location + snippet so re-scans backfill any previously-empty
         // values (e.g. older Semgrep IAC findings that were stored without a
         // code_snippet before the scanner started emitting "N: code" prefixes).

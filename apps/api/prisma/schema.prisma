@@ -158,6 +158,17 @@ enum ScanTrigger {
 
 // Policy rules: each row is one gate that contributes to the PR check decision.
 // `config` is rule-type-specific — validated in code, not in the DB.
+// Phase 14 — package-level reachability classification for SCA findings.
+// True call-graph reachability is months of work per language; this is the
+// pragmatic v1 — "is this dep actually imported anywhere in the source?"
+// Cuts ~50% of typical SCA noise (transitive deps no one references).
+enum Reachability {
+  REACHABLE        // package found in at least one import/require statement
+  NOT_REACHABLE    // package present in lockfile but not imported anywhere
+  UNKNOWN          // can't determine — language unsupported, source unavailable, or finding pre-dates Phase 14
+  NOT_APPLICABLE   // not an SCA finding (DAST/SAST/SECRET/IAC etc — reachability concept doesn't apply)
+}
+
 enum PolicyRuleType {
   SEVERITY_THRESHOLD    // config: { severity: Severity }       → fail if any OPEN finding ≥ severity
   BLOCK_ON_NEW_ONLY     // config: {}                           → qualifier: scope thresholds to PR-new findings
@@ -675,6 +686,15 @@ model Finding {
   // findingService.upsertFindings) to avoid false closures from a single
   // flaky ZAP / nuclei / nikto run.
   absenceCount      Int       @default(0)
+
+  // Phase 14 — reachability classification. UNKNOWN for findings that
+  // pre-date Phase 14; NOT_APPLICABLE for non-SCA findings; REACHABLE /
+  // NOT_REACHABLE for SCA findings the scanner classified at scan time.
+  // Evidence is a JSON array of file paths where the package was found
+  // imported (when REACHABLE) — gold for triage ("show me the 3 files
+  // that depend on this vulnerable package").
+  reachability         Reachability @default(UNKNOWN)
+  reachabilityEvidence Json?
 
   org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   scanJob    ScanJob      @relation(fields: [scanJobId], references: [id])
