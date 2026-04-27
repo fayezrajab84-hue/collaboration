@@ -337,7 +337,7 @@ export interface FrameworkDashboard {
 // Mirrors apps/api/src/services/correlation/attackPathService.ts.
 
 export type AttackPathBridgeType =
-  | "cve" | "route" | "port" | "secret"
+  | "cve" | "route" | "port" | "secret" | "container_exposure"
   | "runtime" | "waf_bypass" | "db_access" | "egress_c2"
   | "dns_resolution" | "c2_beacon" | "agent_tool" | "llm_attack"
   | "cloud_east_west" | "flow_data_access";

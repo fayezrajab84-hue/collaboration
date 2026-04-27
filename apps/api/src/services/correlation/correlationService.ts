@@ -24,6 +24,7 @@ import { cveBridge } from "./cveBridge.js";
 import { routeBridge } from "./routeBridge.js";
 import { portBridge } from "./portBridge.js";
 import { secretBridge } from "./secretBridge.js";
+import { containerExposureBridge } from "./containerExposureBridge.js";
 import type {
   Bridge,
   BridgeContext,
@@ -40,6 +41,7 @@ const REGISTERED_BRIDGES: readonly Bridge[] = [
   routeBridge,
   portBridge,
   secretBridge,
+  containerExposureBridge,
 ];
 
 export interface CorrelationRunSummary {

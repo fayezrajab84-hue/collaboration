@@ -8,6 +8,7 @@ import type { Finding } from "@prisma/client";
 import { cveBridge } from "./cveBridge.js";
 import { _testing as routeTesting } from "./routeBridge.js";
 import { secretBridge } from "./secretBridge.js";
+import { containerExposureBridge } from "./containerExposureBridge.js";
 import { _testing as engineTesting } from "./correlationService.js";
 import type { BridgeContext } from "./bridgeInterface.js";
 
@@ -224,6 +225,87 @@ describe("secretBridge", () => {
     const a = fakeFinding({ id: "a", scanType: "SECRET",    evidence: { secret_hash: "shortvalue" } });
     const b = fakeFinding({ id: "b", scanType: "CONTAINER", evidence: { secret_hash: "shortvalue" } });
     expect(secretBridge.match(a, b, EMPTY_CTX)).toBeNull();
+  });
+});
+
+describe("containerExposureBridge", () => {
+  // Phase 27.5.x — links CONTAINER findings to DAST/PENTEST findings on a
+  // domain the container is operator-declared to serve.
+  const ctxLinked: BridgeContext = {
+    containerById: new Map([
+      ["c1", { id: "c1", imageRef: "myorg/api:1.0", sourceRepositoryId: null, deployedAtDomainIds: ["d1"] }],
+    ]),
+    containersByImageRef: new Map(),
+    domainById: new Map([
+      ["d1", { id: "d1", domain: "api.example.com", servesContainerIds: ["c1"] }],
+    ]),
+  };
+  const ctxUnlinked: BridgeContext = {
+    containerById: new Map([
+      ["c1", { id: "c1", imageRef: "myorg/api:1.0", sourceRepositoryId: null, deployedAtDomainIds: [] }],
+    ]),
+    containersByImageRef: new Map(),
+    domainById: new Map([
+      ["d1", { id: "d1", domain: "api.example.com", servesContainerIds: [] }],
+    ]),
+  };
+
+  it("links CONTAINER + DAST when both sides are HIGH+ and asset graph linked", () => {
+    const c = fakeFinding({ id: "c", scanType: "CONTAINER", targetType: "CONTAINER", containerId: "c1", severity: "CRITICAL", cveId: "CVE-2024-1234", packageName: "libssl3" });
+    const d = fakeFinding({ id: "d", scanType: "DAST",      targetType: "DOMAIN",    domainId:    "d1", severity: "HIGH" });
+    const m = containerExposureBridge.match(c, d, ctxLinked);
+    expect(m).not.toBeNull();
+    expect(m?.bridgeType).toBe("container_exposure");
+    expect(m?.confidence).toBe("LIKELY"); // CRITICAL container side upgrades
+    expect(m?.reason).toContain("CVE-2024-1234");
+    expect(m?.reason).toContain("myorg/api:1.0");
+  });
+
+  it("returns POSSIBLE for HIGH-severity container findings", () => {
+    const c = fakeFinding({ id: "c", scanType: "CONTAINER", targetType: "CONTAINER", containerId: "c1", severity: "HIGH", cveId: "CVE-2024-9999" });
+    const d = fakeFinding({ id: "d", scanType: "DAST",      targetType: "DOMAIN",    domainId:    "d1", severity: "HIGH" });
+    const m = containerExposureBridge.match(c, d, ctxLinked);
+    expect(m?.confidence).toBe("POSSIBLE");
+  });
+
+  it("does NOT fire when container side is below HIGH (severity gate)", () => {
+    const cMed = fakeFinding({ id: "c", scanType: "CONTAINER", targetType: "CONTAINER", containerId: "c1", severity: "MEDIUM", cveId: "CVE-X" });
+    const cLow = fakeFinding({ id: "c", scanType: "CONTAINER", targetType: "CONTAINER", containerId: "c1", severity: "LOW",    cveId: "CVE-X" });
+    const d   = fakeFinding({ id: "d", scanType: "DAST",      targetType: "DOMAIN",    domainId:    "d1", severity: "HIGH" });
+    expect(containerExposureBridge.match(cMed, d, ctxLinked)).toBeNull();
+    expect(containerExposureBridge.match(cLow, d, ctxLinked)).toBeNull();
+  });
+
+  it("does NOT fire when web side is below HIGH (severity gate)", () => {
+    const c = fakeFinding({ id: "c", scanType: "CONTAINER", targetType: "CONTAINER", containerId: "c1", severity: "CRITICAL", cveId: "CVE-X" });
+    const dMed = fakeFinding({ id: "d", scanType: "DAST", targetType: "DOMAIN", domainId: "d1", severity: "MEDIUM" });
+    expect(containerExposureBridge.match(c, dMed, ctxLinked)).toBeNull();
+  });
+
+  it("returns null when the operator hasn't linked the container to that domain", () => {
+    const c = fakeFinding({ id: "c", scanType: "CONTAINER", targetType: "CONTAINER", containerId: "c1", severity: "CRITICAL", cveId: "CVE-X" });
+    const d = fakeFinding({ id: "d", scanType: "DAST",      targetType: "DOMAIN",    domainId:    "d1", severity: "MEDIUM" });
+    expect(containerExposureBridge.match(c, d, ctxUnlinked)).toBeNull();
+  });
+
+  it("rejects cross-org pairs (defence-in-depth)", () => {
+    const c = fakeFinding({ id: "c", orgId: "orgA", scanType: "CONTAINER", targetType: "CONTAINER", containerId: "c1", severity: "CRITICAL", cveId: "CVE-X" });
+    const d = fakeFinding({ id: "d", orgId: "orgB", scanType: "DAST",      targetType: "DOMAIN",    domainId:    "d1", severity: "HIGH" });
+    expect(containerExposureBridge.match(c, d, ctxLinked)).toBeNull();
+  });
+
+  it("requires PENTEST or DAST on the web side — ignores CONTAINER ↔ CONTAINER", () => {
+    const c1 = fakeFinding({ id: "c1", scanType: "CONTAINER", targetType: "CONTAINER", containerId: "c1", severity: "CRITICAL", cveId: "CVE-X" });
+    const c2 = fakeFinding({ id: "c2", scanType: "CONTAINER", targetType: "CONTAINER", containerId: "c1", severity: "HIGH",     cveId: "CVE-Y" });
+    expect(containerExposureBridge.match(c1, c2, ctxLinked)).toBeNull();
+  });
+
+  it("is symmetric — match(c, d) === match(d, c)", () => {
+    const c = fakeFinding({ id: "c", scanType: "CONTAINER", targetType: "CONTAINER", containerId: "c1", severity: "CRITICAL", cveId: "CVE-X" });
+    const d = fakeFinding({ id: "d", scanType: "DAST",      targetType: "DOMAIN",    domainId:    "d1", severity: "HIGH" });
+    const ab = containerExposureBridge.match(c, d, ctxLinked);
+    const ba = containerExposureBridge.match(d, c, ctxLinked);
+    expect(ab).toEqual(ba);
   });
 });
 

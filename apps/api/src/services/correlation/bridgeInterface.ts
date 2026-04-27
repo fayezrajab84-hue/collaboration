@@ -29,10 +29,13 @@ export type BridgeConfidence = "POSSIBLE" | "LIKELY" | "CONFIRMED";
 
 /** What kind of bridge produced this edge — surfaces in the graph UI tooltip. */
 export type BridgeType =
-  | "cve"        // Same CVE on a repo SCA finding + a container SCA finding
-  | "route"     // DAST/PENTEST URL path matches a SAST source file path
-  | "port"      // PENTEST nmap-discovered port matches a container EXPOSE rule
-  | "secret"    // Secret hash matches an env var hash in a container layer
+  | "cve"                // Same CVE on a repo SCA finding + a container SCA finding
+  | "route"              // DAST/PENTEST URL path matches a SAST source file path
+  | "port"               // PENTEST nmap-discovered port matches a container EXPOSE rule
+  | "secret"             // Secret hash matches an env var hash in a container layer
+  | "container_exposure" // CONTAINER finding ↔ DAST/PENTEST on a domain that container serves
+                         // (closes the gap "container CVE was never in the chain even though
+                         //  the operator declared the asset linkage")
   // Phase 28.x reserved tags so the type stays exhaustive across slices:
   | "runtime"
   | "waf_bypass"
