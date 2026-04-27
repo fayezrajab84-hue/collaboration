@@ -19,9 +19,11 @@
  * Slice E will add are ADMIN+, gated via <Can role="ADMIN">.
  */
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
   ChevronDown, ChevronRight, ScrollText, ShieldCheck, BookOpenCheck, FileSpreadsheet, FileDown,
+  ExternalLink,
 } from "lucide-react";
 import { complianceApi } from "../lib/api";
 import { cn } from "../lib/utils";
@@ -347,28 +349,32 @@ function ControlDrillDown({ framework, code }: { framework: ComplianceFramework;
       ) : (
         <ul className="space-y-1.5">
           {data.findings.map((f) => (
-            <li
-              key={f.id}
-              className="flex items-start gap-2 rounded border border-gray-800/80 bg-gray-900/40 px-3 py-2 text-xs"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <SeverityBadge severity={f.severity} />
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="truncate font-medium text-gray-200">{f.title}</span>
-                  <span className="rounded bg-gray-800/60 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-gray-500">
-                    {f.scanType}
-                  </span>
+            <li key={f.id}>
+              <Link
+                to={`/findings?id=${f.id}`}
+                onClick={(e) => e.stopPropagation()}
+                className="group flex items-start gap-2 rounded border border-gray-800/80 bg-gray-900/40 px-3 py-2 text-xs transition-colors hover:border-indigo-800/60 hover:bg-indigo-950/20"
+                title="Open finding in the Findings view"
+              >
+                <SeverityBadge severity={f.severity} />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate font-medium text-gray-200 group-hover:text-indigo-100">{f.title}</span>
+                    <span className="rounded bg-gray-800/60 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-gray-500">
+                      {f.scanType}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[10px] text-gray-500">
+                    {f.cweId && <span className="rounded bg-indigo-950/40 px-1.5 py-0.5 text-indigo-300">{f.cweId}</span>}
+                    {f.cveId && <span className="rounded bg-amber-950/40 px-1.5 py-0.5 text-amber-300">{f.cveId}</span>}
+                    {f.packageName && <span>{f.packageName}{f.packageVersion ? `@${f.packageVersion}` : ""}</span>}
+                    {f.filePath && <span className="font-mono text-[10px]">{f.filePath}{f.lineStart ? `:${f.lineStart}` : ""}</span>}
+                    <span className="ml-auto">{formatRelative(f.firstSeen)}</span>
+                  </div>
                 </div>
-                <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[10px] text-gray-500">
-                  {f.cweId && <span className="rounded bg-indigo-950/40 px-1.5 py-0.5 text-indigo-300">{f.cweId}</span>}
-                  {f.cveId && <span className="rounded bg-amber-950/40 px-1.5 py-0.5 text-amber-300">{f.cveId}</span>}
-                  {f.packageName && <span>{f.packageName}{f.packageVersion ? `@${f.packageVersion}` : ""}</span>}
-                  {f.filePath && <span className="font-mono text-[10px]">{f.filePath}{f.lineStart ? `:${f.lineStart}` : ""}</span>}
-                  <span className="ml-auto">{formatRelative(f.firstSeen)}</span>
-                </div>
-              </div>
-              <FindingStatusBadge status={f.status} />
+                <FindingStatusBadge status={f.status} />
+                <ExternalLink className="h-3 w-3 shrink-0 self-center text-gray-600 group-hover:text-indigo-400" />
+              </Link>
             </li>
           ))}
         </ul>
