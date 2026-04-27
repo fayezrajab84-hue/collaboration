@@ -367,6 +367,27 @@ own play, white-box mode is closer to Phase 24 than 26).
 
 ---
 
+### Phase 27 — Attack-path correlation (asset graph foundation) ❌ *(DIFFERENTIATOR, makes the unified pitch real, ~2.5–3 weeks)*
+
+**Sequenced after Phase 18 (CSPM)** so the demo lands as "internet → web vuln → container → cloud → exfil" rather than dead-ending at the container tier. Findings exist today (~600 in dev across SAST/SCA/Secrets/IaC/Container/DAST/PENTEST) but they're an unindexed pile — no chain, no story. Phase 27 turns the pile into the picture.
+
+**Use case:** DVWA already produces 5 chainable findings in dev today (SAST sqli source-line + DAST URL + PENTEST CONFIRMED + container CVE + hardcoded MySQL password). Today they render as 5 disconnected rows. Phase 27 connects them into a graph: `internet → SQLi → container → libapache2 RCE → DB tier`. Phase 18 enrichment then extends the chain into the cloud.
+
+Four slices, ~2100 lines, ~2.5–3 weeks total:
+
+- **A — Asset relations schema + operator-declared seeding (foundation, 2-3 days):** add `Repository.buildsContainerImages[]`, `Container.deployedAtDomainIds[]`, `Domain.servesContainerIds[]`, plus a chip-editor UI on each resource detail page. Nothing else works without this layer. v1 is operator-declared; CI-based inference is Phase 27.x follow-up.
+- **B — Correlation engine + 4 base bridge plugins (3-4 days):** pluggable `Bridge` interface; CVE bridge (same `cveId` repo↔container) + route bridge (DAST URL ↔ SAST file path) + port bridge (nmap port ↔ container EXPOSE) + secret bridge (secret hash ↔ env var hash in container layer). Populates `correlationGroupId` + `correlationEdges` on each finding.
+- **C — Attack path graph UI (4-5 days):** `/attack-paths` top-level nav; force-directed graph + scored list; `pathScore = severity × pathLength × externalReach × proofMultiplier` formula. AttackPathBadge surfaces on Findings rows.
+- **D — Cloud bridges (composes on Phase 18, 3-4 days):** `iamBridge` (Container's cluster IAM role → CloudResource permissions) + `networkBridge` (cloud security group ingress → container reachability). Degrades gracefully when CSPM isn't configured.
+
+Slice A is the killer move — it's the foundation everything else stacks on. Ship A standalone first; B and C are no-ops until A exists. D folds in cleanly once Phase 18 has populated `CloudResource` rows.
+
+**Strategic position:** **Nobody** ships the full repo→container→domain→cloud chain in one product today. Snyk has dashboards-per-scan but no graph. Wiz has the cloud-side graph (their famous attack-path view) but no SAST/SCA/DAST integration. Aikido has unified findings but no graph. Phase 27 makes BreachLens the only product where one chain spans all seven scanner types AND cloud — which is the demo that closes deals against Wiz and Snyk simultaneously.
+
+Full scope: [`docs/plans/phase-27-attack-path-correlation.md`](./phase-27-attack-path-correlation.md). Five open questions to settle before Slice A (CI inference of repo→container, k8s manifest scrape timing, scoring formula tuning, cross-org graph isolation tests, performance ceiling at 10k findings).
+
+---
+
 ## GTM-optimized sequenced timeline
 
 | Month | Focus | Phases | Why this slot |
@@ -376,7 +397,8 @@ own play, white-box mode is closer to Phase 24 than 26).
 | 3 | **Noise reduction + SOC story** | 14 + 23 | Reachability cuts SCA noise (protects renewals); SIEM bridge adds operational lift cheaply |
 | 4 | **Refresh the differentiator + close the fix loop** | 24 + 17 | Pentest depth keeps demos sharp; auto-PRs close the "devs don't fix" gap |
 | 5 | **Category expansion** | 18 (AWS-only first cut) | Biggest single category expansion (CSPM); start with AWS to scope down |
-| 6 | **Coverage + adoption** | 19 + 20 + 21 | K8s easy win; API security newer differentiator; IDE for dev adoption funnel |
+| 6 | **The unified pitch becomes real** | 27 | First product where one attack chain spans repo→container→domain→cloud. The demo that closes Wiz + Snyk bake-offs simultaneously. Sequenced after 18 so the chain reaches into cloud on day one. |
+| 7 | **Coverage + adoption** | 19 + 20 + 21 | K8s easy win; API security newer differentiator; IDE for dev adoption funnel |
 | Later (SaaS-only) | **SaaS scale** | 25 | Only when going multi-tenant SaaS — defer for self-host deployments |
 | Later (research moat) | **AI-driven discovery** | 26 | Waits on Mythos public API + Phase 14 reachability for cost-effective scoping. Plumbing is hours when ready. |
 
