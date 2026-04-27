@@ -139,17 +139,20 @@ export async function generateSummary(
   // Length contract: enforce MIN to catch empty AI responses, but don't
   // hard-fail on MAX overshoot — providers regularly produce slightly
   // longer text than asked. Instead transform overlong fields by clipping
-  // at the last sentence/word boundary that fits. Pre-Phase-27.5.x this
-  // schema used .max() which threw on every chain whose tldr exceeded
-  // 280 chars (most of them, in practice).
+  // at the last sentence/word boundary that fits.
+  //
+  // Tight by design (operator feedback: "summary is too big to read"):
+  //   tldr      → ~200 chars (one short sentence)
+  //   narrative → ~600 chars (3-5 brief bullet lines, not paragraphs)
+  //   verdictReasoning → ~300 chars (1-2 sentences)
+  // Together a single chain summary fits in one screen of the card.
   const schema = z.object({
     title:             z.string().min(3).transform((s) => clipText(s, 80)),
-    tldr:              z.string().min(8).transform((s) => clipText(s, 400)),
-    narrative:         z.string().min(40).transform((s) => clipText(s, 3000)),
-    // Phase 27.5.x — verification (bundled into the same AI call).
+    tldr:              z.string().min(8).transform((s) => clipText(s, 200)),
+    narrative:         z.string().min(20).transform((s) => clipText(s, 600)),
     verdict:           z.enum(["LIKELY_REAL", "MIXED_SIGNAL", "LIKELY_NOISE"]),
     verdictConfidence: z.number().int().min(0).max(100),
-    verdictReasoning:  z.string().min(8).transform((s) => clipText(s, 800)),
+    verdictReasoning:  z.string().min(8).transform((s) => clipText(s, 300)),
   });
 
   let result;
@@ -227,24 +230,34 @@ const SYSTEM_PROMPT = `You are a senior application-security engineer writing a 
 Your job: explain AND verify the chain, returned as JSON
 {title, tldr, narrative, verdict, verdictConfidence, verdictReasoning}.
 
-NARRATIVE GUIDELINES
-- title: 3-8 words. The chain card's HEADLINE. Concrete, specific, lead
-  with the vulnerability + asset. Examples:
+NARRATIVE GUIDELINES — BE TIGHT. The operator skims dozens of chains per
+day. Every word costs them attention. Each field has a strict budget;
+anything you write past it is wasted.
+
+- title: 3-8 words (max 80 chars). The chain card's HEADLINE. Concrete,
+  specific, lead with the vulnerability + asset. Examples:
     "SQL injection in DVWA login form"
     "RCE via libxml2 CVE-2022-2309 in API container"
     "XSS reflected on /vulnerabilities/xss_r/"
-  Avoid generic phrases like "security issues found" or "vulnerability chain".
-  No trailing period. Title Case is fine; sentence case is fine; pick one.
+  No generic phrases like "security issues found". No trailing period.
 
-- tldr: ONE sentence — the impact summary a CISO would read first. Lead
-  with the impact, then the root cause. Example:
-  "SQL injection in the authenticated user-edit endpoint chains to a
-  container with a known RCE, enabling full DB takeover from the login form."
+- tldr: ONE short sentence (max 200 chars). The impact summary a CISO
+  would read first. Lead with impact, then root cause. Example:
+  "SQL injection in the user-edit endpoint enables full DB takeover via
+  the login form."
 
-- narrative: 2-3 short paragraphs — what the chain is, why these findings
-  link, and the realistic exploit path. Use specific artifacts (URLs, file
-  paths, CVEs, scan types) so the operator can verify your reasoning. Avoid
-  generic security advice — the operator already knows what XSS is.
+- narrative: 3-5 BULLET POINTS (max 600 chars total — that's ~120 chars
+  per bullet, ~16 words each). Format: each bullet on its own line,
+  prefixed with "• " (bullet character + space). NO paragraphs. NO
+  intros. NO concluding sentences. Each bullet states ONE fact:
+    • Source: SAST flagged unsanitized $_GET in login.php:6
+    • Reach: DAST confirmed reflection at /login.php
+    • Container: libapache2 has CVE-2021-44790 (RCE)
+    • Asset link: container serves the dvwa domain
+    • Exploit: PENTEST extracted DB schema via this URL
+  Use specific artifacts (URLs, file paths, CVEs, line numbers). NO
+  generic security advice. NO "the chain shows" / "this represents".
+  Just facts.
 
 VERIFICATION (you are the second-opinion sanity check on the engine's chain)
 - verdict: pick exactly one of:
@@ -259,12 +272,10 @@ VERIFICATION (you are the second-opinion sanity check on the engine's chain)
                        chain doesn't describe a meaningful attack flow.
 - verdictConfidence: integer 0-100. Your self-reported certainty in the
   verdict. Sub-50 means "I'm guessing"; 80+ means "I'd stake my reputation".
-- verdictReasoning: 2-3 sentences citing the specific bridge edges and
-  why they're (or aren't) real. Example: "The SAST hit on
-  vulnerabilities/exec/source/high.php and the DAST URL
-  /vulnerabilities/exec/?cmd=ls share both an exec endpoint AND a
-  command-injection rule class — this is a real chain. The CONTAINER CVE
-  on glibc is a blast-radius association, not a direct exploit link."
+- verdictReasoning: 1-2 short sentences (max 300 chars). Cite the
+  specific bridge edges and why they're (or aren't) real. Example:
+  "SAST exec.php and DAST /vulnerabilities/exec/ share both endpoint and
+  rule class — real chain. Container glibc CVE is blast-radius noise."
 
 CONFIDENCE DISCIPLINE
 - NEVER overclaim: if a node's confidence is POSSIBLE, say "likely" not

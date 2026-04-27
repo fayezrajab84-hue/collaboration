@@ -185,11 +185,40 @@ function AiSummaryPanel({
           )}
 
           <p className="mt-3 text-sm font-medium text-indigo-100">{summary.tldr}</p>
-          <p className="mt-2 whitespace-pre-line text-xs leading-relaxed text-gray-300">{summary.narrative}</p>
+          <SummaryBullets text={summary.narrative} />
           {errorMsg && <p className="mt-2 text-xs text-red-400">{errorMsg}</p>}
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * Render the AI narrative as a tight bullet list. The new prompt asks for
+ * "• "-prefixed bullets, one per line. We split on newlines, strip the
+ * bullet prefix, and render with a real <ul>/<li> for accessibility +
+ * tighter spacing. Falls back to whitespace-pre-line for any legacy
+ * cached summary that wasn't generated with the bullet prompt.
+ */
+function SummaryBullets({ text }: { text: string }) {
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  // Detect bullet format: most lines start with "• " or "- " or "* ".
+  const bulletPrefix = /^[•\-*]\s+/;
+  const looksLikeBullets = lines.length >= 2 && lines.filter((l) => bulletPrefix.test(l)).length >= Math.ceil(lines.length / 2);
+
+  if (!looksLikeBullets) {
+    return <p className="mt-2 whitespace-pre-line text-xs leading-relaxed text-gray-300">{text}</p>;
+  }
+
+  return (
+    <ul className="mt-2 space-y-1 text-xs text-gray-300">
+      {lines.map((raw, i) => (
+        <li key={i} className="flex gap-2 leading-relaxed">
+          <span className="mt-0.5 text-indigo-400">•</span>
+          <span>{raw.replace(bulletPrefix, "")}</span>
+        </li>
+      ))}
+    </ul>
   );
 }
 
