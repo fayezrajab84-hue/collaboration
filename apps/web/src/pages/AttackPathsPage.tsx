@@ -71,9 +71,9 @@ function AttackPathDetail({ groupId }: { groupId: string }) {
             page (not in the list-view cards) so it doesn't burn AI calls
             for chains the operator never opens. */}
         <AiSummaryPanel groupId={groupId} initialSummary={data.summary ?? null} />
-        {/* Detail view: prefer the AI tldr as the chain title when present;
-            fall back to the heuristic title from the API. */}
-        <PathCard path={data} forceExpanded aiTitle={data.summary?.tldr ?? null} />
+        {/* Detail view: PathCard already prefers data.aiTitle (from cached
+            summary) over the heuristic. No extra plumbing needed. */}
+        <PathCard path={data} forceExpanded />
       </div>
     </FindingDrawerHost>
   );
@@ -104,6 +104,9 @@ function AiSummaryPanel({
       setSummary(next);
       setErrorMsg(null);
       qc.invalidateQueries({ queryKey: ["attackPath", groupId] });
+      // Also invalidate the list — the new aiTitle should reflect on the
+      // /attack-paths cards next time the operator navigates back.
+      qc.invalidateQueries({ queryKey: ["attackPaths"] });
       toast.success(next.cached ? "Loaded cached summary" : "Summary generated");
     },
     onError: (err: Error & { response?: { data?: { error?: string; code?: string } } }) => {
@@ -302,12 +305,9 @@ function FindingDrawerHost({ children }: { children: React.ReactNode }) {
 function PathCard({
   path,
   forceExpanded,
-  aiTitle,
 }: {
   path:           AttackPathSummary;
   forceExpanded?: boolean;
-  /** AI tldr — overrides the heuristic title when present. Detail page only. */
-  aiTitle?:       string | null;
 }) {
   // Local expand state (default collapsed for the list view; force-open on
   // the dedicated detail page).
@@ -316,21 +316,18 @@ function PathCard({
   const iconClass = path.hasConfirmed ? "text-red-400" : "text-indigo-400";
   const isToggleable = !forceExpanded;
 
-  // Title: prefer AI tldr (when available — detail view only), fall back
-  // to the backend's heuristic title (highest-severity, source-side preferred).
-  // Never fall back to "Correlated chain" — every chain has a real title now.
-  const headline = (aiTitle && aiTitle.length > 0) ? aiTitle : path.title;
+  // Title precedence: AI-generated title (when cached) > heuristic title.
+  // Both views use the same logic now — list cards get the AI title for
+  // free because the list endpoint pulls cached titles in one batch query.
+  const headline = (path.aiTitle && path.aiTitle.length > 0) ? path.aiTitle : path.title;
 
-  // Subtitle: confirmed-exploit qualifier OR the From→To hop story OR a
-  // generic "spans N targets" fallback. The headline above carries the
-  // "what", subtitle carries the "where" and "how proven".
+  // Subtitle: From→To hop story (the "how proven" moved into a dedicated
+  // ExploitBadge next to the title).
   const fromName = path.nodes[0]?.targetName;
   const toName   = path.nodes[path.nodes.length - 1]?.targetName;
-  const subtitleParts: string[] = [];
-  if (path.hasConfirmed) subtitleParts.push("Confirmed exploit");
-  if (fromName && toName && fromName !== toName) subtitleParts.push(`${fromName} → ${toName}`);
-  else if (fromName) subtitleParts.push(fromName);
-  const subtitle = subtitleParts.join(" · ");
+  const subtitle = (fromName && toName && fromName !== toName)
+    ? `${fromName} → ${toName}`
+    : (fromName ?? "");
 
   return (
     <div className={
@@ -356,6 +353,7 @@ function PathCard({
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="text-base font-semibold text-white">{headline}</h2>
             <SeverityBadge severity={path.maxSeverity} />
+            {path.hasConfirmed && <ExploitBadge />}
             <span className="text-xs text-gray-500">·</span>
             <span className="text-xs text-gray-500">{path.length} hops</span>
             <span className="text-xs text-gray-500">·</span>
@@ -382,6 +380,23 @@ function PathCard({
         </ol>
       )}
     </div>
+  );
+}
+
+/**
+ * Phase 27.5.x — Exploit tag rendered next to the chain title when ANY
+ * node in the chain has confidence=CONFIRMED. Red so it grabs the eye in
+ * a long list view; the icon doubles up on the colour signal so colour-
+ * blind operators still see the urgency.
+ */
+function ExploitBadge() {
+  return (
+    <span
+      title="At least one finding in this chain has confidence=CONFIRMED — the exploit has been verified, not just suspected."
+      className="inline-flex items-center gap-1 rounded-full border border-red-700 bg-red-950/40 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-red-300"
+    >
+      <AlertTriangle className="h-3 w-3" /> Exploit
+    </span>
   );
 }
 

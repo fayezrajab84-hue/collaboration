@@ -76,9 +76,11 @@ export interface AttackPathSummary {
   groupId:         string;
   /** Phase 27.5.x — distinctive heuristic title built from the chain's
    *  lead finding (highest-severity, source-side preferred for root-cause
-   *  framing). Always populated even when no AI summary exists. The UI
-   *  can override with the AI tldr when one is generated. */
+   *  framing). Always populated even when no AI summary exists. */
   title:           string;
+  /** Phase 27.5.x — cached AI-generated short headline. Populated for
+   *  chains with an existing AttackPathSummary row; null otherwise. */
+  aiTitle:         string | null;
   score:           number;
   length:          number;
   maxSeverity:     Severity;
@@ -126,10 +128,23 @@ export async function listAttackPaths(orgId: string, limit = 50): Promise<Attack
     groups.set(gid, list);
   }
 
+  // Phase 27.5.x — pull cached AI titles for any chains that already have
+  // an AttackPathSummary row. Cheap one-shot query keyed by groupId so the
+  // list view never has to per-chain fetch the cache.
+  const groupIds = Array.from(groups.keys());
+  const aiTitleByGroupId = new Map<string, string | null>();
+  if (groupIds.length > 0) {
+    const cached = await prisma.attackPathSummary.findMany({
+      where:  { orgId, correlationGroupId: { in: groupIds } },
+      select: { correlationGroupId: true, title: true },
+    });
+    for (const c of cached) aiTitleByGroupId.set(c.correlationGroupId, c.title);
+  }
+
   const summaries: AttackPathSummary[] = [];
   for (const [groupId, members] of groups) {
     if (members.length < 2) continue;        // need at least an edge to count as a chain
-    const summary = scoreGroup(groupId, members);
+    const summary = scoreGroup(groupId, members, aiTitleByGroupId.get(groupId) ?? null);
     if (summary) summaries.push(summary);
   }
 
@@ -139,20 +154,27 @@ export async function listAttackPaths(orgId: string, limit = 50): Promise<Attack
 
 /** Fetch one chain in detail, by groupId. Returns null if no such group. */
 export async function getAttackPath(orgId: string, groupId: string): Promise<AttackPathSummary | null> {
-  const members = await prisma.finding.findMany({
-    where: {
-      orgId,
-      correlationGroupId: groupId,
-      status:             { not: "FALSE_POSITIVE" },
-    },
-    include: {
-      repository: { select: { fullName: true, applicationId: true } },
-      container:  { select: { imageRef: true, applicationId: true } },
-      domain:     { select: { domain: true,   applicationId: true } },
-    },
-  });
+  const [members, cachedSummary] = await Promise.all([
+    prisma.finding.findMany({
+      where: {
+        orgId,
+        correlationGroupId: groupId,
+        status:             { not: "FALSE_POSITIVE" },
+      },
+      include: {
+        repository: { select: { fullName: true, applicationId: true } },
+        container:  { select: { imageRef: true, applicationId: true } },
+        domain:     { select: { domain: true,   applicationId: true } },
+      },
+    }),
+    prisma.attackPathSummary.findUnique({
+      where:  { correlationGroupId: groupId },
+      select: { title: true, orgId: true },
+    }),
+  ]);
   if (members.length === 0) return null;
-  return scoreGroup(groupId, members);
+  const aiTitle = (cachedSummary && cachedSummary.orgId === orgId) ? cachedSummary.title : null;
+  return scoreGroup(groupId, members, aiTitle);
 }
 
 // ── Internals ─────────────────────────────────────────────────────────
@@ -163,7 +185,7 @@ type WithTargets = Awaited<ReturnType<typeof prisma.finding.findMany>>[number] &
   domain?:     { domain: string;   applicationId: string | null } | null;
 };
 
-function scoreGroup(groupId: string, members: WithTargets[]): AttackPathSummary | null {
+function scoreGroup(groupId: string, members: WithTargets[], aiTitle: string | null = null): AttackPathSummary | null {
   if (members.length === 0) return null;
 
   // Chain length is just the member count for the v1 list view; a future
@@ -252,6 +274,7 @@ function scoreGroup(groupId: string, members: WithTargets[]): AttackPathSummary 
   return {
     groupId,
     title:         deriveChainTitle(nodes),
+    aiTitle,
     score,
     length,
     maxSeverity:   maxSev,

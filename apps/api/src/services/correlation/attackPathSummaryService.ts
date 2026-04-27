@@ -32,6 +32,10 @@ import { getAttackPath, type AttackPathSummary } from "./attackPathService.js";
 
 export interface AttackPathSummaryResult {
   groupId:      string;
+  /** Phase 27.5.x — short headline (~6 words) for the chain card title.
+   *  Generated alongside tldr+narrative; null only on legacy rows from
+   *  before this field existed (will refill on next regenerate). */
+  title:        string | null;
   tldr:         string;
   narrative:    string;
   providerType: string;
@@ -60,6 +64,7 @@ export async function getCachedSummary(
 
   return {
     groupId,
+    title:        cached.title,
     tldr:         cached.tldr,
     narrative:    cached.narrative,
     providerType: cached.providerType,
@@ -97,6 +102,7 @@ export async function generateSummary(
     if (cached && cached.contentHash === hash && cached.orgId === orgId) {
       return {
         groupId,
+        title:        cached.title,
         tldr:         cached.tldr,
         narrative:    cached.narrative,
         providerType: cached.providerType,
@@ -114,6 +120,7 @@ export async function generateSummary(
 
   // ── Call AI with structured-output schema ───────────────────────────
   const schema = z.object({
+    title:     z.string().min(3).max(80),
     tldr:      z.string().min(8).max(280),
     narrative: z.string().min(40).max(2000),
   });
@@ -145,6 +152,7 @@ export async function generateSummary(
     create: {
       orgId,
       correlationGroupId: groupId,
+      title:        result.data.title,
       tldr:         result.data.tldr,
       narrative:    result.data.narrative,
       providerType: result.providerType,
@@ -152,6 +160,7 @@ export async function generateSummary(
       contentHash:  hash,
     },
     update: {
+      title:        result.data.title,
       tldr:         result.data.tldr,
       narrative:    result.data.narrative,
       providerType: result.providerType,
@@ -163,6 +172,7 @@ export async function generateSummary(
 
   return {
     groupId,
+    title:        persisted.title,
     tldr:         persisted.tldr,
     narrative:    persisted.narrative,
     providerType: persisted.providerType,
@@ -178,29 +188,43 @@ export async function generateSummary(
 
 const SYSTEM_PROMPT = `You are a senior application-security engineer writing a concise, factual narrative for an attack-path correlation chain produced by a DevSecOps platform.
 
-Your job: explain the chain in two parts, returned as JSON {tldr, narrative}.
+Your job: explain the chain in three parts, returned as JSON {title, tldr, narrative}.
 
 GUIDELINES
-- tldr: ONE sentence (max 280 chars) — the headline a CISO would read first.
-  Lead with the impact, then the root cause. Example: "SQL injection in the
-  authenticated user-edit endpoint chains to a container with a known RCE,
-  enabling full DB takeover from a single login form."
+- title: 3-8 words (max 80 chars) — the chain card's HEADLINE. Concrete,
+  specific, lead with the vulnerability + asset. Examples:
+    "SQL injection in DVWA login form"
+    "RCE via libxml2 CVE-2022-2309 in API container"
+    "XSS reflected on /vulnerabilities/xss_r/"
+  Avoid generic phrases like "security issues found" or "vulnerability chain".
+  No trailing period. Title Case is fine; sentence case is fine; pick one.
+
+- tldr: ONE sentence (max 280 chars) — the impact summary a CISO would
+  read first. Lead with the impact, then the root cause. Example:
+  "SQL injection in the authenticated user-edit endpoint chains to a
+  container with a known RCE, enabling full DB takeover from the login form."
+
 - narrative: 2-3 short paragraphs (max 2000 chars total) — what the chain
   is, why these findings link, and the realistic exploit path. Use specific
   artifacts (URLs, file paths, CVEs, scan types) so the operator can verify
   your reasoning. Avoid generic security advice — the operator already
   knows what XSS is.
-- NEVER overclaim: if confidence is POSSIBLE, say "likely" not "confirmed".
-  Only say "confirmed" or "verified" when at least one node has confidence=
-  CONFIRMED. Never invent CVEs or CVSS scores; only mention what's in the
-  data you were given.
-- Do NOT include any markdown code fences in your response. The schema
-  expects plain text strings.
+
+CONFIDENCE DISCIPLINE
+- NEVER overclaim: if a node's confidence is POSSIBLE, say "likely" not
+  "confirmed". Only say "confirmed" or "verified" when at least one node
+  has confidence=CONFIRMED.
+- Never invent CVEs, CVSS scores, line numbers, or package versions —
+  only mention what's in the data you were given.
+
+FORMATTING
+- Do NOT include any markdown code fences. The schema expects plain text
+  strings.
 - Keep it sober: this is a security report, not marketing copy. No
   exclamation marks. No "we" or "I" — write in the third person.
 
-Return STRICT JSON matching {tldr: string, narrative: string} — no preamble,
-no postamble, no nested objects.`;
+Return STRICT JSON matching {title: string, tldr: string, narrative: string}
+— no preamble, no postamble, no nested objects.`;
 
 function buildPrompt(path: AttackPathSummary): string {
   const lines: string[] = [];

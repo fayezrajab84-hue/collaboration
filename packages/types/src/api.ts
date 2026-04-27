@@ -375,8 +375,12 @@ export interface AttackPathEdge {
 export interface AttackPathSummary {
   groupId:        string;
   /** Phase 27.5.x — heuristic title (highest-severity, source-side preferred).
-   *  UI may override with the AI summary tldr when one is generated. */
+   *  Always populated. Used as the chain card headline. */
   title:          string;
+  /** Phase 27.5.x — AI-generated short headline (~6 words). Populated only
+   *  when an AI summary has been generated for this chain. UI prefers this
+   *  over the heuristic title when present. */
+  aiTitle:        string | null;
   score:          number;
   length:         number;
   maxSeverity:    "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
@@ -398,7 +402,8 @@ export interface AttackPathsListResponse {
 // Cached by content-hash; UI shows the regenerate button when stale.
 export interface AttackPathSummaryAI {
   groupId:      string;
-  tldr:         string;       // 1-line headline (max 280 chars)
+  title:        string | null; // ~6-word headline (Phase 27.5.x); null on legacy rows
+  tldr:         string;       // 1-line summary (max 280 chars)
   narrative:    string;       // 2-3 paragraphs (max 2000 chars)
   providerType: string;       // "ANTHROPIC" | "OPENAI" | "GEMINI" | "OLLAMA"
   model:        string;       // resolved model id used for this generation

@@ -275,6 +275,9 @@ model AttackPathSummary {
   // Not a FK — chains can re-key when their root finding is deleted, and
   // we don't want to lose the cached summary on every minor churn.
   correlationGroupId String   @unique
+  // Phase 27.5.x — short headline (~6 words) for the chain card title.
+  // Generated alongside tldr+narrative so it costs no extra AI call.
+  title              String?
   tldr               String
   narrative          String   @db.Text
   // Track which provider + model produced this so the UI can surface it
