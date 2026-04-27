@@ -67,12 +67,11 @@ function AttackPathDetail({ groupId }: { groupId: string }) {
         <Link to="/attack-paths" className="mb-3 inline-block text-sm text-gray-500 hover:text-gray-300">
           ← All attack paths
         </Link>
-        {/* Phase 27.5.x — AI summary panel only on the dedicated detail
-            page (not in the list-view cards) so it doesn't burn AI calls
-            for chains the operator never opens. */}
-        <AiSummaryPanel groupId={groupId} initialSummary={data.summary ?? null} />
-        {/* Detail view: PathCard already prefers data.aiTitle (from cached
-            summary) over the heuristic. No extra plumbing needed. */}
+        {/* Phase 27.5.x — AI panel is now rendered INSIDE the expanded
+            body of every PathCard (list view AND detail view), so the
+            operator sees verification + summary inline without needing
+            to navigate to "Open full". The detail view's only difference
+            is forceExpanded=true. */}
         <PathCard path={data} forceExpanded />
       </div>
     </FindingDrawerHost>
@@ -150,7 +149,7 @@ function AiSummaryPanel({
 
   // Populated state
   return (
-    <div className="mb-4 rounded-xl border border-indigo-800/40 bg-indigo-950/30 p-4">
+    <div className="rounded-xl border border-indigo-800/40 bg-indigo-950/30 p-4">
       <div className="flex items-start gap-3">
         <Sparkles className="mt-0.5 h-4 w-4 text-indigo-400" />
         <div className="flex-1 min-w-0">
@@ -175,11 +174,81 @@ function AiSummaryPanel({
               {gen.isPending ? "Regenerating…" : "Regenerate"}
             </button>
           </div>
-          <p className="mt-2 text-sm font-medium text-indigo-100">{summary.tldr}</p>
+
+          {/* Phase 27.5.x — AI verification verdict (advisory). */}
+          {summary.verdict && (
+            <VerdictBlock
+              verdict={summary.verdict}
+              confidence={summary.verdictConfidence}
+              reasoning={summary.verdictReasoning}
+            />
+          )}
+
+          <p className="mt-3 text-sm font-medium text-indigo-100">{summary.tldr}</p>
           <p className="mt-2 whitespace-pre-line text-xs leading-relaxed text-gray-300">{summary.narrative}</p>
           {errorMsg && <p className="mt-2 text-xs text-red-400">{errorMsg}</p>}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Verdict block (Phase 27.5.x AI verification) ─────────────────────────
+//
+// Advisory only: never auto-suppresses findings. Operator decides what to
+// do with the verdict. Color encodes urgency (red = real attack chain you
+// should investigate; gray = engine correlation noise, low priority).
+
+const VERDICT_LABELS: Record<string, string> = {
+  LIKELY_REAL:   "Likely real",
+  MIXED_SIGNAL:  "Mixed signal",
+  LIKELY_NOISE:  "Likely noise",
+};
+const VERDICT_STYLE: Record<string, string> = {
+  LIKELY_REAL:   "border-red-700 bg-red-950/40 text-red-300",
+  MIXED_SIGNAL:  "border-amber-700 bg-amber-950/40 text-amber-300",
+  LIKELY_NOISE:  "border-gray-700 bg-gray-800/60 text-gray-400",
+};
+
+function VerdictBlock({
+  verdict,
+  confidence,
+  reasoning,
+}: {
+  verdict:    "LIKELY_REAL" | "MIXED_SIGNAL" | "LIKELY_NOISE";
+  confidence: number | null;
+  reasoning:  string | null;
+}) {
+  const [showReasoning, setShowReasoning] = useState(false);
+  const label = VERDICT_LABELS[verdict] ?? verdict;
+  const style = VERDICT_STYLE[verdict] ?? VERDICT_STYLE.LIKELY_NOISE;
+  return (
+    <div className="mt-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${style}`}>
+          AI verdict · {label}
+        </span>
+        {confidence !== null && (
+          <span className="text-[10px] text-gray-500">
+            {confidence}% confidence
+          </span>
+        )}
+        {reasoning && (
+          <button
+            type="button"
+            onClick={() => setShowReasoning((v) => !v)}
+            className="text-[10px] text-indigo-400 hover:text-indigo-300"
+            title="Show / hide the model's reasoning"
+          >
+            {showReasoning ? "Hide reasoning" : "Why?"}
+          </button>
+        )}
+      </div>
+      {showReasoning && reasoning && (
+        <p className="mt-1.5 rounded border border-gray-800 bg-gray-900/40 p-2 text-[11px] leading-relaxed text-gray-400">
+          {reasoning}
+        </p>
+      )}
     </div>
   );
 }
@@ -384,7 +453,11 @@ function PathCard({
       </button>
 
       {open && (
-        <div className="ml-9 mr-5 mb-5 space-y-2">
+        <div className="ml-9 mr-5 mb-5 space-y-3">
+          {/* Phase 27.5.x — AI summary + verification panel sits under the
+              title when expanded. Lazy: the cached summary loads via the
+              chain-detail query the first time the card opens. */}
+          <ExpandedSummaryHost groupId={path.groupId} />
           <ScanTypeGroups
             nodes={path.nodes}
             isGroupOpen={isGroupOpen}
@@ -394,6 +467,22 @@ function PathCard({
       )}
     </div>
   );
+}
+
+/**
+ * Lazily fetches the chain detail (with cached AI summary if present)
+ * on first expand, then mounts AiSummaryPanel with the result. Cached by
+ * React Query keyed on groupId so collapsing + re-expanding doesn't
+ * re-fetch. The list endpoint stays light (no per-chain summary payload);
+ * we only pay the detail roundtrip when the operator actually expands.
+ */
+function ExpandedSummaryHost({ groupId }: { groupId: string }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ["attackPath", groupId],
+    queryFn:  () => attackPathsApi.get(groupId),
+  });
+  if (isLoading) return <div className="text-xs text-gray-500">Loading…</div>;
+  return <AiSummaryPanel groupId={groupId} initialSummary={data?.summary ?? null} />;
 }
 
 // ── Group chain nodes by scan type (Phase 27.5.x) ────────────────────────

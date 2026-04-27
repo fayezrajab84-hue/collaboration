@@ -400,11 +400,19 @@ export interface AttackPathsListResponse {
 // ── AI summary for an attack path (Phase 27.5.x) ─────────────────────────
 // Generated on-demand by POST /api/attack-paths/:groupId/summarise.
 // Cached by content-hash; UI shows the regenerate button when stale.
+export type AttackPathVerdict = "LIKELY_REAL" | "MIXED_SIGNAL" | "LIKELY_NOISE";
+
 export interface AttackPathSummaryAI {
   groupId:      string;
   title:        string | null; // ~6-word headline (Phase 27.5.x); null on legacy rows
-  tldr:         string;       // 1-line summary (max 280 chars)
-  narrative:    string;       // 2-3 paragraphs (max 2000 chars)
+  tldr:         string;       // 1-line summary (max ~400 chars after clip)
+  narrative:    string;       // 2-3 paragraphs (max ~3000 chars after clip)
+  /** Phase 27.5.x — AI verification (bundled into the same call as the
+   *  summary so it costs ~$0.001 extra per chain). Advisory-only;
+   *  operator decides what to do with the verdict. Null on legacy rows. */
+  verdict:           AttackPathVerdict | null;
+  verdictConfidence: number | null;       // 0-100
+  verdictReasoning:  string | null;       // 2-3 sentences citing specific edges
   providerType: string;       // "ANTHROPIC" | "OPENAI" | "GEMINI" | "OLLAMA"
   model:        string;       // resolved model id used for this generation
   contentHash:  string;       // chain-content fingerprint at gen time

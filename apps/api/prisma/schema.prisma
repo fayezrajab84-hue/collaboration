@@ -280,6 +280,14 @@ model AttackPathSummary {
   title              String?
   tldr               String
   narrative          String   @db.Text
+  // Phase 27.5.x — AI verification of the chain. Asks the same model
+  // already producing the summary "is this chain a real attack path or
+  // engine-correlation noise?" so we get a sanity-check verdict for ~free
+  // (it's bundled into the same AI call). Operator UI surfaces this as
+  // an advisory chip — never auto-suppresses findings based on it.
+  verdict            String?  // "LIKELY_REAL" | "MIXED_SIGNAL" | "LIKELY_NOISE"
+  verdictConfidence  Int?     // 0-100, model's self-reported confidence
+  verdictReasoning   String?  @db.Text  // 2-3 sentences citing specific edges
   // Track which provider + model produced this so the UI can surface it
   // ("Generated with Claude Sonnet 4.5") and so a future "regenerate
   // because the model has changed" check is possible.

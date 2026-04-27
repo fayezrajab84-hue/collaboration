@@ -70,16 +70,24 @@ export async function getCachedSummary(
 
   return {
     groupId,
-    title:        cached.title,
-    tldr:         cached.tldr,
-    narrative:    cached.narrative,
-    providerType: cached.providerType,
-    model:        cached.model,
-    contentHash:  cached.contentHash,
-    generatedAt:  cached.generatedAt,
-    cached:       true,
+    title:             cached.title,
+    tldr:              cached.tldr,
+    narrative:         cached.narrative,
+    verdict:           toVerdict(cached.verdict),
+    verdictConfidence: cached.verdictConfidence,
+    verdictReasoning:  cached.verdictReasoning,
+    providerType:      cached.providerType,
+    model:             cached.model,
+    contentHash:       cached.contentHash,
+    generatedAt:       cached.generatedAt,
+    cached:            true,
     stale,
   };
+}
+
+function toVerdict(raw: string | null): "LIKELY_REAL" | "MIXED_SIGNAL" | "LIKELY_NOISE" | null {
+  if (raw === "LIKELY_REAL" || raw === "MIXED_SIGNAL" || raw === "LIKELY_NOISE") return raw;
+  return null;
 }
 
 /**
@@ -108,15 +116,18 @@ export async function generateSummary(
     if (cached && cached.contentHash === hash && cached.orgId === orgId) {
       return {
         groupId,
-        title:        cached.title,
-        tldr:         cached.tldr,
-        narrative:    cached.narrative,
-        providerType: cached.providerType,
-        model:        cached.model,
-        contentHash:  cached.contentHash,
-        generatedAt:  cached.generatedAt,
-        cached:       true,
-        stale:        false,
+        title:             cached.title,
+        tldr:              cached.tldr,
+        narrative:         cached.narrative,
+        verdict:           toVerdict(cached.verdict),
+        verdictConfidence: cached.verdictConfidence,
+        verdictReasoning:  cached.verdictReasoning,
+        providerType:      cached.providerType,
+        model:             cached.model,
+        contentHash:       cached.contentHash,
+        generatedAt:       cached.generatedAt,
+        cached:            true,
+        stale:             false,
       };
     }
   }
@@ -132,9 +143,13 @@ export async function generateSummary(
   // schema used .max() which threw on every chain whose tldr exceeded
   // 280 chars (most of them, in practice).
   const schema = z.object({
-    title:     z.string().min(3).transform((s) => clipText(s, 80)),
-    tldr:      z.string().min(8).transform((s) => clipText(s, 400)),
-    narrative: z.string().min(40).transform((s) => clipText(s, 3000)),
+    title:             z.string().min(3).transform((s) => clipText(s, 80)),
+    tldr:              z.string().min(8).transform((s) => clipText(s, 400)),
+    narrative:         z.string().min(40).transform((s) => clipText(s, 3000)),
+    // Phase 27.5.x — verification (bundled into the same AI call).
+    verdict:           z.enum(["LIKELY_REAL", "MIXED_SIGNAL", "LIKELY_NOISE"]),
+    verdictConfidence: z.number().int().min(0).max(100),
+    verdictReasoning:  z.string().min(8).transform((s) => clipText(s, 800)),
   });
 
   let result;
@@ -164,35 +179,44 @@ export async function generateSummary(
     create: {
       orgId,
       correlationGroupId: groupId,
-      title:        result.data.title,
-      tldr:         result.data.tldr,
-      narrative:    result.data.narrative,
-      providerType: result.providerType,
-      model:        result.model,
-      contentHash:  hash,
+      title:             result.data.title,
+      tldr:              result.data.tldr,
+      narrative:         result.data.narrative,
+      verdict:           result.data.verdict,
+      verdictConfidence: result.data.verdictConfidence,
+      verdictReasoning:  result.data.verdictReasoning,
+      providerType:      result.providerType,
+      model:             result.model,
+      contentHash:       hash,
     },
     update: {
-      title:        result.data.title,
-      tldr:         result.data.tldr,
-      narrative:    result.data.narrative,
-      providerType: result.providerType,
-      model:        result.model,
-      contentHash:  hash,
-      generatedAt:  new Date(),
+      title:             result.data.title,
+      tldr:              result.data.tldr,
+      narrative:         result.data.narrative,
+      verdict:           result.data.verdict,
+      verdictConfidence: result.data.verdictConfidence,
+      verdictReasoning:  result.data.verdictReasoning,
+      providerType:      result.providerType,
+      model:             result.model,
+      contentHash:       hash,
+      generatedAt:       new Date(),
     },
   });
 
   return {
     groupId,
-    title:        persisted.title,
-    tldr:         persisted.tldr,
-    narrative:    persisted.narrative,
-    providerType: persisted.providerType,
-    model:        persisted.model,
-    contentHash:  persisted.contentHash,
-    generatedAt:  persisted.generatedAt,
-    cached:       false,
-    stale:        false,
+    title:             persisted.title,
+    tldr:              persisted.tldr,
+    narrative:         persisted.narrative,
+    verdict:           toVerdict(persisted.verdict),
+    verdictConfidence: persisted.verdictConfidence,
+    verdictReasoning:  persisted.verdictReasoning,
+    providerType:      persisted.providerType,
+    model:             persisted.model,
+    contentHash:       persisted.contentHash,
+    generatedAt:       persisted.generatedAt,
+    cached:            false,
+    stale:             false,
   };
 }
 
@@ -200,27 +224,47 @@ export async function generateSummary(
 
 const SYSTEM_PROMPT = `You are a senior application-security engineer writing a concise, factual narrative for an attack-path correlation chain produced by a DevSecOps platform.
 
-Your job: explain the chain in three parts, returned as JSON {title, tldr, narrative}.
+Your job: explain AND verify the chain, returned as JSON
+{title, tldr, narrative, verdict, verdictConfidence, verdictReasoning}.
 
-GUIDELINES
-- title: 3-8 words (max 80 chars) — the chain card's HEADLINE. Concrete,
-  specific, lead with the vulnerability + asset. Examples:
+NARRATIVE GUIDELINES
+- title: 3-8 words. The chain card's HEADLINE. Concrete, specific, lead
+  with the vulnerability + asset. Examples:
     "SQL injection in DVWA login form"
     "RCE via libxml2 CVE-2022-2309 in API container"
     "XSS reflected on /vulnerabilities/xss_r/"
   Avoid generic phrases like "security issues found" or "vulnerability chain".
   No trailing period. Title Case is fine; sentence case is fine; pick one.
 
-- tldr: ONE sentence (max 280 chars) — the impact summary a CISO would
-  read first. Lead with the impact, then the root cause. Example:
+- tldr: ONE sentence — the impact summary a CISO would read first. Lead
+  with the impact, then the root cause. Example:
   "SQL injection in the authenticated user-edit endpoint chains to a
   container with a known RCE, enabling full DB takeover from the login form."
 
-- narrative: 2-3 short paragraphs (max 2000 chars total) — what the chain
-  is, why these findings link, and the realistic exploit path. Use specific
-  artifacts (URLs, file paths, CVEs, scan types) so the operator can verify
-  your reasoning. Avoid generic security advice — the operator already
-  knows what XSS is.
+- narrative: 2-3 short paragraphs — what the chain is, why these findings
+  link, and the realistic exploit path. Use specific artifacts (URLs, file
+  paths, CVEs, scan types) so the operator can verify your reasoning. Avoid
+  generic security advice — the operator already knows what XSS is.
+
+VERIFICATION (you are the second-opinion sanity check on the engine's chain)
+- verdict: pick exactly one of:
+    "LIKELY_REAL"   — the bridge edges are semantically sound; this chain
+                       describes a plausible attack path an attacker could
+                       walk. The findings genuinely relate.
+    "MIXED_SIGNAL"  — some edges are real, some are coincidental token
+                       matches; the chain is a starting point for triage
+                       but shouldn't be treated as a single attack path.
+    "LIKELY_NOISE"  — the bridges that linked these findings are mostly
+                       coincidence (e.g. shared common path tokens); the
+                       chain doesn't describe a meaningful attack flow.
+- verdictConfidence: integer 0-100. Your self-reported certainty in the
+  verdict. Sub-50 means "I'm guessing"; 80+ means "I'd stake my reputation".
+- verdictReasoning: 2-3 sentences citing the specific bridge edges and
+  why they're (or aren't) real. Example: "The SAST hit on
+  vulnerabilities/exec/source/high.php and the DAST URL
+  /vulnerabilities/exec/?cmd=ls share both an exec endpoint AND a
+  command-injection rule class — this is a real chain. The CONTAINER CVE
+  on glibc is a blast-radius association, not a direct exploit link."
 
 CONFIDENCE DISCIPLINE
 - NEVER overclaim: if a node's confidence is POSSIBLE, say "likely" not
@@ -235,8 +279,8 @@ FORMATTING
 - Keep it sober: this is a security report, not marketing copy. No
   exclamation marks. No "we" or "I" — write in the third person.
 
-Return STRICT JSON matching {title: string, tldr: string, narrative: string}
-— no preamble, no postamble, no nested objects.`;
+Return STRICT JSON matching the six required fields above — no preamble,
+no postamble, no nested objects.`;
 
 function buildPrompt(path: AttackPathSummary): string {
   const lines: string[] = [];
