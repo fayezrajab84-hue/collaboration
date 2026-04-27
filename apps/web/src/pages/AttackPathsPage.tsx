@@ -312,6 +312,16 @@ function PathCard({
   // Local expand state (default collapsed for the list view; force-open on
   // the dedicated detail page).
   const [open, setOpen] = useState(Boolean(forceExpanded));
+
+  // Per-group expand state lives in the parent so it survives the parent
+  // toggling open/closed (otherwise the child ScanTypeGroup unmounts and
+  // its useState resets to default — the operator's clicks would feel
+  // "random"). Default = ALL OPEN; the operator collapses what they don't
+  // want. Predictable beats clever here.
+  const [groupOpen, setGroupOpen] = useState<Record<string, boolean>>({});
+  const isGroupOpen = (scanType: string) => groupOpen[scanType] !== false;
+  const toggleGroup = (scanType: string) =>
+    setGroupOpen((prev) => ({ ...prev, [scanType]: prev[scanType] === false ? true : false }));
   const Icon = path.hasConfirmed ? AlertTriangle : Network;
   const iconClass = path.hasConfirmed ? "text-red-400" : "text-indigo-400";
   const isToggleable = !forceExpanded;
@@ -374,7 +384,11 @@ function PathCard({
 
       {open && (
         <div className="ml-9 mr-5 mb-5 space-y-2">
-          <ScanTypeGroups nodes={path.nodes} />
+          <ScanTypeGroups
+            nodes={path.nodes}
+            isGroupOpen={isGroupOpen}
+            toggleGroup={toggleGroup}
+          />
         </div>
       )}
     </div>
@@ -421,7 +435,15 @@ const GROUP_LABELS: Record<string, string> = {
   SECRET:       "Secrets",
 };
 
-function ScanTypeGroups({ nodes }: { nodes: AttackPathNode[] }) {
+function ScanTypeGroups({
+  nodes,
+  isGroupOpen,
+  toggleGroup,
+}: {
+  nodes:       AttackPathNode[];
+  isGroupOpen: (scanType: string) => boolean;
+  toggleGroup: (scanType: string) => void;
+}) {
   // Bucket by scanType, preserving the API's externalReach ordering inside
   // each bucket. Then sort buckets by GROUP_ORDER for the attack-chain
   // narrative reading order.
@@ -440,7 +462,13 @@ function ScanTypeGroups({ nodes }: { nodes: AttackPathNode[] }) {
   return (
     <div className="space-y-2">
       {orderedKeys.map((scanType) => (
-        <ScanTypeGroup key={scanType} scanType={scanType} nodes={buckets.get(scanType)!} />
+        <ScanTypeGroup
+          key={scanType}
+          scanType={scanType}
+          nodes={buckets.get(scanType)!}
+          open={isGroupOpen(scanType)}
+          onToggle={() => toggleGroup(scanType)}
+        />
       ))}
     </div>
   );
@@ -457,12 +485,20 @@ const SEVERITY_DOT_CLASS: Record<string, string> = {
   INFO:     "bg-gray-400",
 };
 
-function ScanTypeGroup({ scanType, nodes }: { scanType: string; nodes: AttackPathNode[] }) {
-  // Default expanded state: small groups (≤ 4 nodes) open, large groups
-  // collapsed. Operators almost always want to see the WEB / SAST groups
-  // (which are typically small + critical for the chain narrative) and
-  // collapse the CONTAINER group (typically large, mostly LOW severity).
-  const [open, setOpen] = useState(nodes.length <= 4);
+function ScanTypeGroup({
+  scanType,
+  nodes,
+  open,
+  onToggle,
+}: {
+  scanType:  string;
+  nodes:     AttackPathNode[];
+  open:      boolean;
+  onToggle:  () => void;
+}) {
+  // Open/close state is FULLY CONTROLLED by the parent PathCard so the
+  // operator's clicks survive the parent toggling open/closed (otherwise
+  // useState here would reset on every parent unmount → re-mount).
   const label = GROUP_LABELS[scanType] ?? scanType;
 
   // Severity rollup chips — show counts grouped by severity
@@ -483,7 +519,7 @@ function ScanTypeGroup({ scanType, nodes }: { scanType: string; nodes: AttackPat
     <div className="rounded-lg border border-gray-800 bg-gray-950/40">
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={onToggle}
         className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-gray-900/40"
       >
         {open ? <ChevronDown className="h-3.5 w-3.5 text-gray-500" /> : <ChevronRight className="h-3.5 w-3.5 text-gray-500" />}
