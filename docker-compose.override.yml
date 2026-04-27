@@ -23,6 +23,7 @@ services:
     volumes:
       - ./apps/api/src:/app/apps/api/src:ro
       - ./packages/types/src:/app/packages/types/src:ro
+      - ./docs:/app/docs:ro          # for the rbac docs drift test
     ports:
       - "3000:3000"
       - "9229:9229"            # Node.js inspector port

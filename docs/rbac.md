@@ -1,148 +1,188 @@
-# RBAC — Role-Based Access Control
+# RBAC — Roles, Permissions, and What Each Role Can Do
 
-BreachLens uses a **5-tier role hierarchy** scoped per organization. A
-user can have different roles in different orgs (e.g. OWNER of their
-personal sandbox, DEVELOPER of the company TEAM org).
+BreachLens uses **5 roles** scoped per organization. A user can have
+different roles in different orgs (e.g. OWNER of their personal sandbox,
+DEVELOPER on the company TEAM org).
 
-> **You listed 4 roles but there are 5** — ADMIN sits between OWNER and
-> SECURITY and is the most common elevation gate (deletes, member
-> management, settings, integrations). Easy to miss because OWNER and
-> ADMIN have nearly identical *day-to-day* capabilities; the OWNER
-> distinction matters only for last-owner protection (see below).
-
----
-
-## The 5 roles
-
-| Role | Rank | Conceptual purpose |
-|---|---|---|
-| `OWNER` | 5 | Ultimate authority. Cannot be demoted to leave the org with zero OWNERs. |
-| `ADMIN` | 4 | Org administration without "last man standing" protection. |
-| `SECURITY` | 3 | Triage findings, manage suppressions, bulk-status changes. |
-| `DEVELOPER` | 2 | Add scan targets, trigger scans, view results. |
-| `VIEWER` | 1 | Read-only — dashboards, findings list, scan history. |
-
-Plus one **legacy alias**:
-
-| `MEMBER` | 2 | Pre-Phase-22 enum value. Treated identically to DEVELOPER by the RBAC layer. New code should use DEVELOPER directly; MEMBER stays in the schema for migration safety. |
-
-**Canonical source:** `apps/api/src/services/rbac.ts` defines the
-`Role` type + `ROLE_RANK` map. Every gating decision (route middleware
-+ frontend `<Can>` checks) flows through the same rank.
-
----
-
-## Capability matrix (what's actually gated, by route)
-
-These are the explicit `requireRole(X)` middleware sites. Anything not
-listed requires only `requireAuth` — i.e. any role including VIEWER can
-hit it.
-
-### ADMIN+ (rank ≥ 4) — 19 routes
-
-| Route | Why ADMIN |
-|---|---|
-| `GET /api/admin/*` | BullMQ queue inspection (Bull-Board UI) |
-| `GET /api/audit` + `GET /api/audit/export.csv` | Audit log read + CSV export |
-| `DELETE /api/repos/:id` | Removing a target deletes all its findings — destructive |
-| `DELETE /api/containers/:id` | Same |
-| `DELETE /api/domains/:id` | Same |
-| `PATCH /api/members/:userId` | Change another member's role |
-| `DELETE /api/members/:userId` | Remove member from org |
-| `GET / POST / DELETE /api/members/invitations` | Invitation CRUD |
-| `POST / PUT / DELETE /api/policies` | Policy editing (PR-check enforcement rules) |
-| `GET / PUT / DELETE /api/sso` + `POST /api/sso/test` | SSO config — touches authentication for the whole org |
-
-### SECURITY+ (rank ≥ 3) — 6 routes
-
-| Route | Why SECURITY |
-|---|---|
-| `POST /api/findings/bulk` | Bulk status change — accepting risk for many findings at once |
-| `POST /api/findings/bulk-tickets` | Bulk ticket creation |
-| `PATCH /api/findings/:id` | Single-finding status change (FIXED, FALSE_POSITIVE, etc.) |
-| `PATCH /api/findings/:id/sub/:index` | Same for sub-findings (multi-instance results) |
-| `POST / DELETE /api/suppressions` | Accepted-risk records (skip a finding for N days, requires justification) |
-
-### DEVELOPER+ (rank ≥ 2) — implicit
-
-No explicit `requireRole("DEVELOPER")` anywhere. Instead, the frontend
-gates write actions with `<Can role="DEVELOPER">` (see
-`apps/web/src/pages/RepositoriesPage.tsx`, `ContainersPage.tsx`):
-
-- Add a new repo / container / domain
-- Trigger a scan
-- Comment on a finding
-
-The backend allows these via `requireAuth` only — VIEWERs *can* technically
-hit them, but the UI doesn't expose the buttons. That's a layered defense
-choice: API-level enforcement is for the destructive / privacy-sensitive
-operations only.
-
-### VIEWER+ (rank ≥ 1) — implicit
-
-Everything else under `requireAuth`: dashboards, finding lists, scan
-history, reports, SBOM downloads.
-
----
-
-## OWNER's one special power
-
-OWNER and ADMIN are **functionally identical** at every `requireRole`
-gate (both rank ≥ 4). The single difference lives in
-`apps/api/src/routes/members/router.ts`:
-
-> *"Last-owner safety: the API blocks any operation that would leave
-> the org with zero OWNER members (demote, remove, role-change away
-> from OWNER)."*
-
-So OWNER is the "this person can never accidentally lose admin
-privileges by being demoted" tier. Every org auto-gets exactly one
-OWNER (the user who created it / accepted the first SSO login that
-provisioned it); subsequent admin elevation goes to ADMIN, not OWNER.
-
-The org has zero `OWNER` members → no one can recover it without DB
-access. That's why we block the demotion.
-
----
-
-## Adding a new role-gated route
-
-### Backend (Express)
-
-```ts
-import { requireRole } from "../../middleware/requireRole.js";
-
-router.delete("/:id", requireRole("ADMIN"), async (req, res) => {
-  // req.orgId and req.orgRole are populated by requireRole as side effects —
-  // downstream handlers can use them without re-resolving membership
-});
+```
+OWNER  >  ADMIN  >  SECURITY  >  DEVELOPER  >  VIEWER
+   5         4         3            2            1
 ```
 
-The middleware returns:
+Higher roles inherit everything lower roles can do.
 
-- `401 { error: "Authentication required" }` if not signed in
-- `403 { error: "No organization membership" }` if the user has no membership in their active org
-- `403 { error: "Requires role X or higher (you have Y)" }` if rank insufficient
-
-### Frontend (React)
-
-```tsx
-import { Can } from "../components/Can";
-
-<Can role="SECURITY">
-  <button onClick={handleSuppress}>Mark as accepted risk</button>
-</Can>
-```
-
-`<Can>` renders children only when the user's active-org role meets the
-minimum. It uses `useRole()` which reads from the cached `/auth/me`
-response — no extra API call.
+> **`MEMBER` is a legacy alias** kept in the schema for migration safety.
+> The RBAC layer treats it identically to `DEVELOPER` (same rank).
+> New code should use `DEVELOPER` directly.
 
 ---
 
-## How to pick the right role for a new gate
+## Quick reference: capability matrix
 
-Reference questions to decide which tier a new route/UI control belongs to:
+✓ = can do it · ✗ = blocked
+
+| Capability | OWNER | ADMIN | SECURITY | DEVELOPER | VIEWER |
+|---|:-:|:-:|:-:|:-:|:-:|
+| **Read** dashboards, findings, scans, reports | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **Add** repos / containers / domains | ✓ | ✓ | ✓ | ✓ | ✗ |
+| **Trigger** scans on existing targets | ✓ | ✓ | ✓ | ✓ | ✗ |
+| **Triage findings** (status changes, false positive, fixed) | ✓ | ✓ | ✓ | ✗ | ✗ |
+| **Bulk** finding operations | ✓ | ✓ | ✓ | ✗ | ✗ |
+| **Accept risk** (suppressions) | ✓ | ✓ | ✓ | ✗ | ✗ |
+| **Delete** repos / containers / domains | ✓ | ✓ | ✗ | ✗ | ✗ |
+| **Invite / remove / re-role members** | ✓ | ✓ | ✗ | ✗ | ✗ |
+| **Edit policies** (PR-check enforcement rules) | ✓ | ✓ | ✗ | ✗ | ✗ |
+| **Configure SSO** | ✓ | ✓ | ✗ | ✗ | ✗ |
+| **View audit log** + export CSV | ✓ | ✓ | ✗ | ✗ | ✗ |
+| **Inspect / retry / delete failed BullMQ jobs** | ✓ | ✓ | ✗ | ✗ | ✗ |
+| **Last-OWNER protection** (org can't lose all owners) | ✓ | ✗ | ✗ | ✗ | ✗ |
+
+---
+
+## What each role can do
+
+### OWNER
+
+The org's ultimate authority. Identical day-to-day capabilities as ADMIN
+**plus** one structural protection: an org can never lose all of its
+OWNERs. Demotion / removal of the last OWNER is blocked at the API level
+to prevent accidental admin lockout.
+
+Every org auto-gets exactly one OWNER (the user who created it / accepted
+the first SSO login that provisioned it). Subsequent admin elevation
+should typically go to ADMIN, not OWNER.
+
+### ADMIN
+
+Org administration without the last-man-standing protection. Has every
+read / write capability except OWNER's structural one:
+
+- Manage members <!-- contract:change-member-role --> <!-- contract:remove-member --> — change roles, remove people, invite new GitHub users <!-- contract:list-invitations --> <!-- contract:create-invitation --> <!-- contract:revoke-invitation -->
+- Configure single sign-on <!-- contract:view-sso-config --> <!-- contract:save-sso-config --> <!-- contract:delete-sso-config --> <!-- contract:test-sso-discovery -->
+- Edit security policies (PR-check rules) <!-- contract:create-policy --> <!-- contract:update-policy --> <!-- contract:delete-policy -->
+- Read the audit log + export it as CSV <!-- contract:view-audit-log --> <!-- contract:export-audit-csv -->
+- Delete repos, containers, and domains (cascades all their findings) <!-- contract:delete-repo --> <!-- contract:delete-container --> <!-- contract:delete-domain -->
+- Inspect the BullMQ queue, retry failed jobs, delete failed jobs <!-- contract:view-admin-queues --> <!-- contract:view-failed-jobs --> <!-- contract:retry-failed-job --> <!-- contract:delete-failed-job -->
+- Plus everything SECURITY, DEVELOPER, and VIEWER can do
+
+ADMIN is the right tier for engineering managers, security leads, or
+anyone who needs full operational control without being an "owner of
+the org" in a structural sense.
+
+### SECURITY
+
+The triage tier. Manages the lifecycle of findings — what's a real
+issue, what's accepted risk, what's been fixed.
+
+- Change a finding's status (FIXED, FALSE_POSITIVE, ACKNOWLEDGED, etc.) <!-- contract:update-finding-status --> <!-- contract:update-subfinding-status -->
+- Bulk-change many findings at once <!-- contract:bulk-update-findings -->
+- Bulk-create tickets from findings <!-- contract:bulk-create-tickets -->
+- Accept risk on a finding (create a suppression with justification + expiry) <!-- contract:create-suppression -->
+- Revoke an accepted-risk record <!-- contract:revoke-suppression -->
+- Plus everything DEVELOPER and VIEWER can do
+
+SECURITY is the right tier for the security engineer who reviews scan
+output but doesn't manage org-level config.
+
+### DEVELOPER
+
+Adds scan targets and triggers scans. Cannot triage findings or change
+their status — that's SECURITY's responsibility.
+
+- Add a repository, container image, or domain to the org <!-- contract:add-repo --> <!-- contract:add-container -->
+- Kick off a scan job on any existing target <!-- contract:trigger-repo-scan --> <!-- contract:trigger-container-scan -->
+- Plus everything VIEWER can do
+
+DEVELOPER is the default role for engineers — they can wire their
+projects in and run scans, but can't accidentally accept risk on a
+critical vuln.
+
+### VIEWER
+
+Read-only across the org. Sees the same dashboards, finding lists, scan
+history, and reports as everyone else, but can't change anything.
+
+VIEWER is the right tier for execs, auditors, and external stakeholders
+who need visibility without operational responsibility.
+
+---
+
+## Common scenarios
+
+| "I want to…" | Need at least |
+|---|---|
+| Look at the dashboard / findings / reports | VIEWER (any signed-in user) |
+| Add a new GitHub repo to scan | DEVELOPER |
+| Trigger a fresh scan on a repo | DEVELOPER |
+| Mark a finding as a false positive | SECURITY |
+| Accept risk on an OPEN finding for 90 days | SECURITY |
+| Bulk-close 50 findings at once | SECURITY |
+| Invite a new teammate via GitHub username | ADMIN |
+| Change someone's role from DEVELOPER to SECURITY | ADMIN |
+| Configure Entra ID / Okta SSO for the org | ADMIN |
+| Download the audit log as CSV for compliance | ADMIN |
+| Edit the policy that blocks PRs with HIGH+ findings | ADMIN |
+| Delete a repo and all its findings | ADMIN |
+| Demote the org's only OWNER | **Blocked** — last-OWNER protection |
+
+---
+
+## Known UI gaps (Phase 22.7 follow-up)
+
+The frontend parity test surfaced 5 places where the UI shows an
+affordance to all roles even though the API enforces ADMIN or SECURITY.
+Clicking the button works as a security boundary (API returns 403) but
+the UX is confusing — VIEWER sees the buttons.
+
+Affected today:
+
+- Settings → Audit Log tab visibility + Export CSV button
+- Settings → SSO tab visibility + Save / Remove / Test buttons
+- Settings → Policies tab Create / Edit / Delete buttons
+- Domains page — Delete row action
+- Findings page — Bulk status / Bulk tickets toolbar
+
+Tracked in `docs/plans/phase-22.7-ui-role-gating.md`. Workaround until
+that phase ships: tell non-admin users the buttons won't work — the
+API still enforces correctly.
+
+---
+
+## For developers
+
+### Where the rules live
+
+- `apps/api/prisma/schema.prisma` — `enum Role` definition (5 + MEMBER alias)
+- `apps/api/src/services/rbac.ts` — `Role` type + `ROLE_RANK` map + helpers
+- `apps/api/src/middleware/requireRole.ts` — Express middleware that gates routes
+- `apps/web/src/hooks/useRole.ts` — React hook returning `{ role, can }`
+- `apps/web/src/components/Can.tsx` — `<Can role="X">` declarative wrapper
+- **`packages/types/src/roleContract.ts`** — single source of truth for which action requires which role; both api and web import this for tests + (eventually) for the gates themselves
+
+### The contract is the canonical reference
+
+When the table above and `roleContract.ts` disagree, **the contract
+wins**. The doc is hand-written and may drift; the parity tests
+(`apps/api/src/role-contract.test.ts` + `apps/web/src/role-contract.test.ts`)
+verify the contract matches actual code.
+
+A separate test (`apps/api/src/role-docs.test.ts`) verifies that every
+contract entry appears in *this* doc as a `<!-- contract:<id> -->`
+comment. Adding a new gated action requires a contract entry, a
+`requireRole` call, a `<Can>` wrapper, and a line in this doc with the
+matching contract comment.
+
+### Adding a new role-gated route
+
+1. Add an entry to `ROLE_CONTRACT` in `packages/types/src/roleContract.ts`
+2. In the route handler: `requireRole("MIN_ROLE")`
+3. In the UI: `<Can role="MIN_ROLE">…</Can>` around the affordance
+4. Add a bullet under the right role in this doc with `<!-- contract:<id> -->`
+5. Re-run `pnpm test` in both `apps/api` and `apps/web` — all four
+   parity checks (rbac unit, requireRole matrix, backend parity,
+   frontend parity, doc coverage) confirm everything agrees
+
+### How to pick the right tier
 
 | Question | If yes → role |
 |---|---|
@@ -155,15 +195,5 @@ Reference questions to decide which tier a new route/UI control belongs to:
 
 When in doubt, gate **lower** (more permissive) on the API side and
 **higher** (more restrictive) on the UI side. The API is the security
-boundary; the UI is the affordance boundary. They're allowed to differ.
-
----
-
-## Related files
-
-- `apps/api/prisma/schema.prisma` — `enum Role` definition
-- `apps/api/src/services/rbac.ts` — type + rank + helper functions (`roleAtLeast`, `hasAnyRole`)
-- `apps/api/src/middleware/requireRole.ts` — Express middleware that gates routes + populates `req.orgRole` + `req.orgId`
-- `apps/web/src/hooks/useRole.ts` — React hook returning `{ role, can }`
-- `apps/web/src/components/Can.tsx` — `<Can role="X">` declarative wrapper
-- `apps/web/src/components/settings/TeamTab.tsx` — UI for changing member roles + the role dropdown options
+boundary; the UI is the affordance boundary. They're allowed to differ
+— the parity test allows UI to be MORE strict than the contract floor.
