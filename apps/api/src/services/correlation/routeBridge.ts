@@ -64,35 +64,73 @@ function extractUrl(f: Finding): string | null {
 }
 
 /**
- * Heuristic: extract path segments from the URL (ignoring query string +
- * common prefixes like "vulnerabilities") and check whether any of them
- * appear in the SAST file path. Cheap, false-positive-tolerant — bridge
- * confidence stays POSSIBLE so the operator can validate via the UI.
+ * Heuristic: extract path segments from the URL and check whether any of them
+ * appear in the SAST file path AT MIN_TOKEN_LENGTH characters. Cheap, false-
+ * positive-tolerant — bridge confidence stays POSSIBLE so the operator can
+ * validate via the UI.
+ *
+ * Phase 27.5.x tightening: previously a single 2+ char token match was
+ * enough, which caused DVWA's `/vulnerabilities/<type>/` URL family to all
+ * collapse into ONE chain via the shared `vulnerabilities` token. We now:
+ *   1. Require MIN_TOKEN_LENGTH=3 chars (kills 2-char noise like "id"/"go"/
+ *      "do" that appear in every code path, but keeps real vuln-type tokens
+ *      like "csp", "bac", "xss" that DVWA uses for category names).
+ *   2. Skip a much broader noise list of common framework dirs + category-
+ *      prefix words ("vulnerabilities", "source", "pages", "controllers"…)
+ *      that show up in MOST file paths and so don't discriminate.
+ *
+ * The DVWA-specific outcome: instead of one 42-node mega-chain, we get many
+ * smaller chains keyed on the actual vulnerability-type token (`sqli`,
+ * `xss_r`, `csrf`, `upload`, etc.) which IS the signal that matters.
  */
+const MIN_TOKEN_LENGTH = 3;
+
+const COMMON_NOISE = new Set([
+  // Versioning + API prefixes — appear in most modern URLs without telling you anything
+  "api", "apis", "v1", "v2", "v3", "v4",
+  // Static asset roots
+  "static", "assets", "public", "media", "images", "img", "css", "js",
+  // Source organisation conventions
+  "src", "source", "sources", "lib", "libs", "internal", "core",
+  // Framework / monorepo dirs
+  "app", "apps", "packages", "modules", "vendor", "node_modules",
+  // Build outputs
+  "dist", "build", "out", "target", "bin",
+  // Testing
+  "test", "tests", "spec", "specs", "__tests__",
+  // Generic groupings
+  "config", "configs", "settings", "common", "shared", "utils", "helpers",
+  // Routing groupings
+  "pages", "routes", "controllers", "views", "models", "services", "components",
+  // Documentation
+  "docs", "doc", "readme",
+  // Category prefix words — they GROUP many sub-features and so produce
+  // false-positive cross-feature links. DVWA's `vulnerabilities/sqli` and
+  // `vulnerabilities/xss_r` should NOT chain just because they share
+  // "vulnerabilities" — that's the bug Phase 27.5.x fixes.
+  "vulnerabilities", "vulnerability", "vulns", "challenges",
+  "examples", "example", "demo", "demos", "samples", "sample",
+]);
+
 function urlContainsFileToken(url: string, filePath: string): boolean {
   // Strip protocol + query, keep path.
   const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0] ?? url;
-  const segments = path.split("/").map((s) => s.trim()).filter((s) => s.length > 1);
+  const segments = path
+    .split("/")
+    .map((s) => s.trim())
+    .filter((s) => s.length >= MIN_TOKEN_LENGTH);
   if (segments.length === 0) return false;
 
   const fileTokens = filePath
     .replace(/\.[^.]+$/, "")  // strip extension
     .split(/[/\\.]/)
-    .filter((s) => s.length > 1);
+    .filter((s) => s.length >= MIN_TOKEN_LENGTH);
   if (fileTokens.length === 0) return false;
 
-  // Match if any non-trivial segment from the URL appears as a token in the
-  // file path. Skip the most common framework prefix names so we don't
-  // false-positive on every single web app. Deliberately keep semantic
-  // route nouns ("users", "admin") in scope because they often DO map back
-  // to source files of the same name — that's the signal we want.
-  const COMMON_NOISE = new Set([
-    "api", "v1", "v2", "v3", "static", "assets", "src",
-    "app", "public", "vendor", "node_modules",
-  ]);
   for (const seg of segments) {
     if (COMMON_NOISE.has(seg.toLowerCase())) continue;
     for (const tok of fileTokens) {
+      if (COMMON_NOISE.has(tok.toLowerCase())) continue;
       if (tok.toLowerCase() === seg.toLowerCase()) return true;
     }
   }
@@ -100,4 +138,4 @@ function urlContainsFileToken(url: string, filePath: string): boolean {
 }
 
 // Re-exported for tests so bridge logic stays unit-testable in isolation.
-export const _testing = { urlContainsFileToken };
+export const _testing = { urlContainsFileToken, COMMON_NOISE, MIN_TOKEN_LENGTH };

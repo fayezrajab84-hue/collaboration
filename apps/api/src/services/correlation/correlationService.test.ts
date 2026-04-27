@@ -110,11 +110,26 @@ describe("cveBridge", () => {
 describe("routeBridge.urlContainsFileToken", () => {
   const { urlContainsFileToken } = routeTesting;
 
-  it("matches a non-noise URL segment to a file token", () => {
+  it("matches via the SPECIFIC vuln-type token (sqli), not the prefix", () => {
+    // The good link — same vulnerability type on URL + source file.
     expect(urlContainsFileToken(
       "https://dvwa/vulnerabilities/sqli/?id=1",
       "vulnerabilities/sqli/source/low.php",
     )).toBe(true);
+  });
+
+  it("does NOT cross-link different vuln types just because they share a prefix", () => {
+    // Phase 27.5.x bug fix: previously this returned true because both paths
+    // share the token `vulnerabilities`. That collapsed every DVWA SAST
+    // finding into the same chain as every DAST finding regardless of
+    // which vuln type they were on, producing a 42-node mega-chain. The
+    // expanded COMMON_NOISE list makes `vulnerabilities` + `source`
+    // non-discriminating, so the matcher requires a specific token like
+    // `sqli` or `xss_r` — and these two paths don't share one.
+    expect(urlContainsFileToken(
+      "https://dvwa/vulnerabilities/xss_r/?name=x",
+      "vulnerabilities/sqli/source/low.php",
+    )).toBe(false);
   });
 
   it("ignores common framework noise like /api or /v1", () => {
@@ -122,8 +137,7 @@ describe("routeBridge.urlContainsFileToken", () => {
       "https://app/api/v1/users",
       "src/routes/users/index.ts",
     )).toBe(true);
-    // The `users` token still matches — that's good. But ONLY "api"/"v1"
-    // shouldn't be enough. Verify a noise-only URL produces false:
+    // Verify a noise-only URL produces false:
     expect(urlContainsFileToken(
       "https://app/api/v1",
       "src/server.ts",
@@ -135,6 +149,27 @@ describe("routeBridge.urlContainsFileToken", () => {
       "https://example.com/billing/checkout",
       "src/auth/login.ts",
     )).toBe(false);
+  });
+
+  it("requires tokens at least MIN_TOKEN_LENGTH chars (3) — 2-char tokens are noise", () => {
+    // 2-char tokens like `id` would have falsely linked DAST and source
+    // files (legacy queries always have ?id=). 3-char minimum kills these
+    // while keeping real vuln-type categories like `csp`, `bac`, `xss`.
+    expect(urlContainsFileToken(
+      "https://app/id/handler",
+      "src/id/handler.ts",
+    )).toBe(true);  // `handler` (7 chars) matches; `id` (2) doesn't gate it
+    expect(urlContainsFileToken(
+      "https://app/id",
+      "src/id/index.ts",
+    )).toBe(false); // only `id` available (2 chars), filtered out
+  });
+
+  it("matches DVWA's 3-char vuln-type tokens like csp / bac", () => {
+    expect(urlContainsFileToken(
+      "https://dvwa/vulnerabilities/csp/source/low.php",
+      "vulnerabilities/csp/source/medium.php",
+    )).toBe(true);
   });
 });
 
