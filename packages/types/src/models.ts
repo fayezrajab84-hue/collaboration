@@ -220,6 +220,16 @@ export interface Finding {
   // UNKNOWN. reachabilityEvidence is the file-path list when REACHABLE.
   reachability?: "REACHABLE" | "NOT_REACHABLE" | "UNKNOWN" | "NOT_APPLICABLE";
   reachabilityEvidence?: string[] | null;
+  /** Phase 27 Slice B/C — attack path correlation. Null when not yet computed
+   *  or when this finding stands alone (no bridge matched). */
+  correlationGroupId?: string | null;
+  /** [{toFindingId, bridgeType, confidence, reason}] — drives the AttackPathBadge. */
+  correlationEdges?: Array<{
+    toFindingId: string;
+    bridgeType:  string;
+    confidence:  "CONFIRMED" | "LIKELY" | "POSSIBLE";
+    reason:      string;
+  }> | null;
   // Joined from related target (present in list/detail responses)
   targetName?: string;
   repository?: { fullName: string; defaultBranch: string } | null;

@@ -3,7 +3,7 @@ import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import {
   Gauge, FolderGit2, Container, Network, Bug,
   Workflow, Settings, LogOut, Radar, BrainCircuit, FileBarChart, Layers,
-  Building2, ChevronsUpDown, Check, BookOpenCheck,
+  Building2, ChevronsUpDown, Check, BookOpenCheck, Network as NetworkIcon, GitGraph,
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../hooks/useAuth";
@@ -17,6 +17,7 @@ const NAV_ITEMS = [
   { to: "/domains",      label: "Domains",       icon: Network },
   { to: "/scans",        label: "Scans",         icon: Radar },
   { to: "/findings",     label: "Findings",      icon: Bug },
+  { to: "/attack-paths", label: "Attack Paths",  icon: GitGraph },
   { to: "/tickets",      label: "Tickets",       icon: Workflow },
   { to: "/chat",         label: "AI Chat",       icon: BrainCircuit },
   { to: "/report",       label: "Security Report", icon: FileBarChart },

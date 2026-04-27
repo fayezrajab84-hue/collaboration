@@ -13,6 +13,7 @@ import type {
   ComplianceFramework, FrameworksResponse, FrameworkDashboard, ControlFindingsResponse,
   UpdateRepoAssetLinksRequest, UpdateContainerAssetLinksRequest, UpdateDomainAssetLinksRequest,
   AssetLinksResponse,
+  AttackPathSummary, AttackPathsListResponse,
 } from "@devsecops/types";
 
 export const apiClient = axios.create({
@@ -753,6 +754,15 @@ export const adminApi = {
     apiClient.post<{ ok: boolean }>(`/admin/queues/${name}/jobs/${jobId}/retry`).then((r) => r.data),
   deleteJob:  (name: string, jobId: string) =>
     apiClient.delete<{ ok: boolean }>(`/admin/queues/${name}/jobs/${jobId}`).then((r) => r.data),
+};
+
+// ── Attack paths (Phase 27 Slice C) ──────────────────────────────────────
+
+export const attackPathsApi = {
+  list: (limit = 50) =>
+    apiClient.get<AttackPathsListResponse>("/attack-paths", { params: { limit } }).then((r) => r.data),
+  get: (groupId: string) =>
+    apiClient.get<AttackPathSummary>(`/attack-paths/${encodeURIComponent(groupId)}`).then((r) => r.data),
 };
 
 // ── Compliance (Phase 16) ────────────────────────────────────────────────

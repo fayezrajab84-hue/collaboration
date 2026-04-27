@@ -12,6 +12,7 @@ import Can from "./Can";
 import SeverityBadge from "./SeverityBadge";
 import ConfidenceBadge from "./ConfidenceBadge";
 import ProofOfExploitBadge from "./ProofOfExploitBadge";
+import AttackPathBadge from "./AttackPathBadge";
 import DiffViewer from "./DiffViewer";
 import SyntaxHighlight from "./SyntaxHighlight";
 import { formatDate } from "../lib/utils";
@@ -1771,6 +1772,11 @@ function CodeAnalysisModal({ finding, snippet, githubUrl, repoInfo, locationOver
             <div className="flex flex-wrap items-center gap-1.5">
               <SeverityBadge severity={finding.severity} />
               {hasProofOfExploit(finding) && <ProofOfExploitBadge />}
+              <AttackPathBadge
+                groupId={finding.correlationGroupId}
+                pathLength={(finding.correlationEdges?.length ?? 0) + 1}
+                confirmed={finding.correlationEdges?.some((e) => e.confidence === "CONFIRMED")}
+              />
               <span className="rounded bg-gray-800 px-2 py-0.5 text-xs text-gray-400">{finding.scanType}</span>
               <span className="rounded bg-gray-800 px-2 py-0.5 text-xs text-gray-400">{finding.scanner as string}</span>
             </div>

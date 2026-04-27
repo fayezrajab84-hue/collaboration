@@ -280,6 +280,50 @@ export interface FrameworkDashboard {
   controls:      ControlBreakdown[];
 }
 
+// ── Attack paths (Phase 27 Slice C) ──────────────────────────────────────
+// Mirrors apps/api/src/services/correlation/attackPathService.ts.
+
+export type AttackPathBridgeType =
+  | "cve" | "route" | "port" | "secret"
+  | "runtime" | "waf_bypass" | "db_access" | "egress_c2"
+  | "dns_resolution" | "c2_beacon" | "agent_tool" | "llm_attack"
+  | "cloud_east_west" | "flow_data_access";
+
+export interface AttackPathNode {
+  findingId:  string;
+  title:      string;
+  severity:   "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
+  scanType:   string;
+  confidence: "CONFIRMED" | "LIKELY" | "POSSIBLE";
+  targetType: "REPOSITORY" | "CONTAINER" | "DOMAIN";
+  targetName: string | null;
+  filePath:   string | null;
+  evidence:   Record<string, unknown> | null;
+}
+
+export interface AttackPathEdge {
+  fromFindingId: string;
+  toFindingId:   string;
+  bridgeType:    AttackPathBridgeType;
+  reason:        string;
+  confidence:    "CONFIRMED" | "LIKELY" | "POSSIBLE";
+}
+
+export interface AttackPathSummary {
+  groupId:        string;
+  score:          number;
+  length:         number;
+  maxSeverity:    "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
+  hasConfirmed:   boolean;
+  externalReach:  number;
+  nodes:          AttackPathNode[];
+  edges:          AttackPathEdge[];
+}
+
+export interface AttackPathsListResponse {
+  paths: AttackPathSummary[];
+}
+
 export interface ControlFindingsResponse {
   control: {
     id:          string;
