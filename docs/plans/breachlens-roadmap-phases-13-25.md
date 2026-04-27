@@ -543,6 +543,90 @@ Full scope: [`docs/plans/phase-29-ai-llm-application-security.md`](./phase-29-ai
 
 ---
 
+### Phase 30 — PaaS-native runtime visibility ❌ *(MUST-HAVE for PaaS customers, ~2-2.5 weeks)*
+
+**Sequenced after Phase 28.6** so it reuses the Wazuh decoder pipeline + TI service + Phase 27 graph engine. The change: PaaS doesn't allow agent installation, so the "agent" becomes the cloud-provider's log API instead.
+
+**The gap:** Phase 28's Wazuh-agent model breaks completely on Azure App Service / AWS App Runner / Heroku / Google App Engine — you don't own the host. Without Phase 30, BreachLens looks great in a Linux+container demo and **looks blind on a real PaaS customer** (which is most mid-market today). Closes that credibility gap.
+
+Four slices, ~2200 lines, ~2-2.5 weeks total (recommend ship order **A → D → B → C** — A unlocks the basic visibility, D makes it visible in Phase 27 graph):
+
+- **A — PaaS app server log ingestion (4-5 days):** Azure App Service Diagnostic Logs / Application Insights, AWS App Runner / X-Ray, GCP App Engine, Heroku log drains. New `targetType: PAAS_APP` + `PaasApp` model. Polling-based ingestion via cloud-provider log APIs (60s default, operator-configurable).
+- **B — Extended managed DB coverage (3-4 days):** beyond Phase 28.5's RDS/Aurora/Azure SQL — adds Cosmos DB (RU-spike anomaly instead of row-count), Synapse / BigQuery (warehouse query-cost anomaly), Azure Database for PostgreSQL, Snowflake.
+- **C — Cloud-native east-west traffic visibility (3-4 days):** VNet Service Endpoints / Private Endpoints / PrivateLink / Front Door / VPC Endpoint logs — the traffic that traditional egress firewalls don't see. New `cloudEastWestBridge` for Phase 27.
+- **D — PaaS-aware Phase 27 graph + NetworkPage PaaS tab + onboarding wizard (2-3 days):** new `PaasApp` and `ManagedDb` asset types; reuse existing bridges from 28.5/28.6 with PaaS source semantics; Settings → "Add PaaS source" wizard reusing Phase 18 CSPM read-only IAM patterns.
+
+**Composes with Phase 18 (CSPM):** one auth flow ("give us read-only IAM") gets you both cloud-config scanning AND PaaS log ingestion. Same wizard, two values.
+
+**Coverage matrix update (post-30):**
+
+| Tool | Self-managed Linux + containers | PaaS app servers | Managed DBs (Cosmos / Synapse) | Correlated chain across both |
+|---|---|---|---|---|
+| Snyk | partial | partial (SAST only) | ❌ | ❌ |
+| Wiz | partial | partial | partial | ✅ cloud-only |
+| Aqua / Sysdig | ✅ | ❌ | ❌ | ❌ |
+| Datadog | partial | ✅ | partial | partial |
+| Microsoft Defender for Cloud | partial | ✅ Azure-native | ✅ Azure-native | partial Azure-only |
+| **BreachLens (post-30)** | ✅ | ✅ | ✅ | **✅ unified across both** |
+
+**Honest caveats:** cloud-provider log APIs cost money (document per-source costs in onboarding); polling latency means PaaS findings are 1-5 min behind real-time (less responsive than Phase 28's 60s Wazuh); we don't get syscall-level visibility on PaaS — that's the tradeoff PaaS customers accept by choosing PaaS.
+
+Full scope: [`docs/plans/phase-30-paas-runtime-visibility.md`](./phase-30-paas-runtime-visibility.md). Six open questions to settle before Slice A (cloud-provider API rate limits, log-API cost ceiling, Heroku log drain inbound endpoint, multi-cloud onboarding model, serverless vs PaaS coverage scope, App Service for Code vs custom container).
+
+---
+
+### Phase 31 — Low-code / no-code platform security ❌ *(DIFFERENTIATOR, the invisible attack surface, ~3-4 weeks)*
+
+**Genuinely new category — not an extension of anything we've shipped.** SAST doesn't apply (workflows aren't tracked in Git). Container scan doesn't apply (no container). DAST doesn't apply (no public surface usually). Phase 31 covers what no other phase reaches: Logic Apps + Power Automate + Power Apps + Power BI dataflows running in customer Microsoft 365 tenants.
+
+**Why this is a real category:** Microsoft estimates 60% of new business apps in 2026 will be built on low-code platforms. The security organisation has **no visibility into 60% of new apps being built in the company.** Citizen developers (HR, Finance, Marketing — not IT) build these flows, often outside SDLC governance, often touching sensitive data with over-permissive connectors and exposed HTTP triggers.
+
+**Sequenced after Phase 30** because it's a new product surface; we want the existing roadmap solidified first. Predecessor: Phase 27 (asset graph) + Phase 16 (compliance) + Phase 28 (Wazuh ingestion).
+
+Five slices (Microsoft Power Platform v1 — multi-platform deferred to 31.x), ~2850 lines, ~3-4 weeks total. **Recommend ship order A → E → B → C → D — A gives the inventory the CISO can't answer today; E (compliance framework) gives the procurement-RFP answer:**
+
+- **A — Power Platform tenant connection + asset enumeration (3-4 days):** OAuth into M365 tenant; enumerate all Logic Apps + Power Automate flows + Power Apps + Power BI dataflows; new `LowCodeFlow` asset type. Read-only scopes only.
+- **B — Connector permission analysis + blast-radius scoring (4-5 days):** parse each flow's connector list; classify scope per connector (read-only / scoped-write / unscoped-write); quantify "if attacker hits this flow's public trigger, blast radius reaches X." Same conceptual pattern as Phase 29 Slice D's agent permission analysis.
+- **C — Flow definition static analysis (4-5 days):** parse Logic App JSON / Power Automate definitions / Power Apps msapp packages; detect hardcoded secrets, missing approval gates, output-without-sanitization, cross-connector DLP violations, run-as-creator with admin connector, tight-loop cost-DOS patterns. New `ScanType.LOW_CODE`.
+- **D — Runtime audit log ingestion + flowDataAccessBridge for Phase 27 (3-4 days):** pull Power Platform audit logs into Wazuh; detect anomalous triggers (new IP, TI-listed IP, volume spike, off-hours, modified-by-non-creator); link runtime to static findings via Phase 27.
+- **E — OWASP LCNC Top 10 + CSA NLC Top 10 compliance frameworks (1-2 days):** extends Phase 16 with both frameworks; existing CWE mapping engine routes findings automatically.
+
+**The killshot demo Phase 31 unlocks:**
+```
+[Static, 4 months ago] Power Automate flow "HR-onboarding" by Sarah J. (HR team)
+   ├─ Office 365 Users: User.ReadWrite.All (over-permissive — only needs User.Read.All)
+   ├─ SharePoint: Sites.FullControl.All (over-permissive)
+   └─ HTTP trigger: PUBLIC URL, NO authentication
+
+[Phase 27 graph] Reaches 12,000 users + 47,000 HR records + all mailboxes
+
+[Runtime, this morning at 09:14] Triggered by 185.x.x.x (URLhaus MALICIOUS, NRD 4d)
+   Flow runs as Sarah's identity → reads 47,000 records → emails to attacker Gmail
+🔴 Citizen-developer flow + over-permissive connectors + exposed trigger = mass HR exfil
+```
+
+That story is invisible to every other security tool the customer owns. The CISO's first awareness today is when records show up on a paste site. Phase 31 catches the flow + over-permissive connectors **months before** the attacker finds them.
+
+**Strategic position:** **Zenity** is the best-in-class specialist (raised $38M Series B for this category). BreachLens won't beat them on raw low-code feature depth in v1. BreachLens's unique angle is the **integration moat** — same as Phase 29 vs Lakera. Zenity reports "Sarah's flow has over-permissive connectors"; BreachLens reports "Sarah's flow has over-permissive connectors AND those connectors reach the same SharePoint site that contains the customer-data finding from Phase 16, AND the trigger IP that hit it this morning is on a TI list (Phase 28.6), AND that constitutes a data-breach pattern under SOC 2 CC7.1." Cross-tier story closes the deal.
+
+**Composes with Phase 29 (AI agents):** Power Automate + AI Builder integrations are growing rapidly. A flow that calls an AI Builder model is BOTH a low-code flow (Phase 31) AND an AI agent (Phase 29). Asset graph supports both representations; bridges via same `agentToolBridge` + `flowDataAccessBridge` pattern.
+
+**Coverage matrix update (post-31):**
+
+| Tool | Citizen-dev flow inventory | Connector permission analysis | Flow runtime monitoring | Phase 27 chain integration | Multi-platform |
+|---|---|---|---|---|---|
+| Snyk / Wiz / Aikido | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Microsoft Defender for Cloud Apps | partial | partial | partial | ❌ | M365 only |
+| Power Platform CoE Starter Kit | ✅ | ❌ | partial | ❌ | M365 only |
+| **Zenity** | ✅ best-in-class | ✅ best-in-class | ✅ | ❌ | Power Platform + Salesforce + ServiceNow |
+| **BreachLens (post-31)** | ✅ | ✅ | ✅ | **✅ via integration** | Power Platform v1 |
+
+**Honest caveats:** multi-platform (Salesforce / ServiceNow / Workato) is Slice F deferred to 31.x; Microsoft admin-consent process can take weeks at enterprises; connector scope inference is heuristic (ships at LIKELY); citizen-developer notification ethics is a real political consideration (operator controls); this is genuinely a new product surface not an extension — Slice A learnings will change later slices.
+
+Full scope: [`docs/plans/phase-31-low-code-platform-security.md`](./phase-31-low-code-platform-security.md). Six open questions to settle before Slice A (admin-consent OAuth flow, citizen-developer classification heuristic, connector scope inference accuracy, audit log ingestion costs, DLP policy cross-reference, citizen-developer notification ethics).
+
+---
+
 ## GTM-optimized sequenced timeline
 
 | Month | Focus | Phases | Why this slot |
@@ -555,7 +639,8 @@ Full scope: [`docs/plans/phase-29-ai-llm-application-security.md`](./phase-29-ai
 | 6 | **The unified pitch becomes real** | 27 + 28 | Phase 27 connects repo→container→domain→cloud into one correlated chain; Phase 28 adds runtime as the fourth act ("someone tried to exploit it 4 min ago — Wazuh caught it"). Together: the only product that spans static + active + runtime + cloud in one demo. Closes Wiz + Snyk + Aqua bake-offs simultaneously. |
 | 7 | **The full traffic path** | 28.5 + 28.6 | 28.5 extends the chain across firewall → WAF → LB → app → DB → egress; 28.6 adds DNS + threat intel correlation as the earliest detection signal in any chain. Together: confirmed C2 beacon detection (DNS + firewall + runtime) + WAF-bypass detection — both unique to BreachLens. Reusable TI engine becomes foundational for future tiers. |
 | 8 | **AI app security in front of the wave** | 29 | Eighth tier added to the correlated chain. Slice B alone (OWASP LLM Top 10 + MITRE ATLAS compliance frameworks) gives a procurement-RFP-ready answer the day it ships. Killshot demo: prompt injection → over-permissive tool → bulk PII extraction → exfil, all in one chain. Specialists win on detection accuracy; BreachLens wins on the integration moat. |
-| 9 | **Coverage + adoption** | 19 + 20 + 21 | K8s easy win; API security newer differentiator; IDE for dev adoption funnel |
+| 9 | **Beyond containers — managed runtimes + low-code** | 30 + 31 | 30 closes the PaaS visibility gap (App Service / App Runner / Heroku — agent install impossible, log-API ingestion replaces it); 31 covers the invisible attack surface (Logic Apps + Power Automate citizen-developer flows). Slice A of 31 alone gives the CISO an inventory answer they can't produce today. Together: BreachLens covers what every other security tool ignores in modern enterprise stacks. |
+| 10 | **Coverage + adoption** | 19 + 20 + 21 | K8s easy win; API security newer differentiator; IDE for dev adoption funnel |
 | Later (SaaS-only) | **SaaS scale** | 25 | Only when going multi-tenant SaaS — defer for self-host deployments |
 | Later (research moat) | **AI-driven discovery** | 26 | Waits on Mythos public API + Phase 14 reachability for cost-effective scoping. Plumbing is hours when ready. |
 
