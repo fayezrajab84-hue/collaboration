@@ -198,6 +198,12 @@ export interface Finding {
   // AI fix suggestion (unified diff)
   aiFixSuggestion?: string | null;
   aiFixSuggestedAt?: Date | null;
+  // Phase 14 — package-level reachability (SCA/CONTAINER only). Other
+  // scan types are NOT_APPLICABLE; SCA findings that pre-date Phase 14
+  // (or were emitted by a scanner image without import-detection) stay
+  // UNKNOWN. reachabilityEvidence is the file-path list when REACHABLE.
+  reachability?: "REACHABLE" | "NOT_REACHABLE" | "UNKNOWN" | "NOT_APPLICABLE";
+  reachabilityEvidence?: string[] | null;
   // Joined from related target (present in list/detail responses)
   targetName?: string;
   repository?: { fullName: string; defaultBranch: string } | null;

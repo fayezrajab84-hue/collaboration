@@ -269,6 +269,9 @@ router.get("/:framework/controls/:code/findings", async (req, res, next) => {
           filePath: true, lineStart: true, firstSeen: true, lastSeen: true,
           repositoryId: true, containerId: true, domainId: true,
           confidence: true,
+          // Phase 14 — show the reachability badge in the compliance
+          // drill-down too. Auditors care about REACHABLE first.
+          reachability: true, reachabilityEvidence: true,
         },
       }),
       prisma.finding.count({ where: findingWhere }),

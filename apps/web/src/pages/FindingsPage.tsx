@@ -7,6 +7,7 @@ import type { Finding, FindingGroup } from "@devsecops/types";
 import Can from "../components/Can";
 import SeverityBadge from "../components/SeverityBadge";
 import ConfidenceBadge from "../components/ConfidenceBadge";
+import ReachabilityBadge from "../components/ReachabilityBadge";
 import ProofOfExploitBadge from "../components/ProofOfExploitBadge";
 import FindingStatusBadge from "../components/FindingStatusBadge";
 import FindingDetailDrawer from "../components/FindingDetailDrawer";
@@ -871,9 +872,17 @@ export default function FindingsPage() {
                   <td className="px-4 py-3"><TargetTag finding={f} /></td>
                   <td className="px-4 py-3 text-xs text-gray-400">{f.scanType}</td>
                   <td className="px-4 py-3">
-                    <span className="inline-flex items-center">
+                    <span className="inline-flex flex-wrap items-center gap-1">
                       <ConfidenceBadge confidence={f.confidence} />
                       {hasProofOfExploit(f) && <ProofOfExploitBadge size="sm" />}
+                      {/* Phase 14 — package-level reachability. Renders
+                          only for SCA/CONTAINER findings; NOT_APPLICABLE
+                          on other scan types returns null from the badge. */}
+                      <ReachabilityBadge
+                        reachability={(f as { reachability?: "REACHABLE" | "NOT_REACHABLE" | "UNKNOWN" | "NOT_APPLICABLE" }).reachability}
+                        evidence={(f as { reachabilityEvidence?: string[] | null }).reachabilityEvidence}
+                        size="xs"
+                      />
                     </span>
                   </td>
                   {/* AI triage status — unified neutral chip; colour only in the icon */}

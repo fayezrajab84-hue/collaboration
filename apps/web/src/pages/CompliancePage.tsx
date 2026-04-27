@@ -29,6 +29,7 @@ import { complianceApi } from "../lib/api";
 import { cn } from "../lib/utils";
 import SeverityBadge from "../components/SeverityBadge";
 import FindingStatusBadge from "../components/FindingStatusBadge";
+import ReachabilityBadge from "../components/ReachabilityBadge";
 import Can from "../components/Can";
 import { formatRelative } from "../lib/utils";
 import type { ComplianceFramework, ControlBreakdown } from "@devsecops/types";
@@ -369,6 +370,7 @@ function ControlDrillDown({ framework, code }: { framework: ComplianceFramework;
                     {f.cveId && <span className="rounded bg-amber-950/40 px-1.5 py-0.5 text-amber-300">{f.cveId}</span>}
                     {f.packageName && <span>{f.packageName}{f.packageVersion ? `@${f.packageVersion}` : ""}</span>}
                     {f.filePath && <span className="font-mono text-[10px]">{f.filePath}{f.lineStart ? `:${f.lineStart}` : ""}</span>}
+                    <ReachabilityBadge reachability={f.reachability} evidence={f.reachabilityEvidence} size="xs" />
                     <span className="ml-auto">{formatRelative(f.firstSeen)}</span>
                   </div>
                 </div>

@@ -259,6 +259,9 @@ export interface ControlFindingsResponse {
     containerId:     string | null;
     domainId:        string | null;
     confidence:      string;
+    // Phase 14 — package-level reachability + supporting evidence.
+    reachability:        "REACHABLE" | "NOT_REACHABLE" | "UNKNOWN" | "NOT_APPLICABLE";
+    reachabilityEvidence:string[] | null;
   }>;
   total: number;
   page:  number;
