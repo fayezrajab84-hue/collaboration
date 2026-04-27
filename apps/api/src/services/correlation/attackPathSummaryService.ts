@@ -38,6 +38,12 @@ export interface AttackPathSummaryResult {
   title:        string | null;
   tldr:         string;
   narrative:    string;
+  /** Phase 27.5.x — AI verification of the chain. Bundled into the same
+   *  AI call as the summary so it costs ~$0.001 extra per chain on cloud
+   *  models. Null on legacy rows (will populate on next regenerate). */
+  verdict:           "LIKELY_REAL" | "MIXED_SIGNAL" | "LIKELY_NOISE" | null;
+  verdictConfidence: number | null;  // 0-100
+  verdictReasoning:  string | null;
   providerType: string;
   model:        string;
   contentHash:  string;
@@ -119,10 +125,16 @@ export async function generateSummary(
   const prompt = buildPrompt(path);
 
   // ── Call AI with structured-output schema ───────────────────────────
+  // Length contract: enforce MIN to catch empty AI responses, but don't
+  // hard-fail on MAX overshoot — providers regularly produce slightly
+  // longer text than asked. Instead transform overlong fields by clipping
+  // at the last sentence/word boundary that fits. Pre-Phase-27.5.x this
+  // schema used .max() which threw on every chain whose tldr exceeded
+  // 280 chars (most of them, in practice).
   const schema = z.object({
-    title:     z.string().min(3).max(80),
-    tldr:      z.string().min(8).max(280),
-    narrative: z.string().min(40).max(2000),
+    title:     z.string().min(3).transform((s) => clipText(s, 80)),
+    tldr:      z.string().min(8).transform((s) => clipText(s, 400)),
+    narrative: z.string().min(40).transform((s) => clipText(s, 3000)),
   });
 
   let result;
@@ -268,6 +280,39 @@ function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n)}…` : s;
 }
 
+/**
+ * Smart text clipping for AI-produced strings that overshoot the budget.
+ *
+ * Tries to find a clean break point in this priority order:
+ *   1. Last sentence-ending punctuation (. ! ?) within the budget
+ *   2. Last whitespace within the budget
+ *   3. Hard cut at the budget with an ellipsis
+ *
+ * The minimum acceptable break point is 60% of the budget — below that
+ * we'd be discarding too much content, so we hard-cut instead. This avoids
+ * the case where the only sentence break is at char 5 of a 400-char budget.
+ */
+function clipText(raw: string, max: number): string {
+  const s = raw.trim();
+  if (s.length <= max) return s;
+
+  const minAcceptable = Math.floor(max * 0.6);
+
+  // Look for the last sentence-ending punctuation in [minAcceptable, max].
+  // Slice once to bound the search, then walk back from the end.
+  const window = s.slice(0, max);
+  for (let i = window.length - 1; i >= minAcceptable; i--) {
+    const c = window[i];
+    if (c === "." || c === "!" || c === "?") return window.slice(0, i + 1);
+  }
+  // Fall back to the last whitespace in the same window.
+  for (let i = window.length - 1; i >= minAcceptable; i--) {
+    if (/\s/.test(window[i] ?? "")) return `${window.slice(0, i).trimEnd()}…`;
+  }
+  // Hard cut.
+  return `${window.trimEnd()}…`;
+}
+
 // ── Content hash ─────────────────────────────────────────────────────────
 // Stable across runs as long as the chain's member set + scoring stays the
 // same. Used to detect "summary is stale, regenerate?" without doing any
@@ -292,4 +337,4 @@ function computeContentHash(path: AttackPathSummary): string {
 }
 
 // Test-only re-exports
-export const _testing = { computeContentHash, buildPrompt };
+export const _testing = { computeContentHash, buildPrompt, clipText };
