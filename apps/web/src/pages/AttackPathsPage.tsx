@@ -373,9 +373,141 @@ function PathCard({
       </button>
 
       {open && (
-        <ol className="ml-9 mr-5 mb-5 space-y-2 border-l-2 border-gray-800 pl-4">
-          {path.nodes.map((node, i) => (
-            <PathStep key={node.findingId} node={node} stepIndex={i} />
+        <div className="ml-9 mr-5 mb-5 space-y-2">
+          <ScanTypeGroups nodes={path.nodes} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Group chain nodes by scan type (Phase 27.5.x) ────────────────────────
+//
+// Without grouping, a 36-node chain (like the DVWA container-exposure
+// chain) is a flat list of 36 hard-to-skim rows. With grouping the same
+// chain reads as:
+//   [DAST]      8 findings · 5 HIGH 3 MEDIUM         ▶
+//   [PENTEST]   8 findings · 3 HIGH 5 MEDIUM         ▶
+//   [CONTAINER] 18 findings · 3 CRITICAL 15 HIGH     ▶
+//   [SAST]      2 findings · 2 MEDIUM                ▼
+//     1. Tainted Exec  vulnerabilities/exec/source/high.php:12
+//     2. Md5 Loose Equality  login.php:42
+//
+// Order favours the "attack-chain narrative": web (entry — what attackers
+// hit) → runtime/container (where it lands) → code (root cause). Within
+// each group, nodes ordered by severity desc.
+
+const GROUP_ORDER = [
+  "DAST",
+  "PENTEST",
+  "PENTEST_FULL",
+  "CONTAINER",
+  "RUNTIME",
+  "SCA",
+  "SAST",
+  "IAC",
+  "SECRET",
+] as const;
+
+const GROUP_LABELS: Record<string, string> = {
+  DAST:         "Web — DAST",
+  PENTEST:      "Web — Pentest",
+  PENTEST_FULL: "Web — Pentest (full)",
+  CONTAINER:    "Container CVEs",
+  RUNTIME:      "Runtime",
+  SCA:          "Dependencies — SCA",
+  SAST:         "Source code — SAST",
+  IAC:          "Infrastructure — IaC",
+  SECRET:       "Secrets",
+};
+
+function ScanTypeGroups({ nodes }: { nodes: AttackPathNode[] }) {
+  // Bucket by scanType, preserving the API's externalReach ordering inside
+  // each bucket. Then sort buckets by GROUP_ORDER for the attack-chain
+  // narrative reading order.
+  const buckets = new Map<string, AttackPathNode[]>();
+  for (const n of nodes) {
+    const list = buckets.get(n.scanType) ?? [];
+    list.push(n);
+    buckets.set(n.scanType, list);
+  }
+  const orderedKeys = [...buckets.keys()].sort((a, b) => {
+    const aIdx = GROUP_ORDER.indexOf(a as typeof GROUP_ORDER[number]);
+    const bIdx = GROUP_ORDER.indexOf(b as typeof GROUP_ORDER[number]);
+    return (aIdx === -1 ? 99 : aIdx) - (bIdx === -1 ? 99 : bIdx);
+  });
+
+  return (
+    <div className="space-y-2">
+      {orderedKeys.map((scanType) => (
+        <ScanTypeGroup key={scanType} scanType={scanType} nodes={buckets.get(scanType)!} />
+      ))}
+    </div>
+  );
+}
+
+const SEVERITY_RANK: Record<string, number> = {
+  CRITICAL: 5, HIGH: 4, MEDIUM: 3, LOW: 2, INFO: 1,
+};
+const SEVERITY_DOT_CLASS: Record<string, string> = {
+  CRITICAL: "bg-red-500",
+  HIGH:     "bg-orange-400",
+  MEDIUM:   "bg-yellow-400",
+  LOW:      "bg-blue-400",
+  INFO:     "bg-gray-400",
+};
+
+function ScanTypeGroup({ scanType, nodes }: { scanType: string; nodes: AttackPathNode[] }) {
+  // Default expanded state: small groups (≤ 4 nodes) open, large groups
+  // collapsed. Operators almost always want to see the WEB / SAST groups
+  // (which are typically small + critical for the chain narrative) and
+  // collapse the CONTAINER group (typically large, mostly LOW severity).
+  const [open, setOpen] = useState(nodes.length <= 4);
+  const label = GROUP_LABELS[scanType] ?? scanType;
+
+  // Severity rollup chips — show counts grouped by severity
+  const sevCounts: Record<string, number> = {};
+  for (const n of nodes) sevCounts[n.severity] = (sevCounts[n.severity] ?? 0) + 1;
+  const sevEntries = Object.entries(sevCounts).sort(
+    (a, b) => (SEVERITY_RANK[b[0]] ?? 0) - (SEVERITY_RANK[a[0]] ?? 0),
+  );
+
+  // Sort within group: severity desc, then by title for stability
+  const sortedNodes = [...nodes].sort((a, b) => {
+    const sevDiff = (SEVERITY_RANK[b.severity] ?? 0) - (SEVERITY_RANK[a.severity] ?? 0);
+    if (sevDiff !== 0) return sevDiff;
+    return a.title.localeCompare(b.title);
+  });
+
+  return (
+    <div className="rounded-lg border border-gray-800 bg-gray-950/40">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-gray-900/40"
+      >
+        {open ? <ChevronDown className="h-3.5 w-3.5 text-gray-500" /> : <ChevronRight className="h-3.5 w-3.5 text-gray-500" />}
+        <span className="rounded bg-gray-800 px-2 py-0.5 font-mono text-[10px] font-medium text-gray-300">
+          {scanType}
+        </span>
+        <span className="text-sm font-medium text-gray-200">{label}</span>
+        <span className="text-xs text-gray-500">·</span>
+        <span className="text-xs text-gray-500">{nodes.length} {nodes.length === 1 ? "finding" : "findings"}</span>
+        {/* Severity rollup dots */}
+        <div className="ml-auto flex items-center gap-1.5">
+          {sevEntries.map(([sev, n]) => (
+            <span key={sev} className="inline-flex items-center gap-1 text-[10px] text-gray-400" title={`${n} ${sev}`}>
+              <span className={`h-1.5 w-1.5 rounded-full ${SEVERITY_DOT_CLASS[sev] ?? "bg-gray-500"}`} />
+              {n}
+            </span>
+          ))}
+        </div>
+      </button>
+
+      {open && (
+        <ol className="space-y-1 border-t border-gray-800 px-3 py-2">
+          {sortedNodes.map((node) => (
+            <PathStep key={node.findingId} node={node} />
           ))}
         </ol>
       )}
@@ -400,7 +532,7 @@ function ExploitBadge() {
   );
 }
 
-function PathStep({ node, stepIndex }: { node: AttackPathNode; stepIndex: number }) {
+function PathStep({ node }: { node: AttackPathNode; stepIndex?: number }) {
   const { openFinding } = useContext(DrawerCtx);
 
   // Scan-type-aware "vulnerability locator" line. Different scan types have
@@ -411,10 +543,7 @@ function PathStep({ node, stepIndex }: { node: AttackPathNode; stepIndex: number
   const locator = buildLocator(node);
 
   return (
-    <li className="relative">
-      <div className="absolute -left-[22px] top-1.5 flex h-4 w-4 items-center justify-center rounded-full border border-gray-700 bg-gray-900 text-[10px] text-gray-400">
-        {stepIndex + 1}
-      </div>
+    <li>
       <button
         type="button"
         onClick={() => openFinding(node.findingId)}
@@ -425,9 +554,6 @@ function PathStep({ node, stepIndex }: { node: AttackPathNode; stepIndex: number
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <SeverityBadge severity={node.severity} />
-            <span className="rounded bg-gray-800 px-1.5 py-0.5 text-[10px] font-medium text-gray-400">
-              {node.scanType}
-            </span>
             <span className="truncate text-sm text-gray-200">{node.title}</span>
             {node.confidence === "CONFIRMED" && (
               <span className="inline-flex items-center gap-1 text-[10px] text-emerald-400">
