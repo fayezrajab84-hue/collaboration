@@ -129,6 +129,23 @@ docker compose exec -T postgres psql -U devsecops -d devsecops -c "<query>"
   double quotes: `SELECT "scanTypes" FROM "ScanJob"` — *not*
   `SELECT scanTypes FROM ScanJob`.
 
+### `packages/types/dist/` drifts after schema additions
+
+The types package declares `exports.import → ./dist/index.js` in its
+`package.json` but has no permanent build step — dist is a checked-in
+artifact. Adding a new file to `packages/types/src/` (e.g. a new
+schema, a new contract) leaves dist stale, and runtime imports return
+`undefined` for the new exports until you rebuild:
+
+```bash
+docker compose exec -T -w //app/packages/types api npx tsc
+```
+
+Vitest configs alias `@devsecops/types` to source so tests bypass
+dist, but the production api/web still resolve via the package's
+`exports` field. After any addition to `packages/types/src/`, rebuild
+dist before any code that imports the new symbol runs.
+
 ### `db push` does not survive a postgres recreate
 
 Schema changes pushed via `prisma db push` (no migration file) live only
@@ -439,6 +456,38 @@ docker run --rm --network admiring-hertz_internal --entrypoint python \
   startup handles it.
 
 ---
+
+## Testing
+
+Vitest is wired in both `apps/api` and `apps/web`. Run with:
+
+```bash
+docker compose exec -T -w //app/apps/api api pnpm test    # 50 tests
+docker compose exec -T -w //app/apps/web web pnpm test    # 3 tests
+```
+
+Patterns to follow when adding new tests (the alternatives have subtle
+strict-ESM failure modes):
+
+- **Dependency injection over `vi.mock`** — make middleware/services
+  accept their dependencies as factory args with sensible defaults.
+  Tests inject fakes; production code is unchanged. See
+  `requireRole.ts:requireRole(minRole, resolveMember=getActiveMembership)`
+  as the canonical example.
+- **`mockResponse()` returns vi spies as direct properties, NOT
+  getters.** Destructuring `{ status }` from a getter captures the
+  value once and never updates — burned ~30 min of debugging during
+  the first scaffold.
+- **Contract + parity tests for UI/API agreements** — define the
+  agreement once in `packages/types/src/`, both sides import the same
+  const, parity tests introspect actual code (router stack tags,
+  source regex) and assert agreement. `roleContract.ts` is the
+  template.
+
+Full reference: [`docs/testing.md`](./docs/testing.md). Pattern
+coverage: middleware unit tests (rbac.test.ts, requireRole.test.ts),
+backend parity (role-contract.test.ts), frontend parity
+(apps/web/src/role-contract.test.ts), docs drift (role-docs.test.ts).
 
 ## Frequently useful slash commands
 
