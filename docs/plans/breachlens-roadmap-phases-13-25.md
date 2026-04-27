@@ -446,6 +446,52 @@ Full scope: [`docs/plans/phase-28.5-network-and-database-visibility.md`](./phase
 
 ---
 
+### Phase 28.6 — DNS visibility + threat intel correlation ❌ *(DIFFERENTIATOR, earliest detection signal in any chain, ~2.5–3 weeks)*
+
+**Sequenced after Phase 28.5** (same Wazuh ingestion pattern + Phase 27 bridge plug-in). 28.5 added firewall/WAF/DB; 28.6 adds DNS — which is where compromise *first becomes visible* in most attack chains. Outbound C2 callbacks resolve a domain before they open a connection; data exfil tunnels through DNS queries when firewalls block direct egress; supply-chain compromise via a base image shows up as 1000 containers suddenly resolving the same C2 domain.
+
+**Architectural side-benefit:** introduces a generic **threat-intel service** that DNS uses first but is reusable by every other tier — Phase 28.5 firewall logs, future Phase 20 API security, even container scans (image registry domain check). One TI engine, many consumers, one cache, one rate-limit policy.
+
+Four slices, ~2200 lines, ~2.5–3 weeks total (recommend ship order **A → B → D → C** so the TI engine lands first and retroactively enriches Phase 28.5 findings):
+
+- **A — Threat intel service (foundation, 3-4 days):** generic `tiService.lookup({type, value})` returning verdict + sources + confidence. v1 sources: abuse.ch (URLhaus / ThreatFox / Malware Bazaar — free + unrate-limited), AbuseIPDB, AlienVault OTX, Spamhaus DBL, Quad9, Tor exit list, optional MISP. `ThreatIntelCache` table with per-source TTLs; background refresh job. Settings tab for source enable/disable + API key management. **Standalone value: enriches every IP in Phase 28.5 firewall findings the moment it lands.**
+- **B — DNS log ingestion + container attribution heuristic (4-5 days):** Wazuh decoders for dnsmasq / BIND / CoreDNS / Unbound / Pi-hole / Route53 / Azure DNS / GCP DNS / auditd. Calls `tiService.lookup(domain)` per query; creates `Finding` rows for verdict ≥ SUSPICIOUS. Container attribution via heuristic (resolving container = container with outbound to resolved IP within 10s); accurate per-container needs eBPF in a future phase.
+- **C — DNS behavioural detection rules (3-4 days):** detection patterns that don't show in TI feeds — DGA (entropy + n-gram), DNS tunneling (high subdomain volume + length), typosquatting (Levenshtein to allowlist), fast-flux (multi-IP per domain), Newly Registered Domain. Ships POSSIBLE confidence; escalates to LIKELY when same container has correlated static/runtime findings.
+- **D — Phase 27 bridges + DNS tab on Network page (2-3 days):** new `dnsResolutionBridge` (DNS finding enriches any chain on same container) + `c2BeaconBridge` (DNS + firewall outbound + Wazuh runtime alert on same container in tight window = **confirmed C2 beacon**). Path scorer's `proofMultiplier × 2.5` for confirmed C2 beacon — highest-confidence active-compromise signal we can produce.
+
+**The new killshot demo:**
+```
+[14:30:14] DNS:      container X resolved c2-tk2024.tk (URLhaus MALICIOUS, NRD 7d)
+[14:30:15] FIREWALL: outbound 185.x.x.x:443 from container X
+[14:30:18] WAZUH:    /bin/sh spawned by apache2 user in container X
+[14:31:05] FIREWALL: 47MB outbound to evil-s3.amazonaws.com from container X
+🔴 confirmed C2 beacon · active exploitation · data exfiltration in progress
+```
+
+That's the call your CISO wants at 14:35, not after a customer notifies them at 09:00 the next morning.
+
+**Strategic position:**
+- **Earliest detection signal**: DNS resolution happens minutes-to-hours before the eventual breach signal a SOC sees today
+- **Threat-actor attribution**: TI feeds tag IOCs with actor names (APT-29, FIN-7) — BreachLens can surface "matches known TTPs of <actor>" in path UI. Snyk/Aikido/Aqua don't
+- **Cross-org supply-chain detection**: when 100 containers across 20 BreachLens customers resolve the same TI-listed domain in the same hour = supply-chain compromise in progress. Cross-tenant visibility nobody else has
+- **Reusable TI engine**: Slice A is foundational. Phase 20 API security can plug in (incoming request IP enrichment); container scans can check registry domains; Phase 17 auto-fix can verify fix versions don't pull from TI-listed registries
+
+**Coverage matrix (post-27 + 28 + 28.5 + 28.6):**
+
+| Tool | Static | Active | Runtime | Network | Database | DNS+TI | Cloud | Correlated chain |
+|---|---|---|---|---|---|---|---|---|
+| Snyk | ✅ | partial | ❌ | ❌ | ❌ | ❌ | partial | ❌ |
+| Wiz | partial | ❌ | ✅ | partial | partial | ❌ | ✅ | ✅ cloud-only |
+| Aqua / Sysdig | ❌ | ❌ | ✅ | partial | ❌ | partial | partial | partial |
+| Cisco Umbrella | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
+| **BreachLens (post all)** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | **✅ all seven tiers** |
+
+**Honest caveats**: DGA/tunneling rules will false-positive on legitimate weird-looking traffic (CDN, S3 randomised buckets, some SaaS) — needs operator-tunable allowlist with top-1000 baseline; container attribution heuristic is leaky (accurate per-container needs eBPF); TI feeds have detection lag (behavioural rules catch what TI misses, at lower confidence); WhoisXML / NRD ships disabled until operator chooses backend (paid feed).
+
+Full scope: [`docs/plans/phase-28.6-dns-and-threat-intel.md`](./phase-28.6-dns-and-threat-intel.md). Six open questions to settle before Slice A (default TI sources enabled, cache TTL vs verdict-change responsiveness, container attribution accuracy, DGA false-positive baseline, NRD lookup volume vs cost, per-container DNS in cloud-managed environments).
+
+---
+
 ## GTM-optimized sequenced timeline
 
 | Month | Focus | Phases | Why this slot |
@@ -456,7 +502,7 @@ Full scope: [`docs/plans/phase-28.5-network-and-database-visibility.md`](./phase
 | 4 | **Refresh the differentiator + close the fix loop** | 24 + 17 | Pentest depth keeps demos sharp; auto-PRs close the "devs don't fix" gap |
 | 5 | **Category expansion** | 18 (AWS-only first cut) | Biggest single category expansion (CSPM); start with AWS to scope down |
 | 6 | **The unified pitch becomes real** | 27 + 28 | Phase 27 connects repo→container→domain→cloud into one correlated chain; Phase 28 adds runtime as the fourth act ("someone tried to exploit it 4 min ago — Wazuh caught it"). Together: the only product that spans static + active + runtime + cloud in one demo. Closes Wiz + Snyk + Aqua bake-offs simultaneously. |
-| 7 | **The full traffic path** | 28.5 | Extends the correlated chain across firewall → WAF → LB → app → DB → egress. WAF-bypass detection (Slice B) is the killshot demo no incumbent ships. Closes the SOC-team story — one pane-of-glass replaces 4-6 separate tools. |
+| 7 | **The full traffic path** | 28.5 + 28.6 | 28.5 extends the chain across firewall → WAF → LB → app → DB → egress; 28.6 adds DNS + threat intel correlation as the earliest detection signal in any chain. Together: confirmed C2 beacon detection (DNS + firewall + runtime) + WAF-bypass detection — both unique to BreachLens. Reusable TI engine becomes foundational for future tiers. |
 | 8 | **Coverage + adoption** | 19 + 20 + 21 | K8s easy win; API security newer differentiator; IDE for dev adoption funnel |
 | Later (SaaS-only) | **SaaS scale** | 25 | Only when going multi-tenant SaaS — defer for self-host deployments |
 | Later (research moat) | **AI-driven discovery** | 26 | Waits on Mythos public API + Phase 14 reachability for cost-effective scoping. Plumbing is hours when ready. |
