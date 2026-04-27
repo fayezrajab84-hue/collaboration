@@ -9,6 +9,7 @@ import ScanStatusBadge from "../components/ScanStatusBadge";
 import FindingCountBadges from "../components/FindingCountBadges";
 import ChecksTab from "../components/ChecksTab";
 import { ContainerAssetLinksPanel } from "../components/AssetLinksPanel";
+import ApplicationPickerPanel from "../components/ApplicationPickerPanel";
 import { useTargetScanStatus } from "../hooks/useTargetScanStatus";
 import { useToast } from "../hooks/useToast";
 import { formatRelative } from "../lib/utils";
@@ -133,10 +134,13 @@ function EditContainerModal({ container, onClose }: { container: Container; onCl
             {update.isPending ? "Saving…" : "Save Changes"}
           </button>
         </div>
-        {/* Phase 27 Slice A — operator-declared asset relations. Saved
-            independently from the imageRef/registry fields above (own Save
-            button inside the panel). */}
-        <div className="mt-6">
+        {/* Phase 27.5 — Application binding above the per-asset relations. */}
+        <div className="mt-6 space-y-4">
+          <ApplicationPickerPanel
+            kind="container"
+            resourceId={container.id}
+            currentApplicationId={container.applicationId}
+          />
           <ContainerAssetLinksPanel container={container} />
         </div>
       </div>

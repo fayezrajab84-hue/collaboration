@@ -16,6 +16,7 @@ import ReportPage from "./pages/ReportPage";
 import AdminQueuesPage from "./pages/AdminQueuesPage";
 import CompliancePage from "./pages/CompliancePage";
 import AttackPathsPage from "./pages/AttackPathsPage";
+import ApplicationsPage from "./pages/ApplicationsPage";
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth();
@@ -69,6 +70,8 @@ function AppRoutes() {
         <Route path="compliance" element={<CompliancePage />} />
         <Route path="attack-paths" element={<AttackPathsPage />} />
         <Route path="attack-paths/:groupId" element={<AttackPathsPage />} />
+        <Route path="applications" element={<ApplicationsPage />} />
+        <Route path="applications/:id" element={<ApplicationsPage />} />
         <Route path="admin/queues" element={<AdminQueuesPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />

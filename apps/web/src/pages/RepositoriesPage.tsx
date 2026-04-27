@@ -9,6 +9,7 @@ import ScanStatusBadge from "../components/ScanStatusBadge";
 import FindingCountBadges from "../components/FindingCountBadges";
 import ChecksTab from "../components/ChecksTab";
 import { RepoAssetLinksPanel } from "../components/AssetLinksPanel";
+import ApplicationPickerPanel from "../components/ApplicationPickerPanel";
 import { useTargetScanStatus } from "../hooks/useTargetScanStatus";
 import { useToast } from "../hooks/useToast";
 import { formatRelative } from "../lib/utils";
@@ -240,9 +241,15 @@ function EditRepoModal({ repo, onClose }: { repo: Repository; onClose: () => voi
             {update.isPending ? "Saving…" : "Save Changes"}
           </button>
         </div>
-        {/* Phase 27 Slice A — operator-declared image refs this repo builds.
-            Saved independently from the branch field above. */}
-        <div className="mt-6">
+        {/* Phase 27.5 — Application binding sits at the top because it's the
+            higher-leverage decision: pick which app this asset belongs to,
+            then declare the per-asset relations within that app. */}
+        <div className="mt-6 space-y-4">
+          <ApplicationPickerPanel
+            kind="repository"
+            resourceId={repo.id}
+            currentApplicationId={repo.applicationId}
+          />
           <RepoAssetLinksPanel repo={repo} />
         </div>
       </div>

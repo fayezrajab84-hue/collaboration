@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { ShieldAlert, Search, Globe, Layers, Sparkles, ChevronDown, ChevronRight, ChevronsUpDown, ArrowUp, ArrowDown, KeyRound, Bot, Wrench, X, EyeOff, Eye, Download, CheckSquare, CheckCircle2, ShieldOff, RotateCcw, Ticket as TicketIcon, Code2, ExternalLink } from "lucide-react";
-import { findingsApi, reposApi, containersApi, domainsApi, suppressionsApi } from "../lib/api";
+import { findingsApi, reposApi, containersApi, domainsApi, suppressionsApi, applicationsApi } from "../lib/api";
 import type { Finding, FindingGroup } from "@devsecops/types";
 import Can from "../components/Can";
 import SeverityBadge from "../components/SeverityBadge";
@@ -266,6 +266,8 @@ export default function FindingsPage() {
   const status       = parseMulti(searchParams.get("status")       ?? "");
   const confidence   = parseMulti(searchParams.get("confidence")   ?? "");
   const reachability = parseMulti(searchParams.get("reachability") ?? "");
+  // Phase 27.5 — filter by Application boundary
+  const applications = parseMulti(searchParams.get("applicationId") ?? "");
   const aiFilter     = parseMulti(searchParams.get("ai") ?? "");
   const aiFilterKey  = aiFilter.join(",");
   // Stable primitives for dep arrays — arrays produced above are new every render.
@@ -378,6 +380,8 @@ export default function FindingsPage() {
   const { data: repos } = useQuery({ queryKey: ["repos"], queryFn: reposApi.list });
   const { data: containers } = useQuery({ queryKey: ["containers"], queryFn: containersApi.list });
   const { data: domains } = useQuery({ queryKey: ["domains"], queryFn: domainsApi.list });
+  // Phase 27.5 — Application list for the new filter chip
+  const { data: applicationOptions } = useQuery({ queryKey: ["applications"], queryFn: applicationsApi.list });
 
   // Active suppressions — used to mark suppressed findings when "Show suppressed" is on
   const { data: activeSuppressions } = useQuery({
@@ -443,11 +447,12 @@ export default function FindingsPage() {
     reachability.length || aiFilter.length || search || target
   );
 
+  const applicationsKey = applications.join(",");
   const { data, isLoading } = useQuery({
     // Use effectiveScanTypeKey (tab ∩ user) so the cache invalidates correctly
     // when switching Code↔Web — same user-selected types but different tab
     // produces a different effective set, hence a different query.
-    queryKey: ["findings", { severityKey, effectiveScanTypeKey, statusKey, confidenceKey, reachabilityKey, aiFilterKey, search, target, page, pageSize, sort, sortOrder, includeSuppressed }],
+    queryKey: ["findings", { severityKey, effectiveScanTypeKey, statusKey, confidenceKey, reachabilityKey, applicationsKey, aiFilterKey, search, target, page, pageSize, sort, sortOrder, includeSuppressed }],
     queryFn: () =>
       findingsApi.list({
         // Multi-select: send comma-joined values — server splits via `multi()`.
@@ -458,6 +463,7 @@ export default function FindingsPage() {
         reachability: (reachabilityKey || undefined) as never,
         search: search || undefined,
         ...targetFilter,
+        ...(applicationsKey ? { applicationId: applicationsKey } : {}),
         page,
         limit: pageSize,
         ...(aiFilterKey ? { ai: aiFilterKey as never } : {}),
@@ -530,6 +536,18 @@ export default function FindingsPage() {
             onChange={(e) => setSearchDraft(e.target.value)}
           />
         </div>
+
+        {/* Phase 27.5 — Application boundary filter. Sits ABOVE the per-asset
+            target filter because picking an app is the higher-leverage way
+            to scope; per-asset filtering is for fine-grained drill-down. */}
+        {(applicationOptions?.length ?? 0) > 0 && (
+          <MultiSelect
+            label="Applications"
+            options={(applicationOptions ?? []).map((a) => ({ value: a.id, label: a.name }))}
+            value={applications}
+            onChange={(v) => setMultiFilter("applicationId", v)}
+          />
+        )}
 
         {/* Target filter — multi-select across repos, containers and domains.
             Labels prefixed so mixed-type selection is legible in the chip. */}

@@ -14,6 +14,9 @@ import type {
   UpdateRepoAssetLinksRequest, UpdateContainerAssetLinksRequest, UpdateDomainAssetLinksRequest,
   AssetLinksResponse,
   AttackPathSummary, AttackPathsListResponse,
+  Application, CreateApplicationRequest, UpdateApplicationRequest,
+  UpdateApplicationComponentsRequest, ApplicationComponentsResponse,
+  ApplicationEnv, Criticality,
 } from "@devsecops/types";
 
 export const apiClient = axios.create({
@@ -754,6 +757,29 @@ export const adminApi = {
     apiClient.post<{ ok: boolean }>(`/admin/queues/${name}/jobs/${jobId}/retry`).then((r) => r.data),
   deleteJob:  (name: string, jobId: string) =>
     apiClient.delete<{ ok: boolean }>(`/admin/queues/${name}/jobs/${jobId}`).then((r) => r.data),
+};
+
+// ── Applications (Phase 27.5) ────────────────────────────────────────────
+
+export interface ApplicationDetail extends Application {
+  components: ApplicationComponentsResponse;
+}
+
+export const applicationsApi = {
+  list: () => apiClient.get<Application[]>("/applications").then((r) => r.data),
+  get:  (id: string) => apiClient.get<ApplicationDetail>(`/applications/${id}`).then((r) => r.data),
+  create:  (data: CreateApplicationRequest) =>
+    apiClient.post<Application>("/applications", data).then((r) => r.data),
+  update:  (id: string, data: UpdateApplicationRequest) =>
+    apiClient.patch<Application>(`/applications/${id}`, data).then((r) => r.data),
+  remove:  (id: string) =>
+    apiClient.delete<{ ok: boolean }>(`/applications/${id}`).then((r) => r.data),
+  assignComponents: (id: string, data: UpdateApplicationComponentsRequest) =>
+    apiClient.patch<ApplicationComponentsResponse>(`/applications/${id}/components`, data).then((r) => r.data),
+  enums: () =>
+    apiClient.get<{ environments: ApplicationEnv[]; criticalities: Criticality[] }>(
+      "/applications/_meta/enums",
+    ).then((r) => r.data),
 };
 
 // ── Attack paths (Phase 27 Slice C) ──────────────────────────────────────

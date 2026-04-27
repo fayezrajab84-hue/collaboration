@@ -6,6 +6,7 @@ import DomainAuthPanel from "../components/DomainAuthPanel";
 import DomainApiSpecPanel from "../components/DomainApiSpecPanel";
 import RecordingPanel from "../components/RecordingPanel";
 import { DomainAssetLinksPanel } from "../components/AssetLinksPanel";
+import ApplicationPickerPanel from "../components/ApplicationPickerPanel";
 import RiskScoreBadge from "../components/RiskScoreBadge";
 import type { Domain } from "@devsecops/types";
 import ScanStatusBadge from "../components/ScanStatusBadge";
@@ -125,8 +126,13 @@ function EditDomainModal({ domain, onClose }: { domain: Domain; onClose: () => v
             {update.isPending ? "Saving…" : "Save Changes"}
           </button>
         </div>
-        {/* Phase 27 Slice A — operator-declared backing containers. */}
-        <div className="mt-6">
+        {/* Phase 27.5 — Application binding above the per-asset relations. */}
+        <div className="mt-6 space-y-4">
+          <ApplicationPickerPanel
+            kind="domain"
+            resourceId={domain.id}
+            currentApplicationId={domain.applicationId}
+          />
           <DomainAssetLinksPanel domain={domain} />
         </div>
       </div>
