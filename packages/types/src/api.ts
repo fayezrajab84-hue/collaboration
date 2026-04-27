@@ -179,3 +179,88 @@ export interface SseEvent {
   timestamp: string;
   data: Record<string, unknown>;
 }
+
+// ── Compliance (Phase 16) ─────────────────────────────────────────────────
+// Mirrors the API responses in apps/api/src/routes/compliance/router.ts.
+// Imported by the web app's complianceApi client + the CompliancePage UI.
+
+export type ComplianceFramework = "SOC2" | "OWASP_TOP_10" | "PCI_DSS";
+
+export interface FrameworkSummary {
+  framework:            ComplianceFramework;
+  label:                string;
+  controlCount:         number;
+  controlsWithFindings: number;
+  openFindingCount:     number;
+}
+
+export interface FrameworksResponse {
+  frameworks: FrameworkSummary[];
+}
+
+export interface ControlBreakdown {
+  id:           string;
+  code:         string;
+  name:         string;
+  description:  string;
+  category:     string | null;
+  sortOrder:    number;
+  cweIds:       number[];
+  total:        number;
+  open:         number;
+  acknowledged: number;
+  fixed:        number;
+  falsePositive:number;
+  ignored:      number;
+  // Severity histogram of OPEN findings only — what's currently broken.
+  severity: {
+    CRITICAL: number;
+    HIGH:     number;
+    MEDIUM:   number;
+    LOW:      number;
+    INFO:     number;
+  };
+}
+
+export interface FrameworkDashboard {
+  framework:     ComplianceFramework;
+  label:         string;
+  totalMappings: number;
+  controls:      ControlBreakdown[];
+}
+
+export interface ControlFindingsResponse {
+  control: {
+    id:          string;
+    framework:   ComplianceFramework;
+    code:        string;
+    name:        string;
+    description: string;
+    category:    string | null;
+  };
+  findings: Array<{
+    id:              string;
+    title:           string;
+    description:     string;
+    severity:        string;
+    status:          string;
+    scanType:        string;
+    scanner:         string;
+    cweId:           string | null;
+    cveId:           string | null;
+    packageName:     string | null;
+    packageVersion:  string | null;
+    fixVersion:      string | null;
+    filePath:        string | null;
+    lineStart:       number | null;
+    firstSeen:       string;
+    lastSeen:        string;
+    repositoryId:    string | null;
+    containerId:     string | null;
+    domainId:        string | null;
+    confidence:      string;
+  }>;
+  total: number;
+  page:  number;
+  limit: number;
+}

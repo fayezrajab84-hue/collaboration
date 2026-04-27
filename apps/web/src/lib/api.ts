@@ -10,6 +10,7 @@ import type {
   CreateTicketRequest, UpdateTicketRequest,
   JiraIntegrationConfig, SlackIntegrationConfig, TeamsIntegrationConfig,
   PaginatedResponse, AuthMeResponse, SwitchOrgResponse,
+  ComplianceFramework, FrameworksResponse, FrameworkDashboard, ControlFindingsResponse,
 } from "@devsecops/types";
 
 export const apiClient = axios.create({
@@ -741,4 +742,26 @@ export const adminApi = {
     apiClient.post<{ ok: boolean }>(`/admin/queues/${name}/jobs/${jobId}/retry`).then((r) => r.data),
   deleteJob:  (name: string, jobId: string) =>
     apiClient.delete<{ ok: boolean }>(`/admin/queues/${name}/jobs/${jobId}`).then((r) => r.data),
+};
+
+// ── Compliance (Phase 16) ────────────────────────────────────────────────
+
+export const complianceApi = {
+  frameworks: () =>
+    apiClient.get<FrameworksResponse>("/compliance/frameworks").then((r) => r.data),
+
+  dashboard: (framework: ComplianceFramework) =>
+    apiClient.get<FrameworkDashboard>(`/compliance/${framework}/dashboard`).then((r) => r.data),
+
+  controlFindings: (
+    framework: ComplianceFramework,
+    code: string,
+    opts: { status?: string; page?: number; limit?: number } = {},
+  ) =>
+    apiClient
+      .get<ControlFindingsResponse>(
+        `/compliance/${framework}/controls/${encodeURIComponent(code)}/findings`,
+        { params: { status: opts.status ?? "OPEN", page: opts.page ?? 1, limit: opts.limit ?? 20 } },
+      )
+      .then((r) => r.data),
 };
