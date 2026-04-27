@@ -152,14 +152,17 @@ Closes the Phase 22 gap that bites Entra-federated-GitHub-Enterprise customers: 
 
 ---
 
-### Phase 16 — Compliance framework mapping ❌ *(HIGH-VALUE, 🚪 partial — opens auditor segment, 1–2 weeks)*
+### Phase 16 — Compliance framework mapping ✅ *(SHIPPED — 5 slices over one session)*
 
-- Map every Finding → CWE + OWASP Top 10 + SOC 2 control + PCI requirement (data already in CVE/CWE metadata)
-- Per-framework dashboard (e.g. "17/52 SOC 2 CC6 controls have open findings")
-- Evidence export (PDF + CSV per framework) for auditors
+- ✅ **Slice A — Schema + seed** (commit `221f06c`): `ComplianceFramework` enum, `ComplianceControl` model, `FindingControl` join, plus 26 seeded controls (OWASP Top 10 2021 + SOC 2 CC6/7/8 + PCI DSS 4.0 Req 6/8/11) with documented CWE mappings.
+- ✅ **Slice B — Mapping engine** (commit `02a6a7e`): `complianceMappingService` with CWE-based primary matching + keyword fallback. Wired into `findingService.upsertFindings` for auto-mapping; `backfillComplianceMappings.ts` for the historical backlog. 611 findings → 448 mappings on first run.
+- ✅ **Slice C — Read API** (commit `7905291`): three endpoints — `/api/compliance/frameworks`, `/api/compliance/:framework/dashboard`, `/api/compliance/:framework/controls/:code/findings`. All VIEWER+, org-scoped via `getActiveMembership`.
+- ✅ **Slice D — Dashboard UI** (commit `57aa64e`): `/compliance` page with framework picker tabs, control matrix grouped by category, severity histograms, inline drill-down. Sidebar nav entry between Security Report and Settings.
+- ✅ **Slice E — Evidence export** (commit `37b5617`): ADMIN-gated CSV (RFC 4180) + printable HTML (auditor saves as PDF via Cmd-P). No PDF runtime dep — matches the existing `reportHtmlService` pattern. Audit-logged.
 
-**Why:** Vanta + Drata are unicorns built primarily on this. Turns the platform from "developer tool" into "auditor tool" — 5–10× license value.
-**Trigger condition for Anthropic API Skills (`pdf` / `xlsx` / `docx`)** — that's when they become useful.
+**Why this unblocks revenue:** Vanta + Drata are unicorns built primarily on this. Turns the platform from "developer tool" into "auditor tool" — 5–10× license value, opens the regulated/govt segment that requires SOC 2 + PCI evidence.
+
+**Strategic position:** every BreachLens scan now produces evidence for *three* frameworks at once. The same SCA finding lights up OWASP A06 + SOC 2 CC7.1 + PCI Req-6.3.1 simultaneously — one scan, three audit reports. ISO 27001 / NIST CSF / HIPAA can be added by extending the `ComplianceFramework` enum + inserting new `ComplianceControl` rows; no further code changes needed.
 
 ---
 
