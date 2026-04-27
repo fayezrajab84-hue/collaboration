@@ -16,7 +16,7 @@
  * the FindingDetailDrawer; this badge is the at-a-glance signal.
  */
 import { cn } from "../lib/utils";
-import { Activity, Eye, EyeOff, HelpCircle } from "lucide-react";
+import { Activity, Eye, EyeOff, HelpCircle, Container as ContainerIcon } from "lucide-react";
 
 type Reachability = "REACHABLE" | "NOT_REACHABLE" | "UNKNOWN" | "NOT_APPLICABLE" | undefined | null;
 
@@ -41,26 +41,48 @@ const STYLES: Record<Exclude<Reachability, undefined | null | "NOT_APPLICABLE">,
   },
 };
 
+// Phase 14 supports import-grep against repo source for JS/TS + Python.
+// Container scans have no source to grep — they ship as image layers.
+// Detect that context and surface a more accurate tooltip + icon so the
+// gap reads as "not yet supported" rather than "scanner failed".
+// Tracked in docs/plans/phase-14.5-container-reachability.md.
+const UNKNOWN_CONTAINER_OVERRIDE = {
+  icon:    ContainerIcon,
+  tooltip: "Container reachability is not yet supported (Phase 14.5). " +
+           "OS packages + bundled binaries don't have a source-import equivalent; " +
+           "image-level reachability requires entrypoint analysis or runtime tracing. " +
+           "Findings still flow through the normal triage queue.",
+};
+
 export default function ReachabilityBadge({
   reachability,
   evidence,
+  scanType,
   className,
   size = "sm",
 }: {
   reachability: Reachability;
   evidence?:    string[] | null;
+  /** When provided, container findings get a more accurate UNKNOWN tooltip. */
+  scanType?:    string;
   className?:   string;
   size?:        "xs" | "sm";
 }) {
   if (!reachability || reachability === "NOT_APPLICABLE") return null;
   const style = STYLES[reachability];
   if (!style) return null;
-  const Icon = style.icon;
+
+  // Container UNKNOWN: override icon + tooltip so users don't think the
+  // scanner failed. The badge still says "Unknown" (truthful) but the
+  // hover explains it's a known gap, not a bug.
+  const isContainerUnknown = reachability === "UNKNOWN" && scanType === "CONTAINER";
+  const Icon = isContainerUnknown ? UNKNOWN_CONTAINER_OVERRIDE.icon : style.icon;
   const evidenceCount = evidence?.length ?? 0;
 
+  const baseTooltip = isContainerUnknown ? UNKNOWN_CONTAINER_OVERRIDE.tooltip : style.tooltip;
   const tooltip = evidenceCount > 0
-    ? `${style.tooltip}\n\nImported in: ${evidence!.slice(0, 5).join(", ")}${evidenceCount > 5 ? `, … +${evidenceCount - 5} more` : ""}`
-    : style.tooltip;
+    ? `${baseTooltip}\n\nImported in: ${evidence!.slice(0, 5).join(", ")}${evidenceCount > 5 ? `, … +${evidenceCount - 5} more` : ""}`
+    : baseTooltip;
 
   const pad = size === "xs" ? "px-1.5 py-0.5 text-[10px]" : "px-2 py-0.5 text-xs";
   const iconSize = size === "xs" ? "h-2.5 w-2.5" : "h-3 w-3";

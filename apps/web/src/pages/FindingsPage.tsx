@@ -901,6 +901,7 @@ export default function FindingsPage() {
                       <ReachabilityBadge
                         reachability={(f as { reachability?: "REACHABLE" | "NOT_REACHABLE" | "UNKNOWN" | "NOT_APPLICABLE" }).reachability}
                         evidence={(f as { reachabilityEvidence?: string[] | null }).reachabilityEvidence}
+                        scanType={f.scanType}
                         size="xs"
                       />
                     </span>

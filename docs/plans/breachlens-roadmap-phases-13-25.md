@@ -184,6 +184,20 @@ Closes the Phase 22 gap that bites Entra-federated-GitHub-Enterprise customers: 
 
 ---
 
+### Phase 14.5 — Container reachability ❌ *(scoped, not started, ~1 week)*
+
+Surfaced same-day as Phase 14 by a customer adding `vulnerables/web-dvwa` and seeing 120 findings all `UNKNOWN`. Truth-in-advertising fix (sharper container tooltip) shipped same session; this phase fills the gap properly.
+
+Container scans don't have source code to grep — Phase 14's import-detection mechanic doesn't translate. Three approaches scoped, recommendation is to ship Approach A first (~1 week):
+
+- **A — Static entrypoint dependency closure**: trace which binaries the image's CMD/ENTRYPOINT loads, mark OS packages outside that closure as NOT_REACHABLE. Catches the "container only runs nginx, postgres-client CVE is deferrable" case.
+- **B — Filesystem extraction + grep `/app`**: extracts the image, runs Phase 14's existing classifier against bundled language packages. Composes with A for full coverage.
+- **C — Runtime instrumentation**: actually run the image, observe via `/proc/*/maps`. Defer until Phase 18 (CSPM) builds the sandboxed-execution layer.
+
+Full scope: [`docs/plans/phase-14.5-container-reachability.md`](./phase-14.5-container-reachability.md). Four open questions to settle before Slice A1 (layer extraction strategy, multi-arch handling, per-scan cost ceiling, k8s/compose entrypoint-override semantics).
+
+---
+
 ### Phase 23 — SIEM bridge + SOC workflow 🟨 *(HIGH-VALUE, easy lift, 1 week)*
 
 - ✅ Wazuh MCP toolkit already wired in
