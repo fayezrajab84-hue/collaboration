@@ -100,6 +100,33 @@ def _walk_source_files(root: str) -> Iterator[str]:
                 yield os.path.join(dirpath, fn)
 
 
+# Lockfile / manifest filenames Trivy reports under `Target` at the result
+# level. Only files whose import format we can actually parse classify
+# their findings; everything else stays UNKNOWN (truthful "we don't know"
+# beats a false NOT_REACHABLE that buries real risk like the WebGoat
+# Spring artifacts that nobody-imports-but-everybody-uses).
+_SUPPORTED_MANIFESTS = {
+    # JS/TS — we parse import/require statements in source
+    "package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+    # Python — we parse import / from-import statements in source
+    "requirements.txt", "requirements-dev.txt", "Pipfile", "Pipfile.lock",
+    "poetry.lock", "pyproject.toml", "setup.py", "setup.cfg",
+}
+
+
+def _is_supported_ecosystem(target: str | None) -> bool:
+    """
+    True if the lockfile/manifest path is something we know how to
+    correlate against import statements. Java (pom.xml / build.gradle),
+    Go (go.mod / go.sum), Ruby (Gemfile), Rust (Cargo.lock), and image
+    SBOMs all return False — those findings stay UNKNOWN.
+    """
+    if not target:
+        return False
+    basename = target.rsplit("/", 1)[-1]
+    return basename in _SUPPORTED_MANIFESTS
+
+
 def _build_import_map(repo_dir: str) -> dict[str, list[str]]:
     """
     {package_name → [file_paths_relative_to_repo_root]} of every package
@@ -222,12 +249,22 @@ class SCAScanner(BaseScanner):
                 # The lockfile may pull in `picomatch` transitively (deep
                 # dep of webpack-cli) without the customer ever writing
                 # `import "picomatch"`. Look the package up in the import
-                # map: present → REACHABLE + evidence file list; absent →
-                # NOT_REACHABLE. The API maps these strings to the
-                # Reachability enum on ingest.
-                imported_in = import_map.get(pkg_name, [])
-                reach_state    = "REACHABLE" if imported_in else "NOT_REACHABLE"
-                reach_evidence = imported_in if imported_in else None
+                # map: present → REACHABLE; absent → NOT_REACHABLE.
+                #
+                # IMPORTANT — only classify when the manifest is from an
+                # ecosystem whose imports we actually parse (JS/TS/Python
+                # today). Maven / Go / Ruby / Cargo all return UNKNOWN
+                # because the import-map doesn't speak their syntax —
+                # marking them NOT_REACHABLE would falsely demote real
+                # risk (e.g. Spring artifacts in a Java app, which the
+                # source absolutely uses but our regex can't see).
+                if _is_supported_ecosystem(dep_file):
+                    imported_in = import_map.get(pkg_name, [])
+                    reach_state    = "REACHABLE" if imported_in else "NOT_REACHABLE"
+                    reach_evidence = imported_in if imported_in else None
+                else:
+                    reach_state    = "UNKNOWN"
+                    reach_evidence = None
 
                 findings.append(NormalizedFinding(
                     fingerprint=fingerprint,
