@@ -55,6 +55,24 @@ enum AgentStatus {
   UNKNOWN
 }
 
+// Phase 27.5 — Application boundary for correlation. Operators group
+// related Repository / Container / Domain rows into one Application; the
+// correlation engine then scopes its sweep to a single Application's
+// assets so unrelated apps that happen to share base-image CVEs don't
+// merge into one mega-chain (the Phase 27 bug we surfaced).
+enum ApplicationEnv {
+  DEVELOPMENT
+  STAGING
+  PRODUCTION
+}
+
+enum Criticality {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+}
+
 enum RecordingStatus {
   ACTIVE      // user is currently browsing through the proxy
   STOPPED     // user clicked stop or session timed out
@@ -223,6 +241,7 @@ model Organization {
   repositories    Repository[]
   containers      Container[]
   domains         Domain[]
+  applications    Application[]
   integrations    Integration[]
   findings        Finding[]
   tickets         Ticket[]
@@ -236,6 +255,37 @@ model Organization {
   invitations     Invitation[]
   ssoConfig       SsoConfig?
   sboms           Sbom[]
+}
+
+// ── Phase 27.5 — Application boundary ─────────────────────────────────────
+// First-class entity that owns a Repository / Container / Domain set. The
+// Phase 27 correlation engine scopes its sweep PER application, so unrelated
+// apps that happen to share a base-image CVE no longer collapse into one
+// mega-chain. Manual creation (no auto-magic); existing assets stay
+// `applicationId = null` until an operator assigns them, and unassigned
+// findings simply don't get correlated.
+model Application {
+  id          String         @id @default(cuid())
+  orgId       String
+  name        String
+  // url-safe identifier; unique per org; auto-derived from name on create
+  // unless operator overrides
+  slug        String
+  description String?
+  environment ApplicationEnv @default(PRODUCTION)
+  criticality Criticality    @default(MEDIUM)
+  // Optional free-text — team / contact email / Slack channel
+  owner       String?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  org          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  repositories Repository[]
+  containers   Container[]
+  domains      Domain[]
+
+  @@unique([orgId, slug])
+  @@index([orgId, environment])
 }
 
 // SBOM format the document is encoded in. Both produce JSON.
@@ -426,6 +476,9 @@ model Repository {
   // at domain Z." v1 is operator-declared via the AssetLinksPanel UI; CI-based
   // inference (Dockerfile + image-name parsing) is a Phase 27.x follow-up.
   buildsContainerImages   String[]  @default([])
+  // Phase 27.5 — Application boundary. Null until operator assigns; when
+  // null this asset's findings don't participate in correlation chains.
+  applicationId           String?
   lastScannedAt  DateTime?
   aiRiskScore    Int?      // 0-100
   aiRiskReason   String?
@@ -435,12 +488,14 @@ model Repository {
 
   org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   policy      Policy?      @relation(fields: [policyId], references: [id], onDelete: SetNull)
+  application Application? @relation(fields: [applicationId], references: [id], onDelete: SetNull)
   scans       ScanJob[]
   findings    Finding[]
   prCheckRuns PrCheckRun[]
   sboms       Sbom[]
 
   @@index([orgId, githubAppInstallationId])
+  @@index([applicationId])
 }
 
 model Container {
@@ -456,6 +511,8 @@ model Container {
   // in correlationService walks these arrays at query time.
   sourceRepositoryId   String?
   deployedAtDomainIds  String[]  @default([])
+  // Phase 27.5 — Application boundary. See Repository.applicationId comment.
+  applicationId        String?
   lastScannedAt  DateTime?
   aiRiskScore    Int?
   aiRiskReason   String?
@@ -463,10 +520,13 @@ model Container {
   addedAt        DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
-  org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  scans    ScanJob[]
-  findings Finding[]
-  sboms    Sbom[]
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  application Application? @relation(fields: [applicationId], references: [id], onDelete: SetNull)
+  scans       ScanJob[]
+  findings    Finding[]
+  sboms       Sbom[]
+
+  @@index([applicationId])
 }
 
 model Domain {
@@ -491,14 +551,19 @@ model Domain {
   // chains: DAST/PENTEST finding on this domain can be correlated to the
   // running container's CVEs and onward to the source repo.
   servesContainerIds  String[]  @default([])
+  // Phase 27.5 — Application boundary. See Repository.applicationId comment.
+  applicationId       String?
 
   org         Organization         @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  application Application?         @relation(fields: [applicationId], references: [id], onDelete: SetNull)
   scans       ScanJob[]
   findings    Finding[]
   subdomains  SubdomainDiscovery[]
   authConfig  DomainAuthConfig?
   apiSpec     DomainApiSpec?
   recordings  RecordingSession[]
+
+  @@index([applicationId])
 }
 
 // ── Interactive DAST recording session ────────────────────────────────────────

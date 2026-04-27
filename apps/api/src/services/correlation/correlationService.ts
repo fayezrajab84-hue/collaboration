@@ -51,24 +51,87 @@ export interface CorrelationRunSummary {
 }
 
 /**
- * Full org sweep — load all OPEN findings, run every bridge across every pair,
- * union-find into groups, persist `correlationGroupId` + `correlationEdges`
- * + `correlationComputedAt` on each finding.
+ * Full org sweep — Phase 27.5: dispatches per-application sweeps so chains
+ * never cross application boundaries. Findings whose target asset has no
+ * `applicationId` are explicitly cleared (correlationGroupId set to null)
+ * — they DO NOT participate in any chain. This is the fix for the Phase 27
+ * bug where unrelated apps sharing base-image CVEs collapsed into one mega-
+ * chain.
  *
- * Returns a summary the caller can log. Does NOT delete prior correlation
- * data unless the engine has a fresh decision for that finding (so a
- * narrowly-failing partial sweep can't blow away an entire org's correlations).
+ * Returns the aggregate summary across all per-app sweeps.
  */
 export async function runCorrelationForOrg(orgId: string): Promise<CorrelationRunSummary> {
   const started = Date.now();
 
+  const apps = await prisma.application.findMany({
+    where: { orgId },
+    select: { id: true },
+  });
+
+  let findingsConsidered = 0;
+  let bridgeMatches      = 0;
+  let groupsFormed       = 0;
+
+  for (const { id: applicationId } of apps) {
+    const summary = await runCorrelationForApplication(orgId, applicationId);
+    findingsConsidered += summary.findingsConsidered;
+    bridgeMatches      += summary.bridgeMatches;
+    groupsFormed       += summary.groupsFormed;
+  }
+
+  // Findings on assets that have no application get their correlation cleared
+  // explicitly. Without this, a stale correlationGroupId from a prior org-
+  // wide sweep would linger after Phase 27.5 ships.
+  const cleared = await clearUnassignedFindings(orgId);
+  if (cleared > 0) {
+    logger.info(`[correlation] cleared correlation on ${cleared} unassigned findings (org ${orgId})`);
+  }
+
+  return {
+    orgId,
+    findingsConsidered,
+    bridgeMatches,
+    groupsFormed,
+    durationMs: Date.now() - started,
+  };
+}
+
+/**
+ * Phase 27.5 — bridge sweep scoped to a single application's components.
+ * Loads only findings on Repository / Container / Domain assets that share
+ * `applicationId = applicationId`; cross-app pairs are never considered.
+ */
+export async function runCorrelationForApplication(
+  orgId: string,
+  applicationId: string,
+): Promise<CorrelationRunSummary> {
+  const started = Date.now();
+
+  // Resolve the asset IDs that belong to this application.
+  const [repos, containers, domains] = await Promise.all([
+    prisma.repository.findMany({ where: { applicationId, orgId }, select: { id: true } }),
+    prisma.container.findMany({  where: { applicationId, orgId }, select: { id: true } }),
+    prisma.domain.findMany({     where: { applicationId, orgId }, select: { id: true } }),
+  ]);
+
+  const repoIds      = repos.map((r) => r.id);
+  const containerIds = containers.map((c) => c.id);
+  const domainIds    = domains.map((d) => d.id);
+
+  if (repoIds.length === 0 && containerIds.length === 0 && domainIds.length === 0) {
+    return { orgId, findingsConsidered: 0, bridgeMatches: 0, groupsFormed: 0, durationMs: Date.now() - started };
+  }
+
   const findings = await prisma.finding.findMany({
     where: {
       orgId,
-      status: { not: "FALSE_POSITIVE" },  // FPs stay out of the chain
+      status: { not: "FALSE_POSITIVE" },
+      OR: [
+        { repositoryId: { in: repoIds } },
+        { containerId:  { in: containerIds } },
+        { domainId:     { in: domainIds } },
+      ],
     },
-    // The bridges only need a subset of fields — but Prisma `select` makes
-    // the query more brittle. We accept the wider shape for v1.
   });
 
   if (findings.length === 0) {
@@ -77,18 +140,14 @@ export async function runCorrelationForOrg(orgId: string): Promise<CorrelationRu
 
   const ctx = await buildContext(orgId);
 
-  // ── Stage 1: bridge sweep ─────────────────────────────────────────────
-  // Edges as adjacency lists keyed by finding id. Each entry holds the
-  // serialised match record so we don't recompute when persisting.
   const edges = new Map<string, PersistedEdge[]>();
   const uf    = new UnionFind<string>();
-
   let bridgeMatches = 0;
 
   for (let i = 0; i < findings.length; i++) {
     const a = findings[i];
     if (!a) continue;
-    uf.find(a.id);    // ensure self in the structure
+    uf.find(a.id);
     for (let j = i + 1; j < findings.length; j++) {
       const b = findings[j];
       if (!b) continue;
@@ -99,26 +158,17 @@ export async function runCorrelationForOrg(orgId: string): Promise<CorrelationRu
         appendEdge(edges, a.id, { toFindingId: b.id, ...m });
         appendEdge(edges, b.id, { toFindingId: a.id, ...m });
         uf.union(a.id, b.id);
-        // Multiple bridge matches between the same pair are allowed —
-        // the graph UI shows the strongest as the edge label. Don't
-        // break here; future scoring will use the full edge set.
       }
     }
   }
 
-  // ── Stage 2: union-find → groupId ─────────────────────────────────────
-  // Group root id used as the chain id (stable as long as the lowest
-  // member id stays present; when it disappears via deletion, the group
-  // re-keys on next sweep — acceptable churn).
   const writes: Promise<unknown>[] = [];
   const groupIds = new Set<string>();
-
   for (const f of findings) {
     const root = uf.find(f.id);
     const isInChain = edges.has(f.id);
     const groupId = isInChain ? root : null;
     if (groupId) groupIds.add(groupId);
-
     writes.push(
       prisma.finding.update({
         where: { id: f.id },
@@ -139,6 +189,55 @@ export async function runCorrelationForOrg(orgId: string): Promise<CorrelationRu
     groupsFormed:       groupIds.size,
     durationMs:         Date.now() - started,
   };
+}
+
+/**
+ * Clear correlation fields on findings whose target asset has no
+ * applicationId. Without this, findings stamped during Phase 27 would
+ * retain stale chain ids forever after the Phase 27.5 boundary lands.
+ */
+async function clearUnassignedFindings(orgId: string): Promise<number> {
+  // Build the set of asset IDs that ARE assigned (so we exclude their
+  // findings from the clear).
+  const [assignedRepos, assignedContainers, assignedDomains] = await Promise.all([
+    prisma.repository.findMany({ where: { orgId, applicationId: { not: null } }, select: { id: true } }),
+    prisma.container.findMany({  where: { orgId, applicationId: { not: null } }, select: { id: true } }),
+    prisma.domain.findMany({     where: { orgId, applicationId: { not: null } }, select: { id: true } }),
+  ]);
+
+  const assignedRepoIds      = assignedRepos.map((r) => r.id);
+  const assignedContainerIds = assignedContainers.map((c) => c.id);
+  const assignedDomainIds    = assignedDomains.map((d) => d.id);
+
+  // Findings to clear: anything with a non-null correlationGroupId whose
+  // target asset isn't in the assigned set.
+  const result = await prisma.finding.updateMany({
+    where: {
+      orgId,
+      correlationGroupId: { not: null },
+      OR: [
+        { AND: [
+          { repositoryId: { not: null } },
+          { repositoryId: { notIn: assignedRepoIds.length > 0 ? assignedRepoIds : ["__none__"] } },
+        ]},
+        { AND: [
+          { containerId: { not: null } },
+          { containerId: { notIn: assignedContainerIds.length > 0 ? assignedContainerIds : ["__none__"] } },
+        ]},
+        { AND: [
+          { domainId: { not: null } },
+          { domainId: { notIn: assignedDomainIds.length > 0 ? assignedDomainIds : ["__none__"] } },
+        ]},
+      ],
+    },
+    data: {
+      correlationGroupId:    null,
+      correlationEdges:      null,
+      correlationComputedAt: new Date(),
+    },
+  });
+
+  return result.count;
 }
 
 /**

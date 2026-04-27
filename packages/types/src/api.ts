@@ -1,4 +1,13 @@
-import type { Confidence, FindingStatus, PentestDepth, Priority, ScanType, TicketStatus } from "./enums.js";
+import type {
+  ApplicationEnv,
+  Confidence,
+  Criticality,
+  FindingStatus,
+  PentestDepth,
+  Priority,
+  ScanType,
+  TicketStatus,
+} from "./enums.js";
 
 // ── Generic wrappers ──────────────────────────────────────────────────────
 
@@ -107,6 +116,46 @@ export interface UpdateDomainAssetLinksRequest {
   servesContainerIds?: string[];
 }
 
+// ── Applications (Phase 27.5) ─────────────────────────────────────────────
+// CRUD + component-assignment endpoints under /api/applications.
+// All ADMIN+ for mutations; reads are VIEWER+.
+
+export interface CreateApplicationRequest {
+  name:         string;
+  slug?:        string;            // optional; auto-derived from name if omitted
+  description?: string;
+  environment?: ApplicationEnv;    // default PRODUCTION
+  criticality?: Criticality;       // default MEDIUM
+  owner?:       string;
+}
+
+export interface UpdateApplicationRequest {
+  name?:        string;
+  slug?:        string;
+  description?: string | null;
+  environment?: ApplicationEnv;
+  criticality?: Criticality;
+  owner?:       string | null;
+}
+
+/**
+ * PATCH /api/applications/:id/components — bulk assign assets to this app.
+ * Each array REPLACES the current set for its kind (i.e. the operator decides
+ * the full membership in one call). Pass an empty array to clear; omit a
+ * field to leave that kind untouched. Cross-org references rejected.
+ */
+export interface UpdateApplicationComponentsRequest {
+  repositoryIds?: string[];
+  containerIds?:  string[];
+  domainIds?:     string[];
+}
+
+export interface ApplicationComponentsResponse {
+  repositories: Array<{ id: string; fullName: string }>;
+  containers:   Array<{ id: string; imageRef: string }>;
+  domains:      Array<{ id: string; domain:  string }>;
+}
+
 /**
  * Response shape for any asset-link PATCH — returns the updated relation set
  * for that asset only. UI re-renders chips from this; full asset is fetched
@@ -165,6 +214,10 @@ export interface FindingFilterParams {
   repoId?: string;
   containerId?: string;
   domainId?: string;
+  /** Phase 27.5 — filter findings to one or more applications. Resolves to
+   *  "any finding whose target asset is in this application." Comma-separated
+   *  string for the URL form, or string[] in JSON. */
+  applicationId?: string | string[];
   scanner?: string;
   search?: string;
   page?: number;

@@ -1,5 +1,7 @@
 import type {
+  ApplicationEnv,
   Confidence,
+  Criticality,
   FindingStatus,
   IntegrationType,
   OrgType,
@@ -66,6 +68,8 @@ export interface Repository {
    * CVE/runtime findings on the produced containers.
    */
   buildsContainerImages?: string[];
+  /** Phase 27.5 — Application boundary; null until operator assigns. */
+  applicationId?: string | null;
 }
 
 export interface Container {
@@ -87,6 +91,8 @@ export interface Container {
   sourceRepositoryId?: string | null;
   /** Phase 27 Slice A — domain IDs that route requests to this container. */
   deployedAtDomainIds?: string[];
+  /** Phase 27.5 — Application boundary; null until operator assigns. */
+  applicationId?: string | null;
 }
 
 export interface Domain {
@@ -109,6 +115,29 @@ export interface Domain {
   activeRecordingUrls?: number | null;
   /** Phase 27 Slice A — container IDs that answer requests at this hostname. */
   servesContainerIds?: string[];
+  /** Phase 27.5 — Application boundary; null until operator assigns. */
+  applicationId?: string | null;
+}
+
+// ── Phase 27.5 — Application boundary ────────────────────────────────────
+export interface Application {
+  id:          string;
+  orgId:       string;
+  name:        string;
+  slug:        string;
+  description: string | null;
+  environment: ApplicationEnv;
+  criticality: Criticality;
+  owner:       string | null;
+  createdAt:   Date | string;
+  updatedAt:   Date | string;
+  // Computed counts (only present on detail responses)
+  componentCounts?: {
+    repositories: number;
+    containers:   number;
+    domains:      number;
+  };
+  findingCounts?: FindingCounts;
 }
 
 export interface SubdomainDiscovery {

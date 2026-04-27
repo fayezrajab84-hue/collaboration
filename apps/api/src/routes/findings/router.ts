@@ -111,6 +111,39 @@ router.get("/", async (req, res, next) => {
     if (targetOr.length === 1)      andClauses.push(targetOr[0]!);
     else if (targetOr.length > 1)   andClauses.push({ OR: targetOr });
 
+    // Phase 27.5 — Application filter. Resolves to "any finding whose target
+    // asset belongs to one of the given applications." Composes with the
+    // explicit target filters above (both apply if both passed).
+    const applicationIds = multi(q["applicationId"]);
+    if (applicationIds) {
+      const [appRepos, appContainers, appDomains] = await Promise.all([
+        prisma.repository.findMany({
+          where:  { orgId: member.orgId, applicationId: { in: applicationIds } },
+          select: { id: true },
+        }),
+        prisma.container.findMany({
+          where:  { orgId: member.orgId, applicationId: { in: applicationIds } },
+          select: { id: true },
+        }),
+        prisma.domain.findMany({
+          where:  { orgId: member.orgId, applicationId: { in: applicationIds } },
+          select: { id: true },
+        }),
+      ]);
+      const appOr: Array<Record<string, unknown>> = [];
+      if (appRepos.length      > 0) appOr.push({ repositoryId: { in: appRepos.map((r) => r.id) } });
+      if (appContainers.length > 0) appOr.push({ containerId:  { in: appContainers.map((c) => c.id) } });
+      if (appDomains.length    > 0) appOr.push({ domainId:     { in: appDomains.map((d) => d.id) } });
+      if (appOr.length === 0) {
+        // Filter requested but no assets match — return zero findings cleanly.
+        andClauses.push({ id: "__no_match__" });
+      } else if (appOr.length === 1) {
+        andClauses.push(appOr[0]!);
+      } else {
+        andClauses.push({ OR: appOr });
+      }
+    }
+
     if (q["search"]) {
       andClauses.push({ OR: [
         { title:       { contains: q["search"] as string, mode: "insensitive" } },

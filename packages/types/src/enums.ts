@@ -5,6 +5,10 @@ export type ScanType =
 
 // Phase 28 Slice A — Wazuh agent health.
 export type AgentStatus = "HEALTHY" | "STALE" | "OFFLINE" | "UNKNOWN";
+
+// Phase 27.5 — Application boundary for correlation.
+export type ApplicationEnv = "DEVELOPMENT" | "STAGING" | "PRODUCTION";
+export type Criticality    = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
 export type PentestDepth = "QUICK" | "STANDARD" | "AGGRESSIVE";
 export type Confidence = "CONFIRMED" | "LIKELY" | "POSSIBLE";
 

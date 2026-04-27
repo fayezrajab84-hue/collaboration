@@ -230,6 +230,39 @@ export const ROLE_CONTRACT: readonly RoleProtectedAction[] = [
     ui:          { file: "apps/web/src/components/AssetLinksPanel.tsx", affordance: "DomainAssetLinksPanel multi-select (inside Can role=ADMIN wrapper)" },
   },
 
+  // ── Phase 27.5 — Application boundary CRUD ──
+  // ADMIN+ on every mutation because Application membership decides which
+  // findings get correlated together — mis-assignment corrupts the chain
+  // graph for the whole org.
+  {
+    id:          "create-application",
+    description: "Create a new Application boundary for correlation (Phase 27.5)",
+    minRole:     "ADMIN",
+    api:         { method: "POST", path: "/api/applications" },
+    ui:          { file: "apps/web/src/pages/ApplicationsPage.tsx", affordance: "Create application button (Can role=ADMIN)" },
+  },
+  {
+    id:          "update-application",
+    description: "Edit Application metadata (name / env / criticality / owner)",
+    minRole:     "ADMIN",
+    api:         { method: "PATCH", path: "/api/applications/:id" },
+    ui:          { file: "apps/web/src/pages/ApplicationsPage.tsx", affordance: "Edit application action (Can role=ADMIN)" },
+  },
+  {
+    id:          "delete-application",
+    description: "Delete an Application; un-assigns its components (assets stay)",
+    minRole:     "ADMIN",
+    api:         { method: "DELETE", path: "/api/applications/:id" },
+    ui:          { file: "apps/web/src/pages/ApplicationsPage.tsx", affordance: "Delete application action (Can role=ADMIN)" },
+  },
+  {
+    id:          "assign-application-components",
+    description: "Bulk-assign Repository / Container / Domain rows to an Application",
+    minRole:     "ADMIN",
+    api:         { method: "PATCH", path: "/api/applications/:id/components" },
+    ui:          { file: "apps/web/src/pages/ApplicationsPage.tsx", affordance: "Components assignment (Can role=ADMIN)" },
+  },
+
   // ── SECURITY tier — finding triage / risk acceptance ──
 
   {
