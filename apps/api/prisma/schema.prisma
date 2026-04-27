@@ -682,10 +682,76 @@ model Finding {
   container  Container?   @relation(fields: [containerId], references: [id])
   domain     Domain?      @relation(fields: [domainId], references: [id])
   ticket     Ticket?
+  // Phase 16 compliance mapping — many-to-many to ComplianceControl via the
+  // FindingControl join table. Computed on-demand by the mapping service
+  // (CWE → control rules) and persisted so dashboards can JOIN cheaply.
+  complianceMappings FindingControl[]
 
   @@index([orgId, severity, status])
   @@index([orgId, scanType])
   @@index([fingerprint])
+  @@index([cweId])  // Phase 16 — fast CWE-based mapping lookups
+}
+
+// ── Compliance framework mapping (Phase 16) ───────────────────────────────
+// Auditor-facing layer — maps every Finding to one or more ComplianceControls
+// across multiple frameworks (SOC 2, OWASP Top 10, PCI DSS). Frameworks are
+// modelled as an enum (closed set, low churn); controls are rows so we can
+// add / amend / re-categorise without a schema change.
+
+enum ComplianceFramework {
+  SOC2
+  OWASP_TOP_10
+  PCI_DSS
+  // ISO_27001, NIST_CSF, HIPAA can be added without code changes — extend
+  // the enum + insert ComplianceControl rows + the dashboards index by
+  // framework so they appear automatically.
+}
+
+model ComplianceControl {
+  id           String              @id @default(cuid())
+  framework    ComplianceFramework
+  code         String              // SOC2: "CC6.1" · OWASP: "A01:2021" · PCI: "Req-6.5.1"
+  name         String              // human-readable
+  description  String              @db.Text
+  category     String?             // optional grouping (e.g. SOC2 "Common Criteria 6 — Logical Access")
+  // CWE IDs that satisfy this control, stored as ints (the CWE number without
+  // the "CWE-" prefix). Source mapping documented in the seed script.
+  cweIds       Int[]               @default([])
+  // Free-form keyword matches for findings without a CWE (DAST output
+  // sometimes lacks one). Falls back to title-substring search in the
+  // mapping service.
+  keywordTags  String[]            @default([])
+  // Display order within a framework (lets us list CC6.1, CC6.2, ... in
+  // sequence even though codes sort weirdly as strings).
+  sortOrder    Int                 @default(0)
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  findingMappings FindingControl[]
+
+  @@unique([framework, code])
+  @@index([framework, sortOrder])
+}
+
+// Many-to-many bridge between Finding and ComplianceControl. Populated by
+// complianceMappingService (CWE → controls + keyword fallback). Re-computed
+// when a Finding is created/updated, or via a manual backfill of existing
+// findings after a CWE-mapping rule change.
+model FindingControl {
+  id              String   @id @default(cuid())
+  findingId       String
+  controlId       String
+  // Why this finding maps to this control — "cwe-match" | "keyword" | "manual"
+  // (manual is reserved for future SECURITY-tier override).
+  matchReason     String
+  createdAt       DateTime @default(now())
+
+  finding         Finding           @relation(fields: [findingId], references: [id], onDelete: Cascade)
+  control         ComplianceControl @relation(fields: [controlId], references: [id], onDelete: Cascade)
+
+  @@unique([findingId, controlId])
+  @@index([controlId])
 }
 
 model Ticket {
