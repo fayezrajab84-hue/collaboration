@@ -110,6 +110,15 @@ const COMMON_NOISE = new Set([
   // "vulnerabilities" — that's the bug Phase 27.5.x fixes.
   "vulnerabilities", "vulnerability", "vulns", "challenges",
   "examples", "example", "demo", "demos", "samples", "sample",
+  // Security-level / difficulty words used by DVWA, WebGoat, OWASP Bricks
+  // etc. as structural labels (e.g. `bac/source/low.php` and
+  // `open_redirect/source/low.php` both contain `low` but describe
+  // unrelated bugs). Treating them as noise prevents the cross-feature
+  // chain merging this surfaced.
+  "low", "medium", "high", "impossible", "easy", "hard",
+  // Root/default markers — `index.php` matching `index.ts` across
+  // unrelated routes is almost always coincidence, not a real link.
+  "index", "default", "main", "home",
 ]);
 
 function urlContainsFileToken(url: string, filePath: string): boolean {

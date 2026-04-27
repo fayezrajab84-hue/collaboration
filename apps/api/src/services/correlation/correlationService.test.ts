@@ -172,6 +172,21 @@ describe("routeBridge.urlContainsFileToken", () => {
     )).toBe(true);
   });
 
+  it("treats DVWA security-level words (low/medium/high/impossible) as noise", () => {
+    // Two unrelated bugs both have `source/low.php` in their path. Without
+    // adding `low` to the noise list, the chain merger collapsed them into
+    // one chain via the shared (but meaningless) token. The fix:
+    expect(urlContainsFileToken(
+      "http://dvwa/vulnerabilities/open_redirect/source/low.php?redirect=x",
+      "vulnerabilities/bac/source/low.php",
+    )).toBe(false);
+    // But the SAME-feature link should still hold (same vuln-type token):
+    expect(urlContainsFileToken(
+      "http://dvwa/vulnerabilities/bac/source/low.php",
+      "vulnerabilities/bac/source/low.php",
+    )).toBe(true);
+  });
+
   it("strips file extensions from URL segments before matching", () => {
     // Phase 27.5.x bug: `/login.php` URL never matched `login.php` SAST
     // file path because URL token was `login.php` (with extension) but
