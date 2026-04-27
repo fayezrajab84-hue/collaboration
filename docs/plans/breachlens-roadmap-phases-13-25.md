@@ -416,6 +416,36 @@ Full scope: [`docs/plans/phase-28-runtime-detection.md`](./phase-28-runtime-dete
 
 ---
 
+### Phase 28.5 — Network + database visibility (Wazuh log sources extending the chain) ❌ *(DIFFERENTIATOR, completes the traffic path, ~3-4 weeks)*
+
+**Sequenced after Phase 28** (Wazuh ingestion pipeline must exist) and **composes on Phase 27** (asset graph + correlation engine — new bridges plug in).
+
+Phase 28 catches what runs *inside* the container; Phase 28.5 closes the traffic path before (firewall → WAF → load balancer) and after (database → egress). Without it the chain dead-ends at the container; with it the chain spans `185.x.x.x → firewall → WAF → LB → app → DB → exfil destination` with every hop reconstructable from real log evidence.
+
+**The killshot use case — WAF bypass detection.** Every enterprise that owns a WAF lives with the same anxiety: "is our WAF actually blocking what it's supposed to?" Today they only find out *after* the breach. With Phase 28.5, BreachLens correlates WAF allow/block decisions against app-tier alerts: WAF said ALLOWED + container shell-spawned on same path = **WAF BYPASSED**, surfaced in real time. No WAF vendor, no SIEM, no scanner ships this correlation today.
+
+Four slices, ~3000 lines, ~3-4 weeks total (recommend ship order B → C → A → D so the killshot validates the architecture first):
+
+- **A — Firewall log ingestion (3-5 days):** pfsense / iptables / AWS VPC Flow Logs / Azure NSG / GCP VPC. Both inbound (attacker→infra) and outbound (compromise→C2). Threat intel enrichment via Wazuh's built-in modules (AbuseIPDB, Spamhaus, TOR exit list).
+- **B — WAF log ingestion + bypass detection bridge (4-6 days, killshot):** AWS WAF / Cloudflare / Azure WAF / ModSecurity / Akamai. New `wafBypassBridge` for Phase 27. New `Finding` subtypes `waf.bypass.confirmed` + `waf.blindspot.suspected` (POSSIBLE confidence to start). Operator playbook: "you found a WAF bypass — here's what to do in the next 4 hours."
+- **C — Database log ingestion (3-4 days):** MySQL audit / pgaudit / MongoDB / RDS / Aurora / Azure SQL. Anomaly rules: bulk result-set (10× rolling median), privileged-user new-geolocation, schema change outside maintenance window. New `Database` asset type (covers both self-hosted DB containers AND cloud-managed via Phase 18 CSPM RDS discovery). New `dbAccessBridge` for Phase 27.
+- **D — Network-tier asset model + Phase 27 wiring + unified Network UI (3-4 days):** new `Firewall` / `Waf` / `LoadBalancer` / `Database` asset types in Phase 27's graph; all bridges from A-C registered with the correlation engine; `egressC2Bridge` for compromise+exfil chains; new `/network` top-level page with tier-by-tier health row + WAF Bypasses pinned at top.
+
+**Coverage matrix vs incumbents (post-27 + 28 + 28.5):**
+
+| Tool | Static | Active | Runtime | Network | Database | Cloud | Correlated chain |
+|---|---|---|---|---|---|---|---|
+| Snyk | ✅ | partial | ❌ | ❌ | ❌ | partial | ❌ |
+| Wiz | partial | ❌ | ✅ | partial | partial | ✅ | ✅ cloud-only |
+| Aqua / Sysdig | ❌ | ❌ | ✅ | partial | ❌ | partial | partial |
+| **BreachLens (post-27 + 28 + 28.5)** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | **✅ all six tiers** |
+
+**Strategic position:** doesn't open a new category; deepens the runtime + correlation story Phase 27 + 28 already opened. Phase 28 made BreachLens appealing to security engineers; Phase 28.5 makes it appealing to SOC teams — they now have one pane-of-glass for static + active + runtime + network + database + cloud that they currently piece together from 4-6 separate tools. **Honest caveat**: Wazuh volume at enterprise log rates needs Wazuh cluster mode (overlaps Phase 25); each new log source adds operational onboarding cost; bypass detection ships at `confidence=POSSIBLE` to manage false-positive trust loss.
+
+Full scope: [`docs/plans/phase-28.5-network-and-database-visibility.md`](./phase-28.5-network-and-database-visibility.md). Six open questions to settle before Slice B (operator topology declaration UX, cross-tier time-window tolerance, cloud-managed DB cost-vs-coverage, WAF bypass false-positive suppression, egress visibility scope, log volume + retention policy).
+
+---
+
 ## GTM-optimized sequenced timeline
 
 | Month | Focus | Phases | Why this slot |
@@ -426,7 +456,8 @@ Full scope: [`docs/plans/phase-28-runtime-detection.md`](./phase-28-runtime-dete
 | 4 | **Refresh the differentiator + close the fix loop** | 24 + 17 | Pentest depth keeps demos sharp; auto-PRs close the "devs don't fix" gap |
 | 5 | **Category expansion** | 18 (AWS-only first cut) | Biggest single category expansion (CSPM); start with AWS to scope down |
 | 6 | **The unified pitch becomes real** | 27 + 28 | Phase 27 connects repo→container→domain→cloud into one correlated chain; Phase 28 adds runtime as the fourth act ("someone tried to exploit it 4 min ago — Wazuh caught it"). Together: the only product that spans static + active + runtime + cloud in one demo. Closes Wiz + Snyk + Aqua bake-offs simultaneously. |
-| 7 | **Coverage + adoption** | 19 + 20 + 21 | K8s easy win; API security newer differentiator; IDE for dev adoption funnel |
+| 7 | **The full traffic path** | 28.5 | Extends the correlated chain across firewall → WAF → LB → app → DB → egress. WAF-bypass detection (Slice B) is the killshot demo no incumbent ships. Closes the SOC-team story — one pane-of-glass replaces 4-6 separate tools. |
+| 8 | **Coverage + adoption** | 19 + 20 + 21 | K8s easy win; API security newer differentiator; IDE for dev adoption funnel |
 | Later (SaaS-only) | **SaaS scale** | 25 | Only when going multi-tenant SaaS — defer for self-host deployments |
 | Later (research moat) | **AI-driven discovery** | 26 | Waits on Mythos public API + Phase 14 reachability for cost-effective scoping. Plumbing is hours when ready. |
 
