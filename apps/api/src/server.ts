@@ -5,6 +5,7 @@ import prisma from "./db.js";
 import { initWorkers } from "./workers/scanWorker.js";
 import { initFpSweepWorker, scheduleFpSweep } from "./workers/fpSweepWorker.js";
 import { initAiTriageWorker } from "./workers/aiTriageWorker.js";
+import { initWazuhIngestWorker, scheduleWazuhIngest } from "./workers/wazuhIngestWorker.js";
 import { startRecordingIdleSweeper } from "./services/recordingService.js";
 
 async function start() {
@@ -25,6 +26,12 @@ async function start() {
 
   // Initialize AI triage worker (pre-populates analysis + fix for new findings)
   initAiTriageWorker();
+
+  // Phase 28 Slice A — Wazuh runtime ingestion. Worker is always initialised
+  // so the schedule lives in Redis; the service no-ops gracefully when
+  // WAZUH_API_URL is unset, so this is safe in environments without Wazuh.
+  initWazuhIngestWorker();
+  await scheduleWazuhIngest();
 
   // Sweep idle DAST recording sessions (60min idle / 4hr hard cap)
   startRecordingIdleSweeper();

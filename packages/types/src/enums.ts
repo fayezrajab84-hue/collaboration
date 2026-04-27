@@ -1,5 +1,11 @@
-export type ScanType = "SAST" | "SCA" | "SECRET" | "IAC" | "CONTAINER" | "DAST" | "PENTEST" | "PENTEST_FULL";
-export type PentestDepth = "STANDARD" | "AGGRESSIVE";
+export type ScanType =
+  | "SAST" | "SCA" | "SECRET" | "IAC" | "CONTAINER" | "DAST" | "PENTEST" | "PENTEST_FULL"
+  // Phase 28 Slice A — Wazuh runtime alerts ingested as Findings.
+  | "RUNTIME";
+
+// Phase 28 Slice A — Wazuh agent health.
+export type AgentStatus = "HEALTHY" | "STALE" | "OFFLINE" | "UNKNOWN";
+export type PentestDepth = "QUICK" | "STANDARD" | "AGGRESSIVE";
 export type Confidence = "CONFIRMED" | "LIKELY" | "POSSIBLE";
 
 export type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";

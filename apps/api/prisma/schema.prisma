@@ -36,6 +36,23 @@ enum ScanType {
   DAST
   PENTEST
   PENTEST_FULL
+  // Phase 28 Slice A — runtime detection. Wazuh agents on hosts/containers
+  // emit syscall / FIM / command-exec / network / vulnerability alerts; the
+  // ingestion service polls Wazuh and creates RUNTIME findings. Continuous,
+  // not point-in-time — `firstSeen` and `lastSeen` track the rolling window.
+  RUNTIME
+}
+
+// Phase 28 Slice A — health of a Wazuh agent attached to this org.
+//   HEALTHY  — last heartbeat within 2 minutes
+//   STALE    — heartbeat 2-10 minutes ago (warning band)
+//   OFFLINE  — heartbeat older than 10 minutes (assume dead)
+//   UNKNOWN  — never reported, just enrolled
+enum AgentStatus {
+  HEALTHY
+  STALE
+  OFFLINE
+  UNKNOWN
 }
 
 enum RecordingStatus {
@@ -584,6 +601,49 @@ model SubdomainDiscovery {
 
   @@unique([domainId, subdomain])
   @@index([domainId])
+}
+
+// ── Phase 28 Slice A — runtime detection / Wazuh agents ───────────────────
+//
+// One row per Wazuh agent that's enrolled and reporting to a manager
+// configured for this BreachLens org. The ingestion service polls Wazuh
+// every 60s, transforms alerts into Finding rows (scanType=RUNTIME), and
+// updates lastHeartbeatAt + lastAlertAt here so the UI can show "live"
+// agent health without re-querying Wazuh on every page load.
+//
+// linkedContainerId is operator-declared (Phase 27 Slice A asset graph) and
+// lets the correlation engine bridge a runtime alert to existing static
+// findings on the same container — the killshot Phase 28 demo.
+//
+// We deliberately do NOT cascade-delete from Container because Wazuh agents
+// outlive container recreations; if a container is removed from BreachLens,
+// the agent stays enrolled at the Wazuh manager and the linkage is just
+// blanked (set null) — operator can re-link to the new Container row.
+model WorkloadAgent {
+  id                String       @id @default(cuid())
+  orgId             String
+  // Wazuh's assigned numeric agent ID (e.g. "001"). Unique per Wazuh manager;
+  // we scope by (orgId, wazuhAgentId) so two orgs sharing the same manager
+  // see only their own agents (multi-tenant Wazuh — Phase 28.x concern).
+  wazuhAgentId      String
+  wazuhAgentName    String       // human-readable: hostname or container name
+  // Optional Phase 27 graph link — operator declares which Container this
+  // agent monitors. Null when the operator hasn't decided yet.
+  linkedContainerId String?
+  status            AgentStatus  @default(UNKNOWN)
+  lastHeartbeatAt   DateTime?
+  lastAlertAt       DateTime?
+  // Wazuh agent version reported on enrolment. Useful for upgrade tracking
+  // when a CVE drops in the agent itself.
+  agentVersion      String?
+  // Last error message from the ingestion poller (if poll failed). Cleared
+  // on the next successful poll so the UI only ever shows live problems.
+  lastIngestError   String?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  @@unique([orgId, wazuhAgentId])
+  @@index([orgId, status])
 }
 
 model ScanJob {

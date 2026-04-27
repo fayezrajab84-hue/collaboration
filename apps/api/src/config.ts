@@ -25,6 +25,18 @@ const envSchema = z.object({
   GITHUB_APP_PRIVATE_KEY:    z.string().optional(), // PEM contents (literal \n preserved)
   GITHUB_APP_WEBHOOK_SECRET: z.string().optional(),
   GITHUB_APP_SLUG:           z.string().optional(),
+  // Phase 28 Slice A — Wazuh runtime ingestion. All optional; ingestion
+  // service no-ops when WAZUH_API_URL is unset, so the rest of the platform
+  // works for environments without Wazuh deployed. When set, the service
+  // polls every WAZUH_POLL_INTERVAL_SECONDS for alerts on enrolled agents
+  // and creates RUNTIME findings.
+  WAZUH_API_URL:                z.string().url().optional(),
+  WAZUH_API_USER:               z.string().optional(),
+  WAZUH_API_PASSWORD:           z.string().optional(),
+  WAZUH_POLL_INTERVAL_SECONDS:  z.coerce.number().int().min(30).default(60),
+  // For tests / dev: skip TLS validation against Wazuh's self-signed certs.
+  // Defaults to false (strict TLS) in production.
+  WAZUH_INSECURE_TLS:           z.coerce.boolean().default(false),
 });
 
 const parsed = envSchema.safeParse(process.env);

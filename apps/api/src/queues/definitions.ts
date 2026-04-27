@@ -18,7 +18,7 @@ export interface ScanJobPayload {
   domain?: string;
   // PENTEST_FULL extras
   selectedSubdomains?: string[];
-  pentestDepth?: "STANDARD" | "AGGRESSIVE";
+  pentestDepth?: "QUICK" | "STANDARD" | "AGGRESSIVE";
   // Authenticated scan — domain auth config id (looked up + decrypted in worker)
   domainAuthConfigId?: string;
   // Interactive provenance — recorded ZAP context to active-scan against.
@@ -73,6 +73,19 @@ export const fpSweepQueue = new Queue("fp-sweep", {
   defaultJobOptions: {
     removeOnComplete: 10,
     removeOnFail:     20,
+  },
+});
+
+// ── Wazuh ingestion queue (Phase 28 Slice A) ──────────────────────────────────
+// Recurring job (default 60s) — pulls Wazuh alerts and turns them into
+// scanType=RUNTIME findings. The worker no-ops gracefully when WAZUH_API_URL
+// is not configured, so unblocking the env var alone enables ingestion.
+export const wazuhIngestQueue = new Queue("wazuh-ingest", {
+  connection: bullRedis,
+  defaultJobOptions: {
+    // Poll history is mostly noise — keep tail short.
+    removeOnComplete: 20,
+    removeOnFail:     50,
   },
 });
 
