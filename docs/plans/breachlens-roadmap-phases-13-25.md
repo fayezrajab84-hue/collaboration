@@ -285,6 +285,46 @@ Closes the Phase 22 gap that bites Entra-federated-GitHub-Enterprise customers: 
 
 **Strategic position:** Anthropic ships the pickaxe (Mythos), BreachLens ships the mine. When customers want LLM-driven discovery integrated with their existing scanner pipeline + audit trail + ticketing + RBAC, BreachLens is structurally positioned to integrate it — Mythos has no operational wrapper.
 
+### Wishlist — adjacent AI-pentest ideas to fold in when picking up Phase 26
+
+Surfaced from the *open-source AI pentest / red-team* survey (Apr 2026):
+HexStrike AI, Shannon, PentestAgent. None are revenue-shaped on their
+own; all reinforce the "decision compression" thesis Phase 26 already
+sits on. Group them here so they're not lost; pick whichever lights up
+once Mythos lands.
+
+- **HITL pentest mode (PentestAgent-style Assist / Agent / Crew tiers)** —
+  half-day add. Today PENTEST_FULL is fully autonomous; regulated
+  buyers want supervised mode where the operator approves before each
+  phase (especially Phase 4 Exploit). Schema: `Domain.pentestMode = AUTO
+  | SUPERVISED`; orchestrator pauses + emits an approval event between
+  phases when SUPERVISED. Cheap, differentiates against
+  fire-and-forget AI pentest tools, and matches the *human keeps
+  decision authority* framing customers actually trust.
+- **MCP exposure of BreachLens tools (HexStrike-style)** — ~1 day.
+  Expose `triggerScan`, `getFindings`, `runPentestPhase`,
+  `createSuppression` etc. as MCP tools so other AI pentest frameworks
+  (HexStrike, future agents) can drive BreachLens. Repositions
+  BreachLens as a *substrate* for AI agents rather than just a tool.
+  Low procurement value, very high strategic value if the AI-agent
+  pentest pattern becomes the standard.
+- **Knowledge-graph / persistent memory of org assets + past findings** —
+  the pattern under all three surveyed tools. BreachLens partially
+  has this (`Finding.fingerprint` dedup) but not at the "this asset
+  was vulnerable last quarter, retest first" level. Fits naturally
+  alongside Phase 14 reachability — both want a graph of
+  asset-to-finding-to-fix-to-retest history.
+- **White-box pentest mode (Shannon-style — combine SAST signal +
+  live exploitation)** — feeds an AI a SAST-discovered candidate and
+  has it attempt live exploitation through ZAP / sqlmap / dalfox,
+  closing the loop from "this might be vulnerable" → "here's the
+  working exploit" automatically. Composes well with the existing
+  Proof of Exploit pattern.
+
+When Phase 26 picks up, decide which of these belong inside it (likely
+HITL + KG) vs which deserve their own follow-on (MCP exposure is its
+own play, white-box mode is closer to Phase 24 than 26).
+
 ---
 
 ## GTM-optimized sequenced timeline
