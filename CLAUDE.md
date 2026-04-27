@@ -442,6 +442,88 @@ docker run --rm --network admiring-hertz_internal --entrypoint python \
 
 ---
 
+## Attack-path correlation (`apps/api/src/services/correlation/`)
+
+Phase 27 + 27.5 + 27.5.x shipped a bridge engine + Application boundary
+that links findings across scan types into scored attack chains, with
+AI-summarised + AI-verified narratives.
+
+### Pipeline (left to right)
+
+1. **Asset graph (Phase 27 Slice A)** — operator declares
+   `Repository.buildsContainerImages[]` + `Container.{sourceRepositoryId,
+   deployedAtDomainIds[]}` + `Domain.servesContainerIds[]` via the
+   AssetLinksPanel UI on each resource's edit modal.
+2. **Application boundary (Phase 27.5)** — every asset gets an optional
+   `applicationId` foreign key; the correlation engine scopes its sweep
+   PER application via `runCorrelationForApplication(orgId, appId)`.
+   Cross-app pairs are NEVER compared. Findings on assets with
+   `applicationId = null` get `correlationGroupId` cleared explicitly.
+3. **Bridge sweep (Phase 27 Slice B + 27.5.x)** — five plugins:
+   - `cveBridge` — same `cveId` across different target types
+   - `routeBridge` — DAST/PENTEST URL token ↔ SAST file path token (with
+     a 50+ entry COMMON_NOISE list + MIN_TOKEN_LENGTH=3 + symmetric
+     `.php`/`.html`/etc extension stripping on URL segments)
+   - `portBridge` — PENTEST nmap port ↔ container EXPOSE
+   - `secretBridge` — same SHA-256 secret hash
+   - `containerExposureBridge` — CONTAINER finding ↔ DAST/PENTEST on a
+     domain the container is operator-declared to serve. **Severity-
+     gated to HIGH+ both sides** (without the gate produced 4658
+     edges → 142-node mega-chain on DVWA)
+4. **Union-find coalescing** — bridge matches stamp findings with
+   `correlationGroupId` (anchored on the chain's union-find root).
+5. **Scoring** — `attackPathService.listAttackPaths()` ranks chains via
+   `severity_max × pathLength × externalReach × proofMultiplier`.
+6. **AI narration + verification (Phase 27.5.x)** — `attackPathSummaryService`
+   bundles title + tldr + bullet narrative + verdict (LIKELY_REAL /
+   MIXED_SIGNAL / LIKELY_NOISE) + verdictReasoning into ONE AI call via
+   the existing `aiClient`. Cached on `AttackPathSummary` keyed by
+   content-hash; UI nudges to regenerate when the chain has shifted.
+
+### UI surface (`apps/web/src/pages/AttackPathsPage.tsx`)
+
+- `/applications` — list + create + per-app detail with Repos /
+  Containers / Domains tabs (Phase 27.5 Commit 2)
+- `/attack-paths` — list of scored chains with Application MultiSelect
+  filter + collapsible chain cards
+- Inside each expanded card: AI summary panel (verdict pill + bullets)
+  + per-scan-type expandable boxes (DAST / PENTEST / CONTAINER / SAST
+  / etc.) collapsed by default — operator clicks to inspect a tier.
+- Click any node → opens existing `FindingDetailDrawer` (URL-driven via
+  `?finding=<id>`)
+
+### Common gotchas worth knowing
+
+- **AI structured-output: never use `.max()` for length contract.** Models
+  reliably overshoot length budgets by 10-30%; `.max()` throws and the
+  whole call fails. Use `.transform(s => clipText(s, max))` instead.
+  See `attackPathSummaryService.ts:clipText` — sentence/word boundary
+  clip with 60% floor.
+- **Bridge tuning is iterative on real data.** Even POSSIBLE-confidence
+  bridges produce surprising chain shapes. Test against DVWA first
+  (it's in compose; create one Application, assign repo + container +
+  domain, run scans, watch chains). Expect 2-3 follow-up commits to
+  tighten any new bridge after it ships.
+- **Per-group expand state must be hoisted into the chain card.**
+  `useState` inside a child of a collapsible parent resets when the
+  parent unmounts. The `groupOpen: Record<string, boolean>` lives in
+  PathCard, passed as controlled `open` + `onToggle` to ScanTypeGroup.
+- **AI summary stays manual-trigger only.** Auto-summarising every chain
+  burns AI budget on chains nobody opens. Cached by content-hash; the
+  "Regenerate" button is the only way to re-burn the call. The list
+  endpoint pulls cached titles in one batched query — no N+1 fetches.
+- **Application boundary is the right unit, not pairwise asset relations.**
+  Phase 27 alone (without Phase 27.5) produced a 202-node mega-chain
+  spanning DVWA + WebGoat + Juice Shop because cveBridge matched on
+  shared base-image CVEs. The fix is per-Application correlation scope
+  — get the boundary right BEFORE adding more bridges.
+
+Full reference: [`docs/plans/phase-27.5-applications.md`](./docs/plans/phase-27.5-applications.md).
+Architecture lessons: see the `breachlens-correlation-engine.md` user
+memory for the detailed bridge-engine patterns.
+
+---
+
 ## Things that look like bugs but aren't
 
 - **`scanner-pentest` log shows ZAP "Empty reply from server"** — ZAP
@@ -454,6 +536,16 @@ docker run --rm --network admiring-hertz_internal --entrypoint python \
   `server.ts` has a 8s race-timeout in shutdown. Worker locks in Redis
   may briefly look stalled after dev restarts; the orphan-reaper at
   startup handles it.
+- **`/attack-paths` shows zero chains for an asset** — the asset's
+  `applicationId` is null. The correlation engine ONLY runs within
+  Application boundaries; unassigned assets never form chains. Fix:
+  `/applications` → create one → assign the asset → next scan triggers
+  inline correlation refresh, chain appears within seconds.
+- **AI summary "schema validation failed" error** — was a real bug
+  (commit `3681d22`); fixed by replacing `.max()` with `.transform()`
+  clipping. If the error reappears after a refactor, check that the
+  schema in `attackPathSummaryService.ts` still uses the transform
+  pattern, not raw `.max()`.
 
 ---
 
