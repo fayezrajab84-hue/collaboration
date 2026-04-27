@@ -316,12 +316,13 @@ function PathCard({
   // Per-group expand state lives in the parent so it survives the parent
   // toggling open/closed (otherwise the child ScanTypeGroup unmounts and
   // its useState resets to default — the operator's clicks would feel
-  // "random"). Default = ALL OPEN; the operator collapses what they don't
-  // want. Predictable beats clever here.
+  // "random"). Default = ALL COLLAPSED; the operator clicks the boxes
+  // they actually want to inspect. Keeps long chains compact at first
+  // glance while still letting the operator drill in.
   const [groupOpen, setGroupOpen] = useState<Record<string, boolean>>({});
-  const isGroupOpen = (scanType: string) => groupOpen[scanType] !== false;
+  const isGroupOpen = (scanType: string) => groupOpen[scanType] === true;
   const toggleGroup = (scanType: string) =>
-    setGroupOpen((prev) => ({ ...prev, [scanType]: prev[scanType] === false ? true : false }));
+    setGroupOpen((prev) => ({ ...prev, [scanType]: !prev[scanType] }));
   const Icon = path.hasConfirmed ? AlertTriangle : Network;
   const iconClass = path.hasConfirmed ? "text-red-400" : "text-indigo-400";
   const isToggleable = !forceExpanded;
