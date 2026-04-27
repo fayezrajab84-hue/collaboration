@@ -5,9 +5,14 @@ import { requireRole } from "../../middleware/requireRole.js";
 import prisma from "../../db.js";
 import { getActiveMembership } from "../../services/activeOrgService.js";
 import { triggerScan } from "../../services/scanService.js";
-import { generateContainerSbom } from "../../services/sbomService.js";
+import { generateContainerSbom, SBOM_FORMAT_META, type SbomFormat } from "../../services/sbomService.js";
 import { scoreTarget } from "../../services/riskScoringService.js";
 import * as audit from "../../services/auditService.js";
+import {
+  validateDomainIds,
+  validateRepositoryId,
+  isAssetLinkValidationError,
+} from "../../services/assetLinksService.js";
 import type { ScanType } from "@devsecops/types";
 
 const router = Router();
@@ -21,6 +26,14 @@ const createContainerSchema = z.object({
 const updateContainerSchema = z.object({
   imageRef: z.string().min(1).optional(),
   registry: z.string().nullable().optional(),
+});
+
+// Phase 27 Slice A — operator-declared linkage to source repo + serving domains.
+// sourceRepositoryId can be cleared by passing null; domain IDs are validated
+// against the org so cross-tenant references can't slip in.
+const containerAssetLinksSchema = z.object({
+  sourceRepositoryId:   z.string().nullable().optional(),
+  deployedAtDomainIds:  z.array(z.string().min(1)).optional(),
 });
 
 // List containers
@@ -127,6 +140,56 @@ router.delete("/:id", requireRole("ADMIN"), async (req, res, next) => {
       metadata:     { imageRef: container.imageRef },
     });
     res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// PATCH /api/containers/:id/asset-links — Phase 27 Slice A. ADMIN+ because
+// mis-declared linkage causes incorrect cross-tier correlation.
+router.patch("/:id/asset-links", requireRole("ADMIN"), async (req, res, next) => {
+  try {
+    const body = containerAssetLinksSchema.parse(req.body);
+    const user = req.user as { id: string };
+    const container = await prisma.container.findFirst({
+      where: { id: req.params["id"], orgId: req.orgId! },
+    });
+    if (!container) { res.status(404).json({ error: "Container not found" }); return; }
+
+    let sourceRepositoryId: string | null = container.sourceRepositoryId ?? null;
+    let deployedAtDomainIds: string[] = container.deployedAtDomainIds;
+
+    try {
+      if (body.sourceRepositoryId !== undefined) {
+        sourceRepositoryId = await validateRepositoryId(req.orgId!, body.sourceRepositoryId);
+      }
+      if (body.deployedAtDomainIds !== undefined) {
+        deployedAtDomainIds = await validateDomainIds(req.orgId!, body.deployedAtDomainIds);
+      }
+    } catch (e) {
+      if (isAssetLinkValidationError(e)) {
+        res.status(400).json({ error: e.message, details: e.details });
+        return;
+      }
+      throw e;
+    }
+
+    const updated = await prisma.container.update({
+      where: { id: container.id },
+      data:  { sourceRepositoryId, deployedAtDomainIds },
+      select: { sourceRepositoryId: true, deployedAtDomainIds: true },
+    });
+    await audit.log({
+      orgId:        req.orgId!,
+      userId:       user.id,
+      action:       "container.asset_links.update",
+      resourceType: "Container",
+      resourceId:   container.id,
+      metadata:     {
+        imageRef:           container.imageRef,
+        sourceRepositoryId: updated.sourceRepositoryId,
+        deployedAtDomainIds: updated.deployedAtDomainIds,
+      },
+    });
+    res.json(updated);
   } catch (err) { next(err); }
 });
 

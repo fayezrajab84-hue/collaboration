@@ -8,6 +8,7 @@ import RiskScoreBadge from "../components/RiskScoreBadge";
 import ScanStatusBadge from "../components/ScanStatusBadge";
 import FindingCountBadges from "../components/FindingCountBadges";
 import ChecksTab from "../components/ChecksTab";
+import { ContainerAssetLinksPanel } from "../components/AssetLinksPanel";
 import { useTargetScanStatus } from "../hooks/useTargetScanStatus";
 import { useToast } from "../hooks/useToast";
 import { formatRelative } from "../lib/utils";
@@ -94,7 +95,7 @@ function EditContainerModal({ container, onClose }: { container: Container; onCl
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="w-full max-w-md rounded-xl border border-gray-700 bg-gray-900 p-6 shadow-2xl">
+      <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl border border-gray-700 bg-gray-900 p-6 shadow-2xl">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-base font-semibold text-white">Edit Container Image</h2>
           <button onClick={onClose} className="text-gray-500 hover:text-gray-200"><X className="h-4 w-4" /></button>
@@ -131,6 +132,12 @@ function EditContainerModal({ container, onClose }: { container: Container; onCl
           >
             {update.isPending ? "Saving…" : "Save Changes"}
           </button>
+        </div>
+        {/* Phase 27 Slice A — operator-declared asset relations. Saved
+            independently from the imageRef/registry fields above (own Save
+            button inside the panel). */}
+        <div className="mt-6">
+          <ContainerAssetLinksPanel container={container} />
         </div>
       </div>
     </div>

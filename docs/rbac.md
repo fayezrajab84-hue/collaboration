@@ -63,6 +63,7 @@ read / write capability except OWNER's structural one:
 - Read the audit log + export it as CSV <!-- contract:view-audit-log --> <!-- contract:export-audit-csv -->
 - Export per-framework compliance evidence (CSV + printable HTML for auditors) <!-- contract:export-compliance-csv --> <!-- contract:export-compliance-html -->
 - Delete repos, containers, and domains (cascades all their findings) <!-- contract:delete-repo --> <!-- contract:delete-container --> <!-- contract:delete-domain -->
+- Declare Phase 27 asset relations — which images each repo builds, which repo+domains a container belongs to, which containers serve a domain. Mis-declared linkage causes the correlation engine to produce incorrect attack paths. <!-- contract:update-repo-asset-links --> <!-- contract:update-container-asset-links --> <!-- contract:update-domain-asset-links -->
 - Inspect the BullMQ queue, retry failed jobs, delete failed jobs <!-- contract:view-admin-queues --> <!-- contract:view-failed-jobs --> <!-- contract:retry-failed-job --> <!-- contract:delete-failed-job -->
 - Plus everything SECURITY, DEVELOPER, and VIEWER can do
 

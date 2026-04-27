@@ -403,6 +403,12 @@ model Repository {
   // Optional per-repo policy override. When null, policyService falls back to
   // the org's Policy with isDefault=true.
   policyId                String?
+  // Phase 27 Slice A — operator-declared asset relations. Stores the container
+  // image refs this repo builds (e.g. ["myorg/api:latest"]). Powers the
+  // attack-path correlation engine — "vuln in repo X is in container Y deployed
+  // at domain Z." v1 is operator-declared via the AssetLinksPanel UI; CI-based
+  // inference (Dockerfile + image-name parsing) is a Phase 27.x follow-up.
+  buildsContainerImages   String[]  @default([])
   lastScannedAt  DateTime?
   aiRiskScore    Int?      // 0-100
   aiRiskReason   String?
@@ -425,6 +431,14 @@ model Container {
   orgId          String
   imageRef       String
   registry       String?
+  // Phase 27 Slice A — operator-declared asset relations. Powers the attack-
+  // path graph: a finding on this container can be correlated upstream to
+  // the source repo that builds it, and downstream to the domains it serves.
+  // Stored as plain strings (not FK arrays) because Prisma can't model
+  // many-to-many across the same table without a join table; the resolver
+  // in correlationService walks these arrays at query time.
+  sourceRepositoryId   String?
+  deployedAtDomainIds  String[]  @default([])
   lastScannedAt  DateTime?
   aiRiskScore    Int?
   aiRiskReason   String?
@@ -454,6 +468,12 @@ model Domain {
   authorizedById  String?
   pentestDepth    PentestDepth @default(STANDARD)
   excludePaths    String[]
+  // Phase 27 Slice A — operator-declared asset relations. The container IDs
+  // that answer requests at this hostname (load-balancer fronts → multiple
+  // containers; single-container deploys → array of one). Powers attack-path
+  // chains: DAST/PENTEST finding on this domain can be correlated to the
+  // running container's CVEs and onward to the source repo.
+  servesContainerIds  String[]  @default([])
 
   org         Organization         @relation(fields: [orgId], references: [id], onDelete: Cascade)
   scans       ScanJob[]

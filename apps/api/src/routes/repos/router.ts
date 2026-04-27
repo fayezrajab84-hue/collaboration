@@ -5,12 +5,16 @@ import prisma from "../../db.js";
 import { getActiveMembership } from "../../services/activeOrgService.js";
 import * as audit from "../../services/auditService.js";
 import * as gh from "../../github/client.js";
-import { createRepoSchema, updateRepoSchema, triggerScanSchema } from "./validators.js";
+import { createRepoSchema, updateRepoSchema, triggerScanSchema, repoAssetLinksSchema } from "./validators.js";
 import { scoreTarget } from "../../services/riskScoringService.js";
 import { encrypt } from "../../services/encryptionService.js";
 import { randomBytes } from "crypto";
 import { triggerScan } from "../../services/scanService.js";
 import { generateRepoSbom, getLatestRepoSbom, SBOM_FORMAT_META, type SbomFormat } from "../../services/sbomService.js";
+import {
+  validateContainerImageRefs,
+  isAssetLinkValidationError,
+} from "../../services/assetLinksService.js";
 import type { ScanType } from "@devsecops/types";
 
 const router = Router();
@@ -193,6 +197,46 @@ router.delete("/:id", requireRole("ADMIN"), async (req, res, next) => {
       metadata:     { fullName: repo.fullName },
     });
     res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// PATCH /api/repos/:id/asset-links — Phase 27 Slice A operator-declared
+// container images this repo builds. ADMIN+ because mis-declaration could
+// cause findings to be incorrectly correlated.
+router.patch("/:id/asset-links", requireRole("ADMIN"), async (req, res, next) => {
+  try {
+    const body = repoAssetLinksSchema.parse(req.body);
+    const user = req.user as { id: string };
+    const repo = await prisma.repository.findFirst({
+      where: { id: req.params["id"], orgId: req.orgId! },
+    });
+    if (!repo) { res.status(404).json({ error: "Repository not found" }); return; }
+
+    let validated: string[];
+    try {
+      validated = await validateContainerImageRefs(req.orgId!, body.buildsContainerImages ?? []);
+    } catch (e) {
+      if (isAssetLinkValidationError(e)) {
+        res.status(400).json({ error: e.message, details: e.details });
+        return;
+      }
+      throw e;
+    }
+
+    const updated = await prisma.repository.update({
+      where: { id: repo.id },
+      data:  { buildsContainerImages: validated },
+      select: { buildsContainerImages: true },
+    });
+    await audit.log({
+      orgId:        req.orgId!,
+      userId:       user.id,
+      action:       "repo.asset_links.update",
+      resourceType: "Repository",
+      resourceId:   repo.id,
+      metadata:     { fullName: repo.fullName, buildsContainerImages: validated },
+    });
+    res.json({ buildsContainerImages: updated.buildsContainerImages });
   } catch (err) { next(err); }
 });
 

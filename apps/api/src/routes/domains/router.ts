@@ -13,6 +13,10 @@ import { encrypt, decrypt } from "../../services/encryptionService.js";
 import * as recording from "../../services/recordingService.js";
 import { countOperations, validateOpenApiShape } from "../../services/openApiUrlExtractor.js";
 import * as YAML from "yaml";
+import {
+  validateContainerIds,
+  isAssetLinkValidationError,
+} from "../../services/assetLinksService.js";
 import type { ScanType } from "@devsecops/types";
 
 const router = Router();
@@ -32,6 +36,11 @@ const createDomainSchema = z.object({
 
 const updateDomainSchema = z.object({
   domain: z.string().min(1).regex(DOMAIN_RE, "Invalid domain or hostname").optional(),
+});
+
+// Phase 27 Slice A — operator-declared linkage to backing containers.
+const domainAssetLinksSchema = z.object({
+  servesContainerIds: z.array(z.string().min(1)).optional(),
 });
 
 // List domains
@@ -122,6 +131,48 @@ router.patch("/:id", async (req, res, next) => {
     const updated = await prisma.domain.update({
       where: { id: domain.id },
       data: { ...(body.domain && { domain: body.domain }) },
+    });
+    res.json(updated);
+  } catch (err) { next(err); }
+});
+
+// PATCH /api/domains/:id/asset-links — Phase 27 Slice A. Operator declares which
+// containers serve traffic at this hostname. ADMIN+ — mis-declared linkage
+// causes incorrect cross-tier correlation.
+router.patch("/:id/asset-links", requireRole("ADMIN"), async (req, res, next) => {
+  try {
+    const body = domainAssetLinksSchema.parse(req.body);
+    const user = req.user as { id: string };
+    const domain = await prisma.domain.findFirst({
+      where: { id: req.params["id"], orgId: req.orgId! },
+    });
+    if (!domain) { res.status(404).json({ error: "Domain not found" }); return; }
+
+    let servesContainerIds: string[] = domain.servesContainerIds;
+    try {
+      if (body.servesContainerIds !== undefined) {
+        servesContainerIds = await validateContainerIds(req.orgId!, body.servesContainerIds);
+      }
+    } catch (e) {
+      if (isAssetLinkValidationError(e)) {
+        res.status(400).json({ error: e.message, details: e.details });
+        return;
+      }
+      throw e;
+    }
+
+    const updated = await prisma.domain.update({
+      where: { id: domain.id },
+      data:  { servesContainerIds },
+      select: { servesContainerIds: true },
+    });
+    await audit.log({
+      orgId:        req.orgId!,
+      userId:       user.id,
+      action:       "domain.asset_links.update",
+      resourceType: "Domain",
+      resourceId:   domain.id,
+      metadata:     { domain: domain.domain, servesContainerIds: updated.servesContainerIds },
     });
     res.json(updated);
   } catch (err) { next(err); }

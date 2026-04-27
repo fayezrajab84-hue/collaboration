@@ -11,6 +11,8 @@ import type {
   JiraIntegrationConfig, SlackIntegrationConfig, TeamsIntegrationConfig,
   PaginatedResponse, AuthMeResponse, SwitchOrgResponse,
   ComplianceFramework, FrameworksResponse, FrameworkDashboard, ControlFindingsResponse,
+  UpdateRepoAssetLinksRequest, UpdateContainerAssetLinksRequest, UpdateDomainAssetLinksRequest,
+  AssetLinksResponse,
 } from "@devsecops/types";
 
 export const apiClient = axios.create({
@@ -63,6 +65,9 @@ export const reposApi = {
   delete: (id: string) => apiClient.delete(`/repos/${id}`),
   triggerScan: (id: string, data?: TriggerScanRequest) =>
     apiClient.post<TriggerScanResponse>(`/repos/${id}/scan`, data ?? {}).then((r) => r.data),
+  /** Phase 27 Slice A — declare which container images this repo builds. */
+  updateAssetLinks: (id: string, data: UpdateRepoAssetLinksRequest) =>
+    apiClient.patch<AssetLinksResponse>(`/repos/${id}/asset-links`, data).then((r) => r.data),
 };
 
 // ── Containers ────────────────────────────────────────────────────────────
@@ -75,6 +80,9 @@ export const containersApi = {
   delete: (id: string) => apiClient.delete(`/containers/${id}`),
   triggerScan: (id: string) =>
     apiClient.post<TriggerScanResponse>(`/containers/${id}/scan`).then((r) => r.data),
+  /** Phase 27 Slice A — link this container to its source repo + serving domains. */
+  updateAssetLinks: (id: string, data: UpdateContainerAssetLinksRequest) =>
+    apiClient.patch<AssetLinksResponse>(`/containers/${id}/asset-links`, data).then((r) => r.data),
 };
 
 // ── Domains ───────────────────────────────────────────────────────────────
@@ -149,6 +157,9 @@ export const domainsApi = {
         { depth },
       )
       .then((r) => r.data),
+  /** Phase 27 Slice A — link this domain to backing containers. */
+  updateAssetLinks: (id: string, data: UpdateDomainAssetLinksRequest) =>
+    apiClient.patch<AssetLinksResponse>(`/domains/${id}/asset-links`, data).then((r) => r.data),
 };
 
 export interface RecordingSessionView {

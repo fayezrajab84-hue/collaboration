@@ -79,6 +79,46 @@ export interface UpdateDomainRequest {
   excludePaths?: string[];
 }
 
+// ── Asset relations (Phase 27 Slice A) ───────────────────────────────────
+// Operator-declared linkage between Repository / Container / Domain so the
+// correlation engine can walk attack chains across asset types. v1 is
+// operator-declared via the AssetLinksPanel; later slices may add CI-based
+// inference (Dockerfile presence + image-name parsing). All endpoints are
+// PATCH /api/{repos,containers,domains}/:id/asset-links — ADMIN+, audit-logged,
+// rejects cross-org references.
+
+/** PATCH /api/repos/:id/asset-links */
+export interface UpdateRepoAssetLinksRequest {
+  /** Container image refs this repo builds (e.g. ["myorg/api:1.2.3"]). */
+  buildsContainerImages?: string[];
+}
+
+/** PATCH /api/containers/:id/asset-links */
+export interface UpdateContainerAssetLinksRequest {
+  /** Repository ID this container is built from, or null to clear. */
+  sourceRepositoryId?: string | null;
+  /** Domain IDs that route requests to this container. */
+  deployedAtDomainIds?: string[];
+}
+
+/** PATCH /api/domains/:id/asset-links */
+export interface UpdateDomainAssetLinksRequest {
+  /** Container IDs that answer requests at this hostname. */
+  servesContainerIds?: string[];
+}
+
+/**
+ * Response shape for any asset-link PATCH — returns the updated relation set
+ * for that asset only. UI re-renders chips from this; full asset is fetched
+ * separately on next list query.
+ */
+export interface AssetLinksResponse {
+  buildsContainerImages?: string[];
+  sourceRepositoryId?: string | null;
+  deployedAtDomainIds?: string[];
+  servesContainerIds?: string[];
+}
+
 export interface AuthorizeDomainRequest {
   confirmed: true; // must be exactly true
 }

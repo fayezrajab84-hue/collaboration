@@ -204,6 +204,32 @@ export const ROLE_CONTRACT: readonly RoleProtectedAction[] = [
     ui:          { file: "apps/web/src/pages/CompliancePage.tsx", affordance: "HTML/PDF export button (Can role=ADMIN)" },
   },
 
+  // ── Phase 27 Slice A — operator-declared asset relations ──
+  // ADMIN+ because mis-declared linkage causes the correlation engine to
+  // produce incorrect attack paths (false chains or missing chains). Same
+  // gate on all three resources keeps the contract simple.
+  {
+    id:          "update-repo-asset-links",
+    description: "Declare which container images this repo builds (Phase 27 Slice A)",
+    minRole:     "ADMIN",
+    api:         { method: "PATCH", path: "/api/repos/:id/asset-links" },
+    ui:          { file: "apps/web/src/components/AssetLinksPanel.tsx", affordance: "RepoAssetLinksPanel chip editor (inside Can role=ADMIN wrapper)" },
+  },
+  {
+    id:          "update-container-asset-links",
+    description: "Link container to source repo + serving domains (Phase 27 Slice A)",
+    minRole:     "ADMIN",
+    api:         { method: "PATCH", path: "/api/containers/:id/asset-links" },
+    ui:          { file: "apps/web/src/components/AssetLinksPanel.tsx", affordance: "ContainerAssetLinksPanel inputs (inside Can role=ADMIN wrapper)" },
+  },
+  {
+    id:          "update-domain-asset-links",
+    description: "Link domain to backing containers (Phase 27 Slice A)",
+    minRole:     "ADMIN",
+    api:         { method: "PATCH", path: "/api/domains/:id/asset-links" },
+    ui:          { file: "apps/web/src/components/AssetLinksPanel.tsx", affordance: "DomainAssetLinksPanel multi-select (inside Can role=ADMIN wrapper)" },
+  },
+
   // ── SECURITY tier — finding triage / risk acceptance ──
 
   {

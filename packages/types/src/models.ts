@@ -60,6 +60,12 @@ export interface Repository {
   aiRiskScoredAt?: Date | null;
   addedAt: Date;
   findingCounts?: FindingCounts;
+  /**
+   * Phase 27 Slice A — operator-declared container image refs this repo builds.
+   * Used by the correlation engine to bridge SAST/SCA findings on this repo to
+   * CVE/runtime findings on the produced containers.
+   */
+  buildsContainerImages?: string[];
 }
 
 export interface Container {
@@ -73,6 +79,14 @@ export interface Container {
   aiRiskScoredAt?: Date | null;
   addedAt: Date;
   findingCounts?: FindingCounts;
+  /**
+   * Phase 27 Slice A — operator-declared back-pointer to the source repo. May be
+   * inferred in a later slice (Dockerfile presence + image-name parsing) but v1
+   * is operator-declared via the AssetLinksPanel.
+   */
+  sourceRepositoryId?: string | null;
+  /** Phase 27 Slice A — domain IDs that route requests to this container. */
+  deployedAtDomainIds?: string[];
 }
 
 export interface Domain {
@@ -93,6 +107,8 @@ export interface Domain {
   hasApiSpec?: boolean;
   /** url count when an ACTIVE recording exists for this domain; null otherwise */
   activeRecordingUrls?: number | null;
+  /** Phase 27 Slice A — container IDs that answer requests at this hostname. */
+  servesContainerIds?: string[];
 }
 
 export interface SubdomainDiscovery {

@@ -5,6 +5,7 @@ import { domainsApi } from "../lib/api";
 import DomainAuthPanel from "../components/DomainAuthPanel";
 import DomainApiSpecPanel from "../components/DomainApiSpecPanel";
 import RecordingPanel from "../components/RecordingPanel";
+import { DomainAssetLinksPanel } from "../components/AssetLinksPanel";
 import RiskScoreBadge from "../components/RiskScoreBadge";
 import type { Domain } from "@devsecops/types";
 import ScanStatusBadge from "../components/ScanStatusBadge";
@@ -97,7 +98,7 @@ function EditDomainModal({ domain, onClose }: { domain: Domain; onClose: () => v
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="w-full max-w-md rounded-xl border border-gray-700 bg-gray-900 p-6 shadow-2xl">
+      <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl border border-gray-700 bg-gray-900 p-6 shadow-2xl">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-base font-semibold text-white">Edit Domain</h2>
           <button onClick={onClose} className="text-gray-500 hover:text-gray-200"><X className="h-4 w-4" /></button>
@@ -123,6 +124,10 @@ function EditDomainModal({ domain, onClose }: { domain: Domain; onClose: () => v
           >
             {update.isPending ? "Saving…" : "Save Changes"}
           </button>
+        </div>
+        {/* Phase 27 Slice A — operator-declared backing containers. */}
+        <div className="mt-6">
+          <DomainAssetLinksPanel domain={domain} />
         </div>
       </div>
     </div>
