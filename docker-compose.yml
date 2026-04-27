@@ -197,6 +197,35 @@ services:
     networks:
       - internal
 
+  # ── OWASP Juice Shop — deliberate scan target ──────────────────────────────
+  # A modern Node.js / TypeScript / Angular vulnerable web app — covers the
+  # full OWASP Top 10 plus a long tail of API + crypto + SCA bugs.
+  # Add domain "juice-shop" in the platform to scan it (use http:// scheme).
+  # Browse it at http://localhost:4290
+  # No DB sidecar needed — Juice Shop ships with an embedded SQLite.
+  # ⚠️  Never expose this service to the internet — it is intentionally insecure.
+  juice-shop:
+    image: bkimminich/juice-shop:latest
+    restart: unless-stopped
+    # Juice Shop's challenge engine sometimes pegs CPU during scanner
+    # enumeration; cap so it doesn't starve the api/scanner containers.
+    mem_limit: 512m
+    cpus: '1.0'
+    networks:
+      - internal    # reachable by ZAP (DAST) + scanner (Nuclei/pentest)
+      - public      # required for host port binding on Docker Desktop
+    ports:
+      - "4290:3000" # host access for manual browsing — not needed for scans
+    healthcheck:
+      # Juice Shop's image strips sh + most BusyBox tools — only `node`
+      # is reliably present. `wget --spider` fails not because the app
+      # is unhealthy but because wget isn't on PATH. Use node directly.
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
   # ── OWASP ZAP (DAST sidecar) ───────────────────────────────────────────────
   # Remove this service (and scanner's depends_on) if you don't need DAST scans.
   zap:
