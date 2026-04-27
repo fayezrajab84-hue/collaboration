@@ -388,6 +388,34 @@ Full scope: [`docs/plans/phase-27-attack-path-correlation.md`](./phase-27-attack
 
 ---
 
+### Phase 28 — Runtime detection (Wazuh-first) ❌ *(DIFFERENTIATOR, completes the four-act story, ~1.5–2 weeks)*
+
+**Sequenced after Phase 27** so the runtime bridge plugs into Phase 27's correlation engine on day one. Closes the gap to CNAPP buyers (Wiz, Aqua, Sysdig) who expect runtime as table stakes, and gives the Phase 27 attack chain a fourth act: *"and 4 minutes ago someone tried to exploit it in production."*
+
+**The unlock:** Wazuh is **already running** in our compose stack and the MCP toolkit is wired in (`mcp__wazuh__*` tools). The Claude assistant has visibility into Wazuh alerts; **the BreachLens product does not**. Phase 28 closes that gap without building a new agent.
+
+Three slices, ~1400 lines, ~1.5–2 weeks total (Slice D — multi-vendor adapters — deferred to 28.x):
+
+- **A — Wazuh alert → Finding ingestion (foundation, 3-4 days):** new `WorkloadAgent` model + `ScanType.RUNTIME`; pulls alerts via Wazuh REST API on a 60s schedule; normalises to `Finding` rows with hourly-bucket fingerprint to prevent 100 shell-spawn alerts becoming 100 Findings; Wazuh 0-15 → BreachLens severity mapping; MITRE ATT&CK → existing ComplianceControl mapping.
+- **B — Runtime tab + live UI patterns (3-4 days):** `/runtime` top-level nav with WorkloadAgent grid (heartbeat dot, ingestion sparkline, OFFLINE state with specific error message); Wazuh alert table grouped by category; `RuntimeBadge` ("Live · 4m ago") on regular Findings rows; `AgentHealthBadge` reused on Containers page.
+- **C — `runtimeBridge` plugin for Phase 27 (2-3 days):** Phase 27's bridge interface gains a runtime-to-static linker. Static SAST/SCA finding + runtime alert on same container = "static CVE → confirmed exploitation in production." Path scorer's `proofMultiplier × 2.0` for live exploitation (was `× 1.5` for PENTEST CONFIRMED) — runtime > scan-time CONFIRMED > theoretical.
+- **D — Multi-vendor adapters (DEFERRED to 28.x):** Falco / Datadog / Sysdig ingestion when a customer asks. Wazuh covers ~80% of the runtime story for v1.
+
+**The four-act story Phase 28 completes** (no incumbent does all four):
+
+| Act | Phase | Pitch |
+|---|---|---|
+| 1. Static | 14 + 16 + 22.7 | "Vulnerable source line + OWASP/SOC2/PCI control violated" |
+| 2. Active | 24 + 24.6 | "Confirmed with this curl command" |
+| 3. **Runtime** | **28** | **"4 min ago someone tried to exploit it in prod — Wazuh caught the shell spawn"** |
+| 4. Cloud | 18 + 27 Slice D | "Would have reached customer-data S3 bucket via container's IAM role" |
+
+**Strategic position:** Snyk dominates Act 1. Wiz dominates Act 4. Aqua/Sysdig dominate Act 3. Pentera dominates Act 2. BreachLens (post-27 + 28) is the only product that pulls all four into one correlated chain. **Honest caveat**: Wazuh agent has ~50MB RAM overhead per host; documented tradeoff for resource-constrained environments.
+
+Full scope: [`docs/plans/phase-28-runtime-detection.md`](./phase-28-runtime-detection.md). Six open questions to settle before Slice A (agent→container linking strategy, pull vs push ingestion, alert dedup granularity, Wazuh alert retention vs Finding lifecycle, severity mapping disputes, multi-tenant Wazuh model).
+
+---
+
 ## GTM-optimized sequenced timeline
 
 | Month | Focus | Phases | Why this slot |
@@ -397,7 +425,7 @@ Full scope: [`docs/plans/phase-27-attack-path-correlation.md`](./phase-27-attack
 | 3 | **Noise reduction + SOC story** | 14 + 23 | Reachability cuts SCA noise (protects renewals); SIEM bridge adds operational lift cheaply |
 | 4 | **Refresh the differentiator + close the fix loop** | 24 + 17 | Pentest depth keeps demos sharp; auto-PRs close the "devs don't fix" gap |
 | 5 | **Category expansion** | 18 (AWS-only first cut) | Biggest single category expansion (CSPM); start with AWS to scope down |
-| 6 | **The unified pitch becomes real** | 27 | First product where one attack chain spans repo→container→domain→cloud. The demo that closes Wiz + Snyk bake-offs simultaneously. Sequenced after 18 so the chain reaches into cloud on day one. |
+| 6 | **The unified pitch becomes real** | 27 + 28 | Phase 27 connects repo→container→domain→cloud into one correlated chain; Phase 28 adds runtime as the fourth act ("someone tried to exploit it 4 min ago — Wazuh caught it"). Together: the only product that spans static + active + runtime + cloud in one demo. Closes Wiz + Snyk + Aqua bake-offs simultaneously. |
 | 7 | **Coverage + adoption** | 19 + 20 + 21 | K8s easy win; API security newer differentiator; IDE for dev adoption funnel |
 | Later (SaaS-only) | **SaaS scale** | 25 | Only when going multi-tenant SaaS — defer for self-host deployments |
 | Later (research moat) | **AI-driven discovery** | 26 | Waits on Mythos public API + Phase 14 reachability for cost-effective scoping. Plumbing is hours when ready. |
