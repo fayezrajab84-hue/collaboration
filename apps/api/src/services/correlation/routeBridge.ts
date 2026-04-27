@@ -118,6 +118,11 @@ function urlContainsFileToken(url: string, filePath: string): boolean {
   const segments = path
     .split("/")
     .map((s) => s.trim())
+    // Symmetric with filePath handling — strip a trailing extension so
+    // URL `/login.php` produces token `login` (not `login.php`), allowing
+    // it to match SAST `login.php` whose token is `login`. Without this
+    // strip, every classic LAMP URL bypasses the chain.
+    .map((s) => s.replace(/\.[a-z0-9]{1,5}$/i, ""))
     .filter((s) => s.length >= MIN_TOKEN_LENGTH);
   if (segments.length === 0) return false;
 

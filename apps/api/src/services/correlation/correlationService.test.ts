@@ -171,6 +171,22 @@ describe("routeBridge.urlContainsFileToken", () => {
       "vulnerabilities/csp/source/medium.php",
     )).toBe(true);
   });
+
+  it("strips file extensions from URL segments before matching", () => {
+    // Phase 27.5.x bug: `/login.php` URL never matched `login.php` SAST
+    // file path because URL token was `login.php` (with extension) but
+    // file token was `login` (extension stripped). Symmetric stripping
+    // fixes it — and unlocks the whole "classic LAMP / PHP-style URL"
+    // chain class that DVWA, WordPress, Drupal, etc. all rely on.
+    expect(urlContainsFileToken(
+      "http://dvwa/login.php",
+      "login.php",
+    )).toBe(true);
+    expect(urlContainsFileToken(
+      "http://dvwa/instructions.php",
+      "instructions.php",
+    )).toBe(true);
+  });
 });
 
 describe("secretBridge", () => {
