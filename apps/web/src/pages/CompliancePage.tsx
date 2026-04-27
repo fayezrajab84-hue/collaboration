@@ -138,6 +138,23 @@ export default function CompliancePage() {
                   <span className="font-semibold text-gray-200">{dashboard.controls.length}</span> controls. Each
                   finding can satisfy multiple controls — the same SCA result lights up CC7.1 and Req-6.3.1 at the same time.
                 </p>
+                {/* Phase 14 — noise-reduction stat. Quantifies the SCA
+                    triage win in one sentence. Only renders when there's
+                    at least one classified finding to summarize. */}
+                {(() => {
+                  const r = dashboard.reachabilitySummary;
+                  const classified = r.reachable + r.notReachable;
+                  if (classified === 0) return null;
+                  const pct = Math.round((r.notReachable / classified) * 100);
+                  return (
+                    <p className="mt-2 text-xs text-indigo-200">
+                      <span className="font-semibold">Reachability noise reduction:</span>{" "}
+                      <span className="rounded bg-indigo-900/50 px-1.5 py-0.5 font-semibold text-indigo-100">{r.reachable}</span>{" "}
+                      open findings reach actual source code · <span className="rounded bg-gray-800/60 px-1.5 py-0.5 text-gray-300">{r.notReachable}</span>{" "}
+                      can be deferred ({pct}% noise filtered). {r.unknown > 0 && <span className="text-gray-500">{r.unknown} unclassified.</span>}
+                    </p>
+                  );
+                })()}
               </div>
 
               {/* Evidence export — ADMIN-gated. CSV is the spreadsheet

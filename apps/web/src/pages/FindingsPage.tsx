@@ -261,18 +261,20 @@ export default function FindingsPage() {
   // Multi-select filters stored as comma-separated values in the URL so links
   // remain shareable; the server splits and parses them via `multi()`.
   const parseMulti = (v: string) => v.split(",").map((s) => s.trim()).filter(Boolean);
-  const severity   = parseMulti(searchParams.get("severity")   ?? "");
-  const scanType   = parseMulti(searchParams.get("scanType")   ?? "");
-  const status     = parseMulti(searchParams.get("status")     ?? "");
-  const confidence = parseMulti(searchParams.get("confidence") ?? "");
-  const aiFilter   = parseMulti(searchParams.get("ai") ?? "");
-  const aiFilterKey = aiFilter.join(",");
+  const severity     = parseMulti(searchParams.get("severity")     ?? "");
+  const scanType     = parseMulti(searchParams.get("scanType")     ?? "");
+  const status       = parseMulti(searchParams.get("status")       ?? "");
+  const confidence   = parseMulti(searchParams.get("confidence")   ?? "");
+  const reachability = parseMulti(searchParams.get("reachability") ?? "");
+  const aiFilter     = parseMulti(searchParams.get("ai") ?? "");
+  const aiFilterKey  = aiFilter.join(",");
   // Stable primitives for dep arrays — arrays produced above are new every render.
   // (Note: no scanTypeKey — the API call uses `effectiveScanTypeKey` which folds
   // the tab's allowed set in, and that's what the cache key tracks.)
-  const severityKey   = severity.join(",");
-  const statusKey     = status.join(",");
-  const confidenceKey = confidence.join(",");
+  const severityKey     = severity.join(",");
+  const statusKey       = status.join(",");
+  const confidenceKey   = confidence.join(",");
+  const reachabilityKey = reachability.join(",");
 
   // Effective scanType filter sent to the API: intersection of the tab's
   // allowed set with whatever the user picked in the dropdown. If the user
@@ -390,7 +392,7 @@ export default function FindingsPage() {
   // ── Bulk selection ──────────────────────────────────────────────────────
   // Page-local selection state (cleared on filter/page change to avoid stale IDs).
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  useEffect(() => { setSelected(new Set()); }, [severityKey, effectiveScanTypeKey, statusKey, confidenceKey, aiFilterKey, search, target, page, pageSize, includeSuppressed]);
+  useEffect(() => { setSelected(new Set()); }, [severityKey, effectiveScanTypeKey, statusKey, confidenceKey, reachabilityKey, aiFilterKey, search, target, page, pageSize, includeSuppressed]);
   const queryClient = useQueryClient();
 
   const bulkMutation = useMutation({
@@ -438,14 +440,14 @@ export default function FindingsPage() {
   // Check whether any filters are active (to distinguish "no results" from "nothing scanned yet")
   const hasActiveFilters = !!(
     severity.length || scanType.length || status.length || confidence.length ||
-    aiFilter.length || search || target
+    reachability.length || aiFilter.length || search || target
   );
 
   const { data, isLoading } = useQuery({
     // Use effectiveScanTypeKey (tab ∩ user) so the cache invalidates correctly
     // when switching Code↔Web — same user-selected types but different tab
     // produces a different effective set, hence a different query.
-    queryKey: ["findings", { severityKey, effectiveScanTypeKey, statusKey, confidenceKey, aiFilterKey, search, target, page, pageSize, sort, sortOrder, includeSuppressed }],
+    queryKey: ["findings", { severityKey, effectiveScanTypeKey, statusKey, confidenceKey, reachabilityKey, aiFilterKey, search, target, page, pageSize, sort, sortOrder, includeSuppressed }],
     queryFn: () =>
       findingsApi.list({
         // Multi-select: send comma-joined values — server splits via `multi()`.
@@ -453,6 +455,7 @@ export default function FindingsPage() {
         scanType: (effectiveScanTypeKey || undefined) as never,
         status: (statusKey || undefined) as never,
         confidence: (confidenceKey || undefined) as never,
+        reachability: (reachabilityKey || undefined) as never,
         search: search || undefined,
         ...targetFilter,
         page,
@@ -572,6 +575,22 @@ export default function FindingsPage() {
           onChange={(v) => setMultiFilter("confidence", v)}
         />
 
+        {/* Phase 14 — reachability filter. Renders four options matching
+            the schema enum; "Reachable" is the auditor-grade default for
+            triage-first workflows. */}
+        <MultiSelect
+          label="Reachability"
+          options={[
+            { value: "REACHABLE",      label: "Reachable" },
+            { value: "NOT_REACHABLE",  label: "Not reachable" },
+            { value: "UNKNOWN",        label: "Unknown" },
+            { value: "NOT_APPLICABLE", label: "Not applicable" },
+          ]}
+          value={reachability}
+          onChange={(v) => setMultiFilter("reachability", v)}
+          title="Filter by package-level reachability (Phase 14 SCA classification)"
+        />
+
         <MultiSelect
           label="AI triage"
           options={AI_FILTERS}
@@ -633,6 +652,7 @@ export default function FindingsPage() {
             scanType: (effectiveScanTypeKey || undefined) as never,
             status:   (statusKey   || undefined) as never,
             confidence: (confidenceKey || undefined) as never,
+            reachability: (reachabilityKey || undefined) as never,
             search:   search   || undefined,
             ...targetFilter,
             ...(aiFilterKey ? { ai: aiFilterKey as never } : {}),

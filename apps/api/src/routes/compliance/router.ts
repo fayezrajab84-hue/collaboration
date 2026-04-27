@@ -160,7 +160,7 @@ router.get("/:framework/dashboard", async (req, res, next) => {
       },
       select: {
         controlId: true,
-        finding:   { select: { severity: true, status: true } },
+        finding:   { select: { severity: true, status: true, reachability: true } },
       },
     });
 
@@ -176,6 +176,19 @@ router.get("/:framework/dashboard", async (req, res, next) => {
     });
     const stats = new Map<string, Row>();
     for (const c of controls) stats.set(c.id, empty());
+
+    // Phase 14 — framework-wide reachability summary. Drives the
+    // "noise reduction" stat in the dashboard header ("of N open
+    // findings, K can't actually be reached → focus on the other
+    // N-K"). Counted across all controls in this framework, OPEN
+    // status only — fixed/acknowledged/FP findings aren't part of
+    // the active triage backlog.
+    const reachabilitySummary = {
+      reachable:     0,
+      notReachable:  0,
+      unknown:       0,
+      notApplicable: 0,
+    };
 
     for (const m of mappings) {
       const r = stats.get(m.controlId);
@@ -193,6 +206,12 @@ router.get("/:framework/dashboard", async (req, res, next) => {
       if (m.finding.status === "OPEN") {
         const sev = m.finding.severity as keyof Row["severity"];
         if (sev in r.severity) r.severity[sev] += 1;
+        switch (m.finding.reachability) {
+          case "REACHABLE":      reachabilitySummary.reachable     += 1; break;
+          case "NOT_REACHABLE":  reachabilitySummary.notReachable  += 1; break;
+          case "UNKNOWN":        reachabilitySummary.unknown       += 1; break;
+          case "NOT_APPLICABLE": reachabilitySummary.notApplicable += 1; break;
+        }
       }
     }
 
@@ -202,6 +221,7 @@ router.get("/:framework/dashboard", async (req, res, next) => {
       // Sanity field — useful for the UI to show "0 findings" empty state
       // without re-summing the row counts.
       totalMappings: buckets.reduce((acc, b) => acc + b._count._all, 0),
+      reachabilitySummary,
       controls: controls.map((c) => ({
         id:          c.id,
         code:        c.code,

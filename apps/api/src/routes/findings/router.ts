@@ -82,14 +82,19 @@ router.get("/", async (req, res, next) => {
     };
 
     const where: Record<string, unknown> = { orgId: member.orgId };
-    const sev  = multi(q["severity"]);
-    const sct  = multi(q["scanType"]);
-    const sts  = multi(q["status"]);
-    const conf = multi(q["confidence"]);
-    if (sev)  where["severity"]   = { in: sev };
-    if (sct)  where["scanType"]   = { in: sct };
-    if (sts)  where["status"]     = { in: sts };
-    if (conf) where["confidence"] = { in: conf };
+    const sev   = multi(q["severity"]);
+    const sct   = multi(q["scanType"]);
+    const sts   = multi(q["status"]);
+    const conf  = multi(q["confidence"]);
+    const reach = multi(q["reachability"]);
+    if (sev)   where["severity"]     = { in: sev };
+    if (sct)   where["scanType"]     = { in: sct };
+    if (sts)   where["status"]       = { in: sts };
+    if (conf)  where["confidence"]   = { in: conf };
+    // Phase 14 — reachability filter. Accepts comma-separated values like
+    // ?reachability=REACHABLE,UNKNOWN to surface "patch first + can't tell"
+    // simultaneously. Without filter, all reachability tiers show.
+    if (reach) where["reachability"] = { in: reach };
     // Multiple composite predicates below (target OR, search OR, AI OR) need
     // to be ANDed together. Using an AND array avoids clobbering `where.OR`.
     const andClauses: Array<Record<string, unknown>> = [];
@@ -406,14 +411,18 @@ router.get("/export.csv", async (req, res, next) => {
         .filter(Boolean);
       return flat.length ? flat : null;
     };
-    const sev  = multi(q["severity"]);
-    const sct  = multi(q["scanType"]);
-    const sts  = multi(q["status"]);
-    const conf = multi(q["confidence"]);
-    if (sev)  where["severity"]   = { in: sev };
-    if (sct)  where["scanType"]   = { in: sct };
-    if (sts)  where["status"]     = { in: sts };
-    if (conf) where["confidence"] = { in: conf };
+    const sev   = multi(q["severity"]);
+    const sct   = multi(q["scanType"]);
+    const sts   = multi(q["status"]);
+    const conf  = multi(q["confidence"]);
+    const reach = multi(q["reachability"]);
+    if (sev)   where["severity"]     = { in: sev };
+    if (sct)   where["scanType"]     = { in: sct };
+    if (sts)   where["status"]       = { in: sts };
+    if (conf)  where["confidence"]   = { in: conf };
+    // Phase 14 — same reachability filter as the list endpoint above so
+    // CSV exports match what the user sees on screen.
+    if (reach) where["reachability"] = { in: reach };
     const andClauses: Array<Record<string, unknown>> = [];
 
     // Target filters — multi-select with OR across target types

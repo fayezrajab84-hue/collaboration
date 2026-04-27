@@ -119,6 +119,9 @@ export interface FindingFilterParams {
   scanType?: ScanType | ScanType[];
   status?: FindingStatus | FindingStatus[];
   confidence?: Confidence | Confidence[];
+  // Phase 14 — package-level reachability filter (SCA only). Comma-separated
+  // string for the URL form ("REACHABLE,UNKNOWN") or string[] in JSON.
+  reachability?: "REACHABLE" | "NOT_REACHABLE" | "UNKNOWN" | "NOT_APPLICABLE" | string;
   repoId?: string;
   containerId?: string;
   domainId?: string;
@@ -226,6 +229,14 @@ export interface FrameworkDashboard {
   framework:     ComplianceFramework;
   label:         string;
   totalMappings: number;
+  // Phase 14 — reachability counts across this framework's OPEN findings.
+  // Drives the "noise reduction" stat in the dashboard header.
+  reachabilitySummary: {
+    reachable:     number;
+    notReachable:  number;
+    unknown:       number;
+    notApplicable: number;
+  };
   controls:      ControlBreakdown[];
 }
 
