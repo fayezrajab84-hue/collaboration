@@ -219,6 +219,23 @@ Full scope: [`docs/plans/phase-14.5-container-reachability.md`](./phase-14.5-con
 
 ---
 
+### Phase 24.6 — Modern web app coverage (SPA + JSON API + auth) ❌ *(DIFFERENTIATOR, expands attack surface, ~1.5–2 weeks)*
+
+Surfaced by a Juice Shop demo session — autonomous DAST + PENTEST against `juice-shop:3000` produced only 4 MEDIUM infrastructure findings (CSP / clickjacking / CORS / session-in-URL). None of the OWASP Top 10 bugs Juice Shop is famous for fired. The MVP scanner stack catches form-based GET/POST + static-link discovery + nuclei templates well, but misses JSON-body fuzzing, auth-gated endpoints, and SPA-rendered routes — i.e. ~80% of modern customer apps.
+
+Four slices, ~1250 lines, ~1.5–2 weeks total:
+
+- **A — Authenticated replay (highest value, 2-3 days):** propagate captured `DomainAuthConfig` session into the active-scan ZAP context so it fuzzes auth-gated endpoints with a valid session. **70% of modern web app bugs live behind a login**; without this slice BreachLens is functionally a "find vulns on public marketing pages" tool.
+- **B — JSON body fuzzing policy (1-2 days):** enable ZAP active-scan rules for `Content-Type: application/json` bodies (currently only form-encoded gets fuzzed).
+- **C — SPA-aware crawler heuristics (3-4 days):** scrape SPA router config + trigger interactive elements + follow hash routes. Most modern Angular/React/Next.js apps are invisible to a Playwright-only crawler.
+- **D — Known-target ingestion (1 day):** consume operator-supplied URL lists + `DomainApiSpec` OpenAPI specs to seed ZAP targets directly.
+
+Slice A alone is the killer move; ship A first, verify the gap closes against Juice Shop, then evaluate B/C/D. Composes with Phase 24 (Proof of Exploit + multi-phase pipeline) — gives those existing differentiators a wider attack surface to operate on.
+
+Full scope: [`docs/plans/phase-24.6-modern-app-coverage.md`](./phase-24.6-modern-app-coverage.md). Four open questions to settle before Slice A (auth replay strategy, per-attack token refresh, logout-endpoint exclusion, OAuth2/OIDC flow handling).
+
+---
+
 ### Phase 17 — Auto-remediation PRs ❌ *(HIGH-VALUE, not a gate, 1–2 weeks)*
 
 - For SCA findings with a known fix version: open a PR bumping the dep
