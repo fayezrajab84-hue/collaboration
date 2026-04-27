@@ -6,6 +6,7 @@ import { initWorkers } from "./workers/scanWorker.js";
 import { initFpSweepWorker, scheduleFpSweep } from "./workers/fpSweepWorker.js";
 import { initAiTriageWorker } from "./workers/aiTriageWorker.js";
 import { initWazuhIngestWorker, scheduleWazuhIngest } from "./workers/wazuhIngestWorker.js";
+import { initCorrelationWorker, scheduleCorrelation } from "./workers/correlationWorker.js";
 import { startRecordingIdleSweeper } from "./services/recordingService.js";
 
 async function start() {
@@ -32,6 +33,13 @@ async function start() {
   // WAZUH_API_URL is unset, so this is safe in environments without Wazuh.
   initWazuhIngestWorker();
   await scheduleWazuhIngest();
+
+  // Phase 27 Slice B — hourly attack-path correlation sweep across every org.
+  // Catches drift when operators declare new asset relations after findings
+  // already existed; the scan worker also triggers narrow refreshes inline
+  // so freshly persisted findings get correlated within seconds.
+  initCorrelationWorker();
+  await scheduleCorrelation();
 
   // Sweep idle DAST recording sessions (60min idle / 4hr hard cap)
   startRecordingIdleSweeper();

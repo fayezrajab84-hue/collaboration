@@ -1002,6 +1002,20 @@ export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: n
     );
   }
 
+  // Phase 27 Slice B — fire-and-forget correlation refresh for this org.
+  // Newly upserted findings get correlationGroupId/edges populated within
+  // a few seconds; the hourly recurring sweep in correlationWorker.ts also
+  // catches drift. Errors are logged + swallowed — correlation is best-
+  // effort and never blocks scan completion.
+  try {
+    const { runCorrelationForOrg } = await import("./correlation/correlationService.js");
+    runCorrelationForOrg(orgId).catch((err) => {
+      logger.warn(`[correlation] inline refresh failed for org ${orgId}: ${err.message}`);
+    });
+  } catch (err) {
+    logger.warn(`[correlation] failed to enqueue inline refresh: ${(err as Error).message}`);
+  }
+
   return { newCount, totalCount: findings.length, fixedCount, confirmedCount, newFindings };
 }
 

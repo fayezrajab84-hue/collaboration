@@ -776,6 +776,16 @@ model Finding {
   reachability         Reachability @default(UNKNOWN)
   reachabilityEvidence Json?
 
+  // Phase 27 Slice B — attack-path correlation. correlationGroupId stamps
+  // every Finding in the same chain with a stable id (anchored on the chain's
+  // root finding) so chains can be looked up via index. correlationEdges is
+  // JSON [{toFindingId, bridgeType, confidence, reason}]. correlationComputedAt
+  // lets the recurring sweep prioritise stale rows. All nullable until the
+  // engine has run for this finding.
+  correlationGroupId    String?
+  correlationEdges      Json?
+  correlationComputedAt DateTime?
+
   org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   scanJob    ScanJob      @relation(fields: [scanJobId], references: [id])
   repository Repository?  @relation(fields: [repositoryId], references: [id])
@@ -791,6 +801,7 @@ model Finding {
   @@index([orgId, scanType])
   @@index([fingerprint])
   @@index([cweId])  // Phase 16 — fast CWE-based mapping lookups
+  @@index([orgId, correlationGroupId])  // Phase 27 — chain lookups
 }
 
 // ── Compliance framework mapping (Phase 16) ───────────────────────────────

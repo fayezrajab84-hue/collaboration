@@ -89,6 +89,20 @@ export const wazuhIngestQueue = new Queue("wazuh-ingest", {
   },
 });
 
+// ── Correlation queue (Phase 27 Slice B) ─────────────────────────────────────
+// Recurring nightly sweep that runs the Bridge engine across every org's
+// findings and persists correlationGroupId + correlationEdges. The scan
+// worker also calls runCorrelationForFinding() inline after each upsert
+// for fresh-finding latency; this recurring sweep catches drift (e.g. when
+// an operator declares new asset relations after findings already existed).
+export const correlationQueue = new Queue("correlation", {
+  connection: bullRedis,
+  defaultJobOptions: {
+    removeOnComplete: 30,
+    removeOnFail:     100,
+  },
+});
+
 export const scanQueues: Record<ScanType, Queue<ScanJobPayload>> = {
   SAST: new Queue("scan-SAST", QUEUE_OPTS),
   SCA: new Queue("scan-SCA", QUEUE_OPTS),
