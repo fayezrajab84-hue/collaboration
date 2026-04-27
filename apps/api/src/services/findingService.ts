@@ -2,6 +2,7 @@ import { createHash } from "crypto";
 import prisma from "../db.js";
 import { logger } from "../logger.js";
 import type { NormalizedFinding, ScanType, TargetType } from "@devsecops/types";
+import { applyMappingsToFinding } from "./complianceMappingService.js";
 
 // ── JSON sanitizer ────────────────────────────────────────────────────────────
 //
@@ -715,7 +716,7 @@ export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: n
     const shouldReopen = prev?.status === "FIXED";
     if (shouldReopen) reopenedCount += 1;
 
-    await prisma.finding.upsert({
+    const upserted = await prisma.finding.upsert({
       where: { fingerprint: f.fingerprint },
       create: {
         orgId,
@@ -834,6 +835,27 @@ export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: n
         //   scanJobId — stays linked to the scan job that first found it
       },
     });
+
+    // Phase 16: link the finding to compliance controls (CWE match +
+    // keyword fallback). Idempotent — re-scans don't duplicate. Awaited
+    // so a mapping failure surfaces as a scan error rather than being
+    // silently lost; if perf becomes an issue with 500+ findings per
+    // scan, batch this into a single createMany at the end of the loop.
+    try {
+      await applyMappingsToFinding({
+        findingId: upserted.id,
+        cweId:     f.cweId ?? null,
+        title:     f.title,
+      });
+    } catch (err) {
+      // Don't let a mapping failure abort the scan — the finding is
+      // saved, the dashboards just won't show it under any control
+      // until the next backfill runs. Log loudly so we notice.
+      logger.warn("[compliance] failed to map finding to controls", {
+        findingId: upserted.id,
+        error:     (err as Error).message,
+      });
+    }
 
     existingSet.add(f.fingerprint);
   }
