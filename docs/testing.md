@@ -82,19 +82,48 @@ contract encoded as code. If you change `ROLE_RANK` or add a new role
 to the enum, update the matrix in one place and every gate decision
 gets re-validated.
 
+## Role contract parity tests (UI ↔ API)
+
+`packages/types/src/roleContract.ts` is the single source of truth for
+which BreachLens action requires which role. Two parity tests verify
+both sides of the codebase agree:
+
+- **`apps/api/src/role-contract.test.ts`** — imports every router,
+  walks its Express stack, and finds every handler tagged with
+  `__minRole` (set by `requireRole` itself). Asserts each live gate
+  has a matching contract entry with the same `minRole`, and every
+  contract entry with `.api` is wired up in a real router.
+- **`apps/web/src/role-contract.test.ts`** — pure source scan. Reads
+  every `.tsx` file, regex-finds `<Can role="X">` wrappers, asserts
+  every `<Can role>` value is documented in the contract and every
+  contract `.ui` pointer corresponds to a real file with the expected
+  wrapper.
+
+Adding a new role-gated action: add a contract entry first, then the
+backend `requireRole` and frontend `<Can>` will fail tests until they
+match. Pattern is documented inline in `roleContract.ts`.
+
+### Discovered UI gaps
+
+The frontend parity test caught 5 real drift cases on first run:
+Settings tabs (Audit Log, SSO, Policies), DomainsPage delete action,
+and FindingsPage bulk toolbar all expose ADMIN/SECURITY-only API
+endpoints to every role. The contract entries currently have `// ui:
+TODO Phase 22.7 …` placeholders so the parity test passes; closing
+those gaps is scoped in `docs/plans/phase-22.7-ui-role-gating.md`.
+
 ## What we don't cover yet (intentional gaps to plan against)
 
 - **Route-level integration tests** — supertest + the actual Express
   app, hitting each `requireRole(X)`-protected route as each role.
   Catches "forgot to add `requireRole` middleware on the new endpoint"
-  regressions, not just middleware logic. Add when the wiring drift
-  starts to bite.
-- **Frontend `<Can role="X">` parity tests** — verify the UI and API
-  agree on which roles can do what. Currently both tested separately.
+  regressions. The current backend parity test catches "wrong role" but
+  not "wired the wrong path".
 - **SSO callback / OIDC flow tests** — needs a fixture IdP (Keycloak
   in docker) or extensive mocking. Phase 22.5 work.
 - **End-to-end with real DB** — would need a test postgres instance.
   Defer until a real regression demands it.
+- **CI integration** — vitest runs locally, no GitHub Actions yet.
 
 ## Adding a new test file
 

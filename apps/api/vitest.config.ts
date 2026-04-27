@@ -1,6 +1,16 @@
 import { defineConfig } from "vitest/config";
+import path from "node:path";
 
 export default defineConfig({
+  // The types package declares exports.import → ./dist/index.js but there's
+  // no build step (consumed as TS source via tsx in dev). Vitest doesn't
+  // honour that fallback — alias it directly to source so tests can
+  // `import { ROLE_CONTRACT } from "@devsecops/types"` like production code.
+  resolve: {
+    alias: {
+      "@devsecops/types": path.resolve(__dirname, "../../packages/types/src/index.ts"),
+    },
+  },
   test: {
     // Co-located *.test.ts files alongside the code under test
     // (apps/api/src/foo/bar.test.ts), not a top-level __tests__ tree.

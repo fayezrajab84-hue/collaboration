@@ -30,11 +30,19 @@ export type MembershipResolver = (
   req: Request,
 ) => Promise<{ orgId: string; role: Role } | null>;
 
+/**
+ * RequestHandler with metadata — tests introspect the live Express
+ * router stack (via `router.stack[i].route.stack[j].handle.__minRole`)
+ * to verify the parity contract; without this tag they'd have to parse
+ * source files to discover which routes are role-gated.
+ */
+export type RoleGatedHandler = RequestHandler & { readonly __minRole: Role };
+
 export function requireRole(
   minRole: Role,
   resolveMember: MembershipResolver = getActiveMembership,
-): RequestHandler {
-  return async (req: Request, res, next) => {
+): RoleGatedHandler {
+  const handler: RequestHandler = async (req: Request, res, next) => {
     try {
       if (!req.isAuthenticated || !req.isAuthenticated()) {
         res.status(401).json({ error: "Authentication required" });
@@ -63,4 +71,8 @@ export function requireRole(
       next(err);
     }
   };
+  // Tag the handler so the parity test can find it via Express's
+  // router.stack introspection.
+  Object.defineProperty(handler, "__minRole", { value: minRole, enumerable: true });
+  return handler as RoleGatedHandler;
 }
