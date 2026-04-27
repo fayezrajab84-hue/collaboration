@@ -24,13 +24,14 @@
  */
 import { createContext, useContext, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
-import { Network, ArrowDown, GitBranch, Shield, CheckCircle2, AlertTriangle, ChevronDown, ChevronRight } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Network, ArrowDown, GitBranch, Shield, CheckCircle2, AlertTriangle, ChevronDown, ChevronRight, Sparkles, RefreshCw } from "lucide-react";
 import { attackPathsApi, applicationsApi, findingsApi } from "../lib/api";
 import SeverityBadge from "../components/SeverityBadge";
 import MultiSelect from "../components/MultiSelect";
 import FindingDetailDrawer from "../components/FindingDetailDrawer";
-import type { AttackPathSummary, AttackPathNode, Finding } from "@devsecops/types";
+import { useToast } from "../hooks/useToast";
+import type { AttackPathSummary, AttackPathNode, AttackPathSummaryAI, Finding } from "@devsecops/types";
 
 // ── Top-level routing wrapper ─────────────────────────────────────────────
 
@@ -66,9 +67,115 @@ function AttackPathDetail({ groupId }: { groupId: string }) {
         <Link to="/attack-paths" className="mb-3 inline-block text-sm text-gray-500 hover:text-gray-300">
           ← All attack paths
         </Link>
+        {/* Phase 27.5.x — AI summary panel only on the dedicated detail
+            page (not in the list-view cards) so it doesn't burn AI calls
+            for chains the operator never opens. */}
+        <AiSummaryPanel groupId={groupId} initialSummary={data.summary ?? null} />
         <PathCard path={data} forceExpanded />
       </div>
     </FindingDrawerHost>
+  );
+}
+
+// ── AI summary panel (Phase 27.5.x) ───────────────────────────────────────
+//
+// Operator-triggered: shows a "Generate AI summary" button when no summary
+// exists, the cached tldr+narrative when one does, and a "Regenerate"
+// button (always) plus a "Stale — content changed" hint when the cached
+// hash no longer matches the chain. Never auto-fires.
+
+function AiSummaryPanel({
+  groupId,
+  initialSummary,
+}: {
+  groupId:        string;
+  initialSummary: AttackPathSummaryAI | null;
+}) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const [summary, setSummary] = useState<AttackPathSummaryAI | null>(initialSummary);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const gen = useMutation({
+    mutationFn: (force: boolean) => attackPathsApi.summarise(groupId, force),
+    onSuccess: (next) => {
+      setSummary(next);
+      setErrorMsg(null);
+      qc.invalidateQueries({ queryKey: ["attackPath", groupId] });
+      toast.success(next.cached ? "Loaded cached summary" : "Summary generated");
+    },
+    onError: (err: Error & { response?: { data?: { error?: string; code?: string } } }) => {
+      const code = err.response?.data?.code;
+      const detail = err.response?.data?.error ?? err.message ?? "Failed to generate";
+      setErrorMsg(
+        code === "PROVIDER_UNCONFIGURED"
+          ? "No AI provider configured for this org. Set one up in Settings → AI Providers."
+          : detail,
+      );
+    },
+  });
+
+  // Empty state — never generated
+  if (!summary) {
+    return (
+      <div className="mb-4 rounded-xl border border-indigo-800/40 bg-indigo-950/30 p-4">
+        <div className="flex items-start gap-3">
+          <Sparkles className="mt-0.5 h-4 w-4 text-indigo-400" />
+          <div className="flex-1">
+            <h3 className="text-sm font-semibold text-white">AI summary</h3>
+            <p className="mt-0.5 text-xs text-gray-400">
+              Get a 1-paragraph plain-language explanation of what this chain represents and the
+              realistic exploit path. Manual trigger — costs one AI call against your configured
+              provider; cached afterwards until the chain content changes.
+            </p>
+            <button
+              type="button"
+              onClick={() => gen.mutate(false)}
+              disabled={gen.isPending}
+              className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-indigo-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-600 disabled:opacity-50"
+            >
+              <Sparkles className="h-3 w-3" /> {gen.isPending ? "Generating…" : "Generate summary"}
+            </button>
+            {errorMsg && <p className="mt-2 text-xs text-red-400">{errorMsg}</p>}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Populated state
+  return (
+    <div className="mb-4 rounded-xl border border-indigo-800/40 bg-indigo-950/30 p-4">
+      <div className="flex items-start gap-3">
+        <Sparkles className="mt-0.5 h-4 w-4 text-indigo-400" />
+        <div className="flex-1 min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="text-sm font-semibold text-white">AI summary</h3>
+            {summary.stale && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-amber-800 bg-amber-950/30 px-2 py-0.5 text-[10px] text-amber-300">
+                Stale — chain content changed
+              </span>
+            )}
+            <span className="text-[10px] text-gray-500">
+              {summary.providerType.toLowerCase()} · {summary.model}
+            </span>
+            <button
+              type="button"
+              onClick={() => gen.mutate(true)}
+              disabled={gen.isPending}
+              className="ml-auto inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] text-gray-400 hover:bg-gray-800 hover:text-gray-200 disabled:opacity-50"
+              title="Regenerate from scratch (forces a fresh AI call)"
+            >
+              <RefreshCw className={`h-3 w-3 ${gen.isPending ? "animate-spin" : ""}`} />
+              {gen.isPending ? "Regenerating…" : "Regenerate"}
+            </button>
+          </div>
+          <p className="mt-2 text-sm font-medium text-indigo-100">{summary.tldr}</p>
+          <p className="mt-2 whitespace-pre-line text-xs leading-relaxed text-gray-300">{summary.narrative}</p>
+          {errorMsg && <p className="mt-2 text-xs text-red-400">{errorMsg}</p>}
+        </div>
+      </div>
+    </div>
   );
 }
 

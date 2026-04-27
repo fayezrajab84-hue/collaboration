@@ -160,6 +160,7 @@ enum AIServiceName {
   RISK_SCORE            // riskScoringService — repo/container/domain score
   CHAT                  // chatService — interactive Q&A
   GROUP_INSIGHT         // findingGroupService — cluster commentary
+  ATTACK_PATH_SUMMARY   // attackPathSummaryService — narrative for one chain
 }
 
 enum ReportTrigger {
@@ -255,6 +256,39 @@ model Organization {
   invitations     Invitation[]
   ssoConfig       SsoConfig?
   sboms           Sbom[]
+}
+
+// ── Phase 27.5.x — AI summary cache for a correlated chain ────────────────
+// One row per `Finding.correlationGroupId` that we've summarised. Cached
+// because the AI call is slow (~5-15s) and costs money; the operator
+// triggers regeneration via the "Refresh summary" button when the chain
+// composition has shifted.
+//
+// Stored as plain text (markdown allowed) so the UI can render it without
+// further parsing. tldr is the 1-line headline shown in the chain card
+// header; narrative is the full 2-3 paragraph explanation.
+model AttackPathSummary {
+  id                 String   @id @default(cuid())
+  orgId              String
+  // Same shape as Finding.correlationGroupId — chains are coalesced
+  // groups; the id is anchored on the chain's union-find root finding.
+  // Not a FK — chains can re-key when their root finding is deleted, and
+  // we don't want to lose the cached summary on every minor churn.
+  correlationGroupId String   @unique
+  tldr               String
+  narrative          String   @db.Text
+  // Track which provider + model produced this so the UI can surface it
+  // ("Generated with Claude Sonnet 4.5") and so a future "regenerate
+  // because the model has changed" check is possible.
+  providerType       AIProviderType
+  model              String
+  // The chain's content fingerprint at generation time — when the chain
+  // changes (members added/removed via correlation refresh), the
+  // summary becomes stale and the UI nudges the operator to regenerate.
+  contentHash        String
+  generatedAt        DateTime @default(now())
+
+  @@index([orgId, generatedAt(sort: Desc)])
 }
 
 // ── Phase 27.5 — Application boundary ─────────────────────────────────────

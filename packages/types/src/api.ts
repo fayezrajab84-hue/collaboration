@@ -380,6 +380,26 @@ export interface AttackPathsListResponse {
   paths: AttackPathSummary[];
 }
 
+// ── AI summary for an attack path (Phase 27.5.x) ─────────────────────────
+// Generated on-demand by POST /api/attack-paths/:groupId/summarise.
+// Cached by content-hash; UI shows the regenerate button when stale.
+export interface AttackPathSummaryAI {
+  groupId:      string;
+  tldr:         string;       // 1-line headline (max 280 chars)
+  narrative:    string;       // 2-3 paragraphs (max 2000 chars)
+  providerType: string;       // "ANTHROPIC" | "OPENAI" | "GEMINI" | "OLLAMA"
+  model:        string;       // resolved model id used for this generation
+  contentHash:  string;       // chain-content fingerprint at gen time
+  generatedAt:  string;
+  cached:       boolean;      // true on cache-hit, false when freshly generated
+  stale:        boolean;      // true when chain content has changed since generation
+}
+
+/** Chain detail response (GET /api/attack-paths/:groupId) — extends list shape with summary. */
+export interface AttackPathDetailResponse extends AttackPathSummary {
+  summary: AttackPathSummaryAI | null;
+}
+
 export interface ControlFindingsResponse {
   control: {
     id:          string;

@@ -13,7 +13,7 @@ import type {
   ComplianceFramework, FrameworksResponse, FrameworkDashboard, ControlFindingsResponse,
   UpdateRepoAssetLinksRequest, UpdateContainerAssetLinksRequest, UpdateDomainAssetLinksRequest,
   AssetLinksResponse,
-  AttackPathSummary, AttackPathsListResponse,
+  AttackPathSummary, AttackPathsListResponse, AttackPathSummaryAI, AttackPathDetailResponse,
   Application, CreateApplicationRequest, UpdateApplicationRequest,
   UpdateApplicationComponentsRequest, ApplicationComponentsResponse,
   ApplicationEnv, Criticality,
@@ -788,7 +788,14 @@ export const attackPathsApi = {
   list: (limit = 50) =>
     apiClient.get<AttackPathsListResponse>("/attack-paths", { params: { limit } }).then((r) => r.data),
   get: (groupId: string) =>
-    apiClient.get<AttackPathSummary>(`/attack-paths/${encodeURIComponent(groupId)}`).then((r) => r.data),
+    apiClient.get<AttackPathDetailResponse>(`/attack-paths/${encodeURIComponent(groupId)}`).then((r) => r.data),
+  /** Phase 27.5.x — generate (or fetch cached) AI summary for one chain. */
+  summarise: (groupId: string, force = false) =>
+    apiClient.post<AttackPathSummaryAI>(
+      `/attack-paths/${encodeURIComponent(groupId)}/summarise`,
+      {},
+      { params: force ? { force: "true" } : undefined, timeout: 120_000 },
+    ).then((r) => r.data),
 };
 
 // ── Compliance (Phase 16) ────────────────────────────────────────────────
