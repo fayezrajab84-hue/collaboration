@@ -352,6 +352,16 @@ export interface AttackPathNode {
   targetName: string | null;
   filePath:   string | null;
   evidence:   Record<string, unknown> | null;
+  /** Phase 27.5.x — scan-type-specific specifics so the operator can see
+   *  WHICH vulnerability inline without opening the drawer. */
+  lineStart:      number | null;     // SAST/IAC/SECRET source-line
+  ruleId:         string | null;     // Semgrep / Trivy / nuclei rule
+  cveId:          string | null;     // SCA / CONTAINER CVE
+  cweId:          string | null;
+  packageName:    string | null;     // SCA / CONTAINER affected package
+  packageVersion: string | null;
+  fixVersion:     string | null;     // SCA — what to bump to
+  cvssScore:      number | null;
 }
 
 export interface AttackPathEdge {

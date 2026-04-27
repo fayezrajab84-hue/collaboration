@@ -367,6 +367,14 @@ function PathCard({ path, forceExpanded }: { path: AttackPathSummary; forceExpan
 
 function PathStep({ node, stepIndex }: { node: AttackPathNode; stepIndex: number }) {
   const { openFinding } = useContext(DrawerCtx);
+
+  // Scan-type-aware "vulnerability locator" line. Different scan types have
+  // different "where exactly is the bug" answer:
+  //   SAST/IAC/SECRET → file:line + ruleId
+  //   SCA/CONTAINER   → packageName@version + CVE + fix
+  //   DAST/PENTEST    → URL + payload (when present)
+  const locator = buildLocator(node);
+
   return (
     <li className="relative">
       <div className="absolute -left-[22px] top-1.5 flex h-4 w-4 items-center justify-center rounded-full border border-gray-700 bg-gray-900 text-[10px] text-gray-400">
@@ -375,29 +383,137 @@ function PathStep({ node, stepIndex }: { node: AttackPathNode; stepIndex: number
       <button
         type="button"
         onClick={() => openFinding(node.findingId)}
-        className="flex w-full items-start gap-3 rounded p-1.5 text-left transition-colors hover:bg-gray-800/60 focus:outline-none focus-visible:ring-1 focus-visible:ring-indigo-400"
+        className="flex w-full items-start gap-3 rounded p-2 text-left transition-colors hover:bg-gray-800/60 focus:outline-none focus-visible:ring-1 focus-visible:ring-indigo-400"
         title="Open finding details"
       >
         <TargetIcon targetType={node.targetType} />
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <SeverityBadge severity={node.severity} />
+            <span className="rounded bg-gray-800 px-1.5 py-0.5 text-[10px] font-medium text-gray-400">
+              {node.scanType}
+            </span>
             <span className="truncate text-sm text-gray-200">{node.title}</span>
-          </div>
-          <p className="mt-0.5 text-xs text-gray-500">
-            <span className="font-mono">{node.scanType}</span>
-            {node.targetName && <> · {node.targetName}</>}
-            {node.filePath && <> · <span className="font-mono">{node.filePath}</span></>}
             {node.confidence === "CONFIRMED" && (
-              <span className="ml-2 inline-flex items-center gap-1 text-emerald-400">
+              <span className="inline-flex items-center gap-1 text-[10px] text-emerald-400">
                 <Shield className="h-3 w-3" /> proof
               </span>
             )}
-          </p>
+          </div>
+          {/* Locator line — what + where, scan-type aware */}
+          {locator && (
+            <p className="mt-1 text-xs text-gray-400">{locator}</p>
+          )}
+          {/* Target line — the asset this finding lives on */}
+          {node.targetName && (
+            <p className="mt-0.5 text-[11px] text-gray-600">
+              {labelForTargetType(node.targetType)} · <span className="font-mono">{node.targetName}</span>
+            </p>
+          )}
         </div>
       </button>
     </li>
   );
+}
+
+function labelForTargetType(t: string): string {
+  if (t === "REPOSITORY") return "repo";
+  if (t === "CONTAINER")  return "image";
+  return "domain";
+}
+
+/** Build the scan-type-aware "where exactly" string for a chain node. */
+function buildLocator(node: AttackPathNode): React.ReactNode {
+  // Code-side (SAST/IAC/SECRET): file path + line number + rule id
+  if (node.scanType === "SAST" || node.scanType === "IAC" || node.scanType === "SECRET") {
+    const parts: React.ReactNode[] = [];
+    if (node.filePath) {
+      parts.push(
+        <span key="file" className="font-mono text-gray-300">
+          {node.filePath}{node.lineStart != null ? `:${node.lineStart}` : ""}
+        </span>,
+      );
+    }
+    if (node.ruleId) parts.push(<RuleChip key="rule">{node.ruleId}</RuleChip>);
+    if (node.cweId)  parts.push(<RuleChip key="cwe">CWE-{stripCwePrefix(node.cweId)}</RuleChip>);
+    return parts.length ? <>{interleave(parts, " · ")}</> : null;
+  }
+
+  // Package-side (SCA / CONTAINER): package@version, CVE, fix version
+  if (node.scanType === "SCA" || node.scanType === "CONTAINER") {
+    const parts: React.ReactNode[] = [];
+    if (node.packageName) {
+      const pkg = node.packageVersion
+        ? `${node.packageName}@${node.packageVersion}`
+        : node.packageName;
+      parts.push(<span key="pkg" className="font-mono text-gray-300">{pkg}</span>);
+    }
+    if (node.cveId) {
+      parts.push(
+        <span key="cve" className="rounded bg-red-950/30 px-1.5 py-0.5 font-mono text-[10px] text-red-300">
+          {node.cveId}{node.cvssScore != null ? ` · CVSS ${node.cvssScore.toFixed(1)}` : ""}
+        </span>,
+      );
+    }
+    if (node.fixVersion) {
+      parts.push(
+        <span key="fix" className="rounded bg-emerald-950/30 px-1.5 py-0.5 text-[10px] text-emerald-300">
+          fix → {node.fixVersion}
+        </span>,
+      );
+    }
+    return parts.length ? <span className="inline-flex flex-wrap items-center gap-1">{parts}</span> : null;
+  }
+
+  // Web-side (DAST / PENTEST / PENTEST_FULL): URL + payload (if any)
+  if (node.scanType === "DAST" || node.scanType === "PENTEST" || node.scanType === "PENTEST_FULL") {
+    const ev = (node.evidence ?? {}) as Record<string, unknown>;
+    const url = (ev["url"] ?? ev["request_url"] ?? ev["target_url"] ?? ev["endpoint"]) as string | undefined;
+    const payload = ev["payload"] as string | undefined;
+    const parts: React.ReactNode[] = [];
+    if (url) {
+      parts.push(
+        <span key="url" className="font-mono text-gray-300 break-all">
+          {truncate(url, 90)}
+        </span>,
+      );
+    }
+    if (payload) {
+      parts.push(
+        <span key="pl" className="font-mono text-[10px] text-amber-400">
+          payload: {truncate(payload, 60)}
+        </span>,
+      );
+    }
+    if (node.ruleId) parts.push(<RuleChip key="rule">{node.ruleId}</RuleChip>);
+    return parts.length ? <span className="inline-flex flex-wrap items-center gap-1">{parts}</span> : null;
+  }
+
+  // Runtime / other — just show file path or evidence url if present
+  if (node.filePath) return <span className="font-mono text-gray-300">{node.filePath}</span>;
+  return null;
+}
+
+function RuleChip({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="rounded bg-gray-800/60 px-1.5 py-0.5 font-mono text-[10px] text-gray-400">
+      {children}
+    </span>
+  );
+}
+
+function stripCwePrefix(raw: string): string {
+  return raw.replace(/^CWE-?/i, "");
+}
+
+function truncate(s: string, n: number): string {
+  return s.length > n ? `${s.slice(0, n)}…` : s;
+}
+
+function interleave<T>(arr: T[], sep: T): T[] {
+  const out: T[] = [];
+  arr.forEach((item, i) => { if (i > 0) out.push(sep); out.push(item); });
+  return out;
 }
 
 function TargetIcon({ targetType }: { targetType: string }) {

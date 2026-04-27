@@ -48,9 +48,20 @@ export interface AttackPathNode {
   scanType:   string;
   confidence: Confidence;
   targetType: TargetType;
-  targetName: string | null;   // resolved repo name / image ref / domain
+  targetName: string | null;       // resolved repo name / image ref / domain
   filePath:   string | null;
   evidence:   Record<string, unknown> | null;
+  // Phase 27.5.x — scan-type-specific specifics so the chain card answers
+  // "WHICH vulnerability" inline. Without these the operator had to click
+  // every node to find the line number / package / CVE.
+  lineStart:      number | null;   // SAST/IAC/SECRET source-line
+  ruleId:         string | null;   // Semgrep / Trivy / nuclei rule id
+  cveId:          string | null;   // SCA / CONTAINER CVE
+  cweId:          string | null;   // every scan type when known
+  packageName:    string | null;   // SCA / CONTAINER affected package
+  packageVersion: string | null;
+  fixVersion:     string | null;   // SCA — what to bump to
+  cvssScore:      number | null;
 }
 
 export interface AttackPathEdge {
@@ -193,6 +204,14 @@ function scoreGroup(groupId: string, members: WithTargets[]): AttackPathSummary 
       null,
     filePath:   m.filePath,
     evidence:   (m.evidence ?? null) as Record<string, unknown> | null,
+    lineStart:      m.lineStart      ?? null,
+    ruleId:         m.ruleId         ?? null,
+    cveId:          m.cveId          ?? null,
+    cweId:          m.cweId          ?? null,
+    packageName:    m.packageName    ?? null,
+    packageVersion: m.packageVersion ?? null,
+    fixVersion:     m.fixVersion     ?? null,
+    cvssScore:      m.cvssScore      ?? null,
   }));
 
   // Edges from correlationEdges — collapse duplicates per pair.
