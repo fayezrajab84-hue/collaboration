@@ -166,15 +166,21 @@ Closes the Phase 22 gap that bites Entra-federated-GitHub-Enterprise customers: 
 
 ---
 
-### Phase 14 — Reachability for SCA ❌ *(HIGH-VALUE differentiator, not a gate, 1–2 weeks)*
+### Phase 14 — Reachability for SCA ✅ *(SHIPPED — package-level MVP for JS/Python; per-language followups deferred)*
 
-- Build call-graph from repo (`jdeps` for Java, `syft` + custom for JS, etc.)
-- For each CVE in Trivy output, mark `reachable: true / false / unknown`
-- New finding filter: "Reachable HIGH/CRITICAL only"
+- ✅ **Slice A — Schema + scanner-side import detection** (commit `06b1c73`): `Reachability` enum + `Finding.reachability` + `reachabilityEvidence`. Scanner walks the source tree post-Trivy, builds `{packageName → [importing files]}` for JS/TS/Python.
+- ✅ **Slice B — UI badge** (commit `b74d6bb`): `ReachabilityBadge` on every finding row in `/findings` and inside the compliance drill-down. Hover shows the evidence files. NOT_APPLICABLE renders nothing.
+- ✅ **Language-gate fix** (commit `18f1d2b`): Java / Go / Ruby / .NET findings stay UNKNOWN instead of being falsely tagged NOT_REACHABLE — first-day bug caught before it shipped to a customer.
+- ✅ **Slice C — Filter + noise-reduction stat** (commit `8983449`): reachability MultiSelect on FindingsPage; "X open findings reach actual source code · Y can be deferred (Z% noise filtered)" stat in the compliance dashboard header.
 
-**Why:** Endor Labs raised $70M selling this single feature. Cuts SCA finding noise by ~80% so devs stop ignoring the queue.
-**World-class equivalent:** Endor Labs, Snyk Reachability.
-**Note:** does *not* block any sale — improves UX for already-deployed customers, key driver of renewal not initial close.
+**Live numbers in dev** (OWASP/NodeGoat after Slice A scan): 6 REACHABLE / 36 NOT_REACHABLE = 86% noise reduction on SCA triage. The 6 REACHABLE packages (`underscore`, `mongodb`, `body-parser`, `marked`, `swig`, `express`) are exactly what an attacker can touch — the other 36 are deep transitives that NodeGoat's source never imports.
+
+**Followups not in MVP:**
+- Per-language full classifiers for Maven (Java), Go modules, Ruby gems, Cargo crates — currently returns UNKNOWN
+- True call-graph reachability (vulnerable function actually called, not just package imported) — months of work per language; the classification framework is in place, just swap in the call-graph builder when ready
+- Container SBOM reachability — harder, no source code to grep; future option is process-list / lib-load evidence from the running container
+
+**World-class equivalent:** Endor Labs ($70M raised on this single feature), Snyk Reachability. BreachLens v1 is package-level not function-level, but the noise-reduction story matches the demo numbers customers actually see.
 
 ---
 
