@@ -369,6 +369,9 @@ export interface AttackPathSummary {
   maxSeverity:    "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
   hasConfirmed:   boolean;
   externalReach:  number;
+  /** Phase 27.5.x — Application IDs whose components contributed to this
+   *  chain. Powers the /attack-paths Application MultiSelect filter. */
+  applicationIds: string[];
   nodes:          AttackPathNode[];
   edges:          AttackPathEdge[];
 }

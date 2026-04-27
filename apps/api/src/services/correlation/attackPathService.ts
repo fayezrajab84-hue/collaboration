@@ -68,6 +68,16 @@ export interface AttackPathSummary {
   maxSeverity:     Severity;
   hasConfirmed:    boolean;
   externalReach:   number;
+  /**
+   * Phase 27.5.x — Application IDs that this chain's findings belong to.
+   * Powers the /attack-paths Application MultiSelect filter (chain matches
+   * when ANY of its asset's applications is in the selected set). Per-app
+   * correlation means this is usually a single-element array, but a chain
+   * crossing app boundaries (legacy data, manual re-assignment mid-sweep)
+   * may briefly carry multiple — surface them honestly so the UI can
+   * indicate "spans 2 applications".
+   */
+  applicationIds:  string[];
   // The "best" path through the group — for the list view.
   nodes:           AttackPathNode[];
   edges:           AttackPathEdge[];
@@ -85,9 +95,9 @@ export async function listAttackPaths(orgId: string, limit = 50): Promise<Attack
       status:             { not: "FALSE_POSITIVE" },
     },
     include: {
-      repository: { select: { fullName: true } },
-      container:  { select: { imageRef: true } },
-      domain:     { select: { domain: true } },
+      repository: { select: { fullName: true, applicationId: true } },
+      container:  { select: { imageRef: true, applicationId: true } },
+      domain:     { select: { domain: true,   applicationId: true } },
     },
   });
 
@@ -120,9 +130,9 @@ export async function getAttackPath(orgId: string, groupId: string): Promise<Att
       status:             { not: "FALSE_POSITIVE" },
     },
     include: {
-      repository: { select: { fullName: true } },
-      container:  { select: { imageRef: true } },
-      domain:     { select: { domain: true } },
+      repository: { select: { fullName: true, applicationId: true } },
+      container:  { select: { imageRef: true, applicationId: true } },
+      domain:     { select: { domain: true,   applicationId: true } },
     },
   });
   if (members.length === 0) return null;
@@ -132,9 +142,9 @@ export async function getAttackPath(orgId: string, groupId: string): Promise<Att
 // ── Internals ─────────────────────────────────────────────────────────
 
 type WithTargets = Awaited<ReturnType<typeof prisma.finding.findMany>>[number] & {
-  repository?: { fullName: string } | null;
-  container?:  { imageRef: string } | null;
-  domain?:     { domain: string } | null;
+  repository?: { fullName: string; applicationId: string | null } | null;
+  container?:  { imageRef: string; applicationId: string | null } | null;
+  domain?:     { domain: string;   applicationId: string | null } | null;
 };
 
 function scoreGroup(groupId: string, members: WithTargets[]): AttackPathSummary | null {
@@ -204,6 +214,17 @@ function scoreGroup(groupId: string, members: WithTargets[]): AttackPathSummary 
     }
   }
 
+  // Phase 27.5.x — collect distinct application IDs for the chain so the
+  // /attack-paths Application MultiSelect filter can match.
+  const appIdSet = new Set<string>();
+  for (const m of members) {
+    const aid = m.repository?.applicationId
+             ?? m.container?.applicationId
+             ?? m.domain?.applicationId
+             ?? null;
+    if (aid) appIdSet.add(aid);
+  }
+
   return {
     groupId,
     score,
@@ -211,6 +232,7 @@ function scoreGroup(groupId: string, members: WithTargets[]): AttackPathSummary 
     maxSeverity:   maxSev,
     hasConfirmed,
     externalReach: reach,
+    applicationIds: Array.from(appIdSet),
     nodes,
     edges,
   };
