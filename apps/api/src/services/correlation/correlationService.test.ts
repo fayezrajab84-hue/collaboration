@@ -9,13 +9,15 @@ import { cveBridge } from "./cveBridge.js";
 import { _testing as routeTesting } from "./routeBridge.js";
 import { secretBridge } from "./secretBridge.js";
 import { containerExposureBridge } from "./containerExposureBridge.js";
+import { runtimeBridge } from "./runtimeBridge.js";
 import { _testing as engineTesting } from "./correlationService.js";
 import type { BridgeContext } from "./bridgeInterface.js";
 
 const EMPTY_CTX: BridgeContext = {
-  containerById:        new Map(),
-  containersByImageRef: new Map(),
-  domainById:           new Map(),
+  containerById:             new Map(),
+  containersByImageRef:      new Map(),
+  domainById:                new Map(),
+  containerIdByWazuhAgentId: new Map(),
 };
 
 function fakeFinding(over: Partial<Finding>): Finding {
@@ -88,8 +90,9 @@ describe("cveBridge", () => {
       containerById: new Map([
         ["c1", { id: "c1", imageRef: "myorg/app:1", sourceRepositoryId: "r1", deployedAtDomainIds: [] }],
       ]),
-      containersByImageRef: new Map(),
-      domainById:           new Map(),
+      containersByImageRef:      new Map(),
+      domainById:                new Map(),
+      containerIdByWazuhAgentId: new Map(),
     };
     const m = cveBridge.match(a, b, ctx);
     expect(m?.confidence).toBe("CONFIRMED");
@@ -239,6 +242,7 @@ describe("containerExposureBridge", () => {
     domainById: new Map([
       ["d1", { id: "d1", domain: "api.example.com", servesContainerIds: ["c1"] }],
     ]),
+    containerIdByWazuhAgentId: new Map(),
   };
   const ctxUnlinked: BridgeContext = {
     containerById: new Map([
@@ -248,6 +252,7 @@ describe("containerExposureBridge", () => {
     domainById: new Map([
       ["d1", { id: "d1", domain: "api.example.com", servesContainerIds: [] }],
     ]),
+    containerIdByWazuhAgentId: new Map(),
   };
 
   it("links CONTAINER + DAST when both sides are HIGH+ and asset graph linked", () => {
@@ -306,6 +311,152 @@ describe("containerExposureBridge", () => {
     const ab = containerExposureBridge.match(c, d, ctxLinked);
     const ba = containerExposureBridge.match(d, c, ctxLinked);
     expect(ab).toEqual(ba);
+  });
+});
+
+describe("runtimeBridge", () => {
+  // Phase 28 Slice C — links RUNTIME findings (Wazuh alerts) to other
+  // findings on the same Container, or on the Domain that container serves.
+  const ctxAgentLinked: BridgeContext = {
+    containerById: new Map([
+      ["c1", { id: "c1", imageRef: "myorg/web:2.0", sourceRepositoryId: null, deployedAtDomainIds: ["d1"] }],
+    ]),
+    containersByImageRef:      new Map(),
+    domainById:                new Map([
+      ["d1", { id: "d1", domain: "app.example.com", servesContainerIds: ["c1"] }],
+    ]),
+    // Wazuh agent "001" monitors container c1
+    containerIdByWazuhAgentId: new Map([["001", "c1"]]),
+  };
+
+  it("links RUNTIME → CONTAINER finding on the same container (direct)", () => {
+    // Direct case: RUNTIME finding has containerId set (post-fix ingestion).
+    const r = fakeFinding({
+      id: "r", scanType: "RUNTIME", targetType: "CONTAINER",
+      containerId: "c1", severity: "HIGH", ruleId: "5715",
+    });
+    const c = fakeFinding({
+      id: "c", scanType: "CONTAINER", targetType: "CONTAINER",
+      containerId: "c1", severity: "CRITICAL", cveId: "CVE-2024-X",
+    });
+    const m = runtimeBridge.match(r, c, ctxAgentLinked);
+    expect(m).not.toBeNull();
+    expect(m?.bridgeType).toBe("runtime");
+    expect(m?.confidence).toBe("LIKELY"); // HIGH severity → LIKELY
+    expect(m?.reason).toContain("Wazuh rule 5715");
+  });
+
+  it("resolves containerId via WorkloadAgent map when Finding.containerId is null", () => {
+    // Legacy case: RUNTIME finding ingested before operator linked the agent
+    // — containerId is null but rawOutput.agent_id matches a linked agent.
+    const r = fakeFinding({
+      id: "r", scanType: "RUNTIME", targetType: "CONTAINER",
+      containerId: null, severity: "CRITICAL", ruleId: "5503",
+      rawOutput: { source: "wazuh", agent_id: "001" },
+    });
+    const c = fakeFinding({
+      id: "c", scanType: "CONTAINER", targetType: "CONTAINER",
+      containerId: "c1", severity: "HIGH", cveId: "CVE-X",
+    });
+    const m = runtimeBridge.match(r, c, ctxAgentLinked);
+    expect(m).not.toBeNull();
+    expect(m?.confidence).toBe("LIKELY"); // CRITICAL severity → LIKELY
+  });
+
+  it("links RUNTIME → DAST finding on Domain served by container (indirect)", () => {
+    // Indirect case: RUNTIME on container c1 → DAST on domain d1 (which c1 serves).
+    const r = fakeFinding({
+      id: "r", scanType: "RUNTIME", targetType: "CONTAINER",
+      containerId: "c1", severity: "HIGH", ruleId: "31100",
+    });
+    const d = fakeFinding({
+      id: "d", scanType: "DAST", targetType: "DOMAIN",
+      domainId: "d1", severity: "MEDIUM",
+    });
+    const m = runtimeBridge.match(r, d, ctxAgentLinked);
+    expect(m).not.toBeNull();
+    expect(m?.bridgeType).toBe("runtime");
+    expect(m?.reason).toContain("domain served by container myorg/web:2.0");
+  });
+
+  it("downranks to POSSIBLE for MEDIUM/LOW runtime severity", () => {
+    const r = fakeFinding({
+      id: "r", scanType: "RUNTIME", targetType: "CONTAINER",
+      containerId: "c1", severity: "MEDIUM", ruleId: "1002",
+    });
+    const c = fakeFinding({
+      id: "c", scanType: "CONTAINER", targetType: "CONTAINER",
+      containerId: "c1", severity: "HIGH", cveId: "CVE-X",
+    });
+    const m = runtimeBridge.match(r, c, ctxAgentLinked);
+    expect(m?.confidence).toBe("POSSIBLE");
+  });
+
+  it("returns null when RUNTIME finding has no resolvable container", () => {
+    const r = fakeFinding({
+      id: "r", scanType: "RUNTIME", targetType: "CONTAINER",
+      containerId: null, severity: "HIGH", ruleId: "5715",
+      rawOutput: { source: "wazuh", agent_id: "999" }, // not in map
+    });
+    const c = fakeFinding({
+      id: "c", scanType: "CONTAINER", targetType: "CONTAINER",
+      containerId: "c1", severity: "HIGH", cveId: "CVE-X",
+    });
+    expect(runtimeBridge.match(r, c, ctxAgentLinked)).toBeNull();
+  });
+
+  it("returns null for RUNTIME ↔ RUNTIME (no self-tier bridging)", () => {
+    // Two runtime alerts on the same container shouldn't form an edge —
+    // wazuhIngestService already merges same-hour alerts into one Finding,
+    // so distinct rows mean different rules; keeping them separate avoids
+    // chain inflation from runtime noise.
+    const r1 = fakeFinding({
+      id: "r1", scanType: "RUNTIME", targetType: "CONTAINER",
+      containerId: "c1", severity: "HIGH", ruleId: "5715",
+    });
+    const r2 = fakeFinding({
+      id: "r2", scanType: "RUNTIME", targetType: "CONTAINER",
+      containerId: "c1", severity: "HIGH", ruleId: "5503",
+    });
+    expect(runtimeBridge.match(r1, r2, ctxAgentLinked)).toBeNull();
+  });
+
+  it("rejects cross-org pairs (defence-in-depth)", () => {
+    const r = fakeFinding({
+      id: "r", orgId: "orgA", scanType: "RUNTIME", targetType: "CONTAINER",
+      containerId: "c1", severity: "HIGH", ruleId: "5715",
+    });
+    const c = fakeFinding({
+      id: "c", orgId: "orgB", scanType: "CONTAINER", targetType: "CONTAINER",
+      containerId: "c1", severity: "HIGH", cveId: "CVE-X",
+    });
+    expect(runtimeBridge.match(r, c, ctxAgentLinked)).toBeNull();
+  });
+
+  it("is symmetric — match(r, c) === match(c, r)", () => {
+    const r = fakeFinding({
+      id: "r", scanType: "RUNTIME", targetType: "CONTAINER",
+      containerId: "c1", severity: "HIGH", ruleId: "5715",
+    });
+    const c = fakeFinding({
+      id: "c", scanType: "CONTAINER", targetType: "CONTAINER",
+      containerId: "c1", severity: "HIGH", cveId: "CVE-X",
+    });
+    const ab = runtimeBridge.match(r, c, ctxAgentLinked);
+    const ba = runtimeBridge.match(c, r, ctxAgentLinked);
+    expect(ab).toEqual(ba);
+  });
+
+  it("returns null when neither side is RUNTIME", () => {
+    const c = fakeFinding({
+      id: "c", scanType: "CONTAINER", targetType: "CONTAINER",
+      containerId: "c1", severity: "HIGH", cveId: "CVE-X",
+    });
+    const d = fakeFinding({
+      id: "d", scanType: "DAST", targetType: "DOMAIN",
+      domainId: "d1", severity: "HIGH",
+    });
+    expect(runtimeBridge.match(c, d, ctxAgentLinked)).toBeNull();
   });
 });
 

@@ -25,6 +25,7 @@ import { routeBridge } from "./routeBridge.js";
 import { portBridge } from "./portBridge.js";
 import { secretBridge } from "./secretBridge.js";
 import { containerExposureBridge } from "./containerExposureBridge.js";
+import { runtimeBridge } from "./runtimeBridge.js";
 import type {
   Bridge,
   BridgeContext,
@@ -42,6 +43,7 @@ const REGISTERED_BRIDGES: readonly Bridge[] = [
   portBridge,
   secretBridge,
   containerExposureBridge,
+  runtimeBridge,  // Phase 28 Slice C — RUNTIME findings into chains
 ];
 
 export interface CorrelationRunSummary {
@@ -264,7 +266,7 @@ export async function runCorrelationForFinding(findingId: string): Promise<Corre
 // ── Internals ─────────────────────────────────────────────────────────
 
 async function buildContext(orgId: string): Promise<BridgeContext> {
-  const [containers, domains] = await Promise.all([
+  const [containers, domains, agents] = await Promise.all([
     prisma.container.findMany({
       where:  { orgId },
       select: { id: true, imageRef: true, sourceRepositoryId: true, deployedAtDomainIds: true },
@@ -272,6 +274,15 @@ async function buildContext(orgId: string): Promise<BridgeContext> {
     prisma.domain.findMany({
       where:  { orgId },
       select: { id: true, domain: true, servesContainerIds: true },
+    }),
+    // Phase 28 Slice C — load WorkloadAgent → Container linkages so
+    // runtimeBridge can resolve a RUNTIME Finding's agent_id to the
+    // Container it monitors even when Finding.containerId wasn't set
+    // at ingestion time (legacy alerts ingested before the operator
+    // linked the agent).
+    prisma.workloadAgent.findMany({
+      where:  { orgId, linkedContainerId: { not: null } },
+      select: { wazuhAgentId: true, linkedContainerId: true },
     }),
   ]);
 
@@ -295,7 +306,14 @@ async function buildContext(orgId: string): Promise<BridgeContext> {
     domainById.set(d.id, { id: d.id, domain: d.domain, servesContainerIds: d.servesContainerIds });
   }
 
-  return { containerById, containersByImageRef, domainById };
+  const containerIdByWazuhAgentId = new Map<string, string>();
+  for (const a of agents) {
+    if (a.linkedContainerId) {
+      containerIdByWazuhAgentId.set(a.wazuhAgentId, a.linkedContainerId);
+    }
+  }
+
+  return { containerById, containersByImageRef, domainById, containerIdByWazuhAgentId };
 }
 
 function appendEdge(edges: Map<string, PersistedEdge[]>, key: string, edge: PersistedEdge): void {

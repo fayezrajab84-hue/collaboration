@@ -75,6 +75,15 @@ export interface BridgeContext {
   containersByImageRef: Map<string, ContainerSummary[]>;
   /** Domain id → operator-declared serving containers + the domain name. */
   domainById: Map<string, DomainSummary>;
+  /**
+   * Wazuh agent ID → Container ID. Populated from
+   * `WorkloadAgent.linkedContainerId` so runtimeBridge can resolve a RUNTIME
+   * Finding's `rawOutput.agent_id` to the Container the agent monitors —
+   * even when the Finding row itself was persisted before the operator
+   * linked the agent to a Container. Empty when no agents are enrolled or
+   * no operator has set `linkedContainerId`.
+   */
+  containerIdByWazuhAgentId: Map<string, string>;
 }
 
 export interface ContainerSummary {

@@ -168,6 +168,17 @@ async function ingestAlertsForAgent(
 ): Promise<number> {
   if (alerts.length === 0) return 0;
 
+  // Phase 28 Slice C — load the agent's linked Container (if the operator
+  // has set one). Persisting it on Finding.containerId is what lets
+  // runtimeBridge fire on freshly-ingested alerts without needing
+  // BridgeContext fallback. Cheap single lookup; cached implicitly by
+  // Prisma's connection pool.
+  const agentRow = await prisma.workloadAgent.findUnique({
+    where:  { id: agentRowId },
+    select: { linkedContainerId: true },
+  });
+  const linkedContainerId = agentRow?.linkedContainerId ?? null;
+
   // We need a real ScanJob row to satisfy the Finding.scanJobId FK. Create
   // one container "scan job" per ingestion run per agent — fast, indexed.
   // Status=COMPLETED so it doesn't show up in active-scan UIs.
@@ -233,6 +244,11 @@ async function ingestAlertsForAgent(
           orgId,
           scanJobId:   scanJob.id,
           targetType:  "CONTAINER",
+          // Phase 28 Slice C — when the operator has linked the WorkloadAgent
+          // to a Container, set Finding.containerId so runtimeBridge can fire
+          // without BridgeContext fallback resolution. Null when unlinked
+          // (the bridge falls back to the BridgeContext map).
+          containerId: linkedContainerId,
           scanType:    "RUNTIME",
           title,
           description,
