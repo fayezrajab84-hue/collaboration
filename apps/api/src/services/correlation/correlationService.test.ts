@@ -363,15 +363,16 @@ describe("runtimeBridge", () => {
     expect(m?.confidence).toBe("LIKELY"); // CRITICAL severity → LIKELY
   });
 
-  it("links RUNTIME → DAST finding on Domain served by container (indirect)", () => {
+  it("links RUNTIME → DAST finding on Domain served by container when both HIGH+", () => {
     // Indirect case: RUNTIME on container c1 → DAST on domain d1 (which c1 serves).
+    // Both sides must be HIGH+ post-severity-gate; DAST is HIGH here.
     const r = fakeFinding({
       id: "r", scanType: "RUNTIME", targetType: "CONTAINER",
       containerId: "c1", severity: "HIGH", ruleId: "31100",
     });
     const d = fakeFinding({
       id: "d", scanType: "DAST", targetType: "DOMAIN",
-      domainId: "d1", severity: "MEDIUM",
+      domainId: "d1", severity: "HIGH",
     });
     const m = runtimeBridge.match(r, d, ctxAgentLinked);
     expect(m).not.toBeNull();
@@ -379,8 +380,12 @@ describe("runtimeBridge", () => {
     expect(m?.reason).toContain("domain served by container myorg/web:2.0");
   });
 
-  it("downranks to POSSIBLE for MEDIUM/LOW runtime severity", () => {
-    const r = fakeFinding({
+  it("does NOT fire when runtime side is below HIGH (severity gate)", () => {
+    // Phase 28 Slice C iteration: severity gate added to prevent union-find
+    // amplification. A single MEDIUM/LOW Wazuh alert was pulling 80
+    // unrelated container CVEs + 60 DAST findings into one mega-chain on
+    // the DVWA dataset.
+    const rMed = fakeFinding({
       id: "r", scanType: "RUNTIME", targetType: "CONTAINER",
       containerId: "c1", severity: "MEDIUM", ruleId: "1002",
     });
@@ -388,7 +393,37 @@ describe("runtimeBridge", () => {
       id: "c", scanType: "CONTAINER", targetType: "CONTAINER",
       containerId: "c1", severity: "HIGH", cveId: "CVE-X",
     });
-    const m = runtimeBridge.match(r, c, ctxAgentLinked);
+    expect(runtimeBridge.match(rMed, c, ctxAgentLinked)).toBeNull();
+  });
+
+  it("does NOT fire when other side is below HIGH (severity gate)", () => {
+    // Mirror of the above: a HIGH runtime alert against a LOW container
+    // CVE shouldn't form an edge — the LOW CVE wouldn't be exploited as
+    // the same incident as the runtime activity.
+    const r = fakeFinding({
+      id: "r", scanType: "RUNTIME", targetType: "CONTAINER",
+      containerId: "c1", severity: "HIGH", ruleId: "5715",
+    });
+    const cLow = fakeFinding({
+      id: "c", scanType: "CONTAINER", targetType: "CONTAINER",
+      containerId: "c1", severity: "LOW", cveId: "CVE-LOW",
+    });
+    expect(runtimeBridge.match(r, cLow, ctxAgentLinked)).toBeNull();
+  });
+
+  it("indirect domain match returns POSSIBLE (weaker than direct container LIKELY)", () => {
+    // Direct container = LIKELY; indirect via domain = POSSIBLE. The
+    // runtime alert may not actually be related to the HTTP-level vuln on
+    // the served domain, so the weaker confidence is honest.
+    const r = fakeFinding({
+      id: "r", scanType: "RUNTIME", targetType: "CONTAINER",
+      containerId: "c1", severity: "HIGH", ruleId: "31100",
+    });
+    const d = fakeFinding({
+      id: "d", scanType: "DAST", targetType: "DOMAIN",
+      domainId: "d1", severity: "HIGH",
+    });
+    const m = runtimeBridge.match(r, d, ctxAgentLinked);
     expect(m?.confidence).toBe("POSSIBLE");
   });
 

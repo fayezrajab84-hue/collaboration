@@ -309,6 +309,38 @@ services:
   # The scanner-pentest container is on the `public` network and has outbound
   # internet access for both modes.
 
+  # ── Mock Wazuh API (Phase 28 Slice C — W3 validation) ────────────────────
+  # Tiny FastAPI service that imitates the Wazuh Manager REST API endpoints
+  # the wazuhIngestService calls. Lets us validate the full ingest →
+  # runtimeBridge → correlation chain pipeline without standing up the real
+  # Wazuh stack (manager + indexer + dashboard ≈ 3 GB of images).
+  #
+  # Returns 4 canned alerts on different rules (SSH brute-force, sudo,
+  # file integrity, outbound C2) so the hourly-bucket fingerprint produces
+  # 4 distinct RUNTIME findings instead of collapsing everything into one.
+  #
+  # Operator path to real Wazuh: stop this service, deploy real Wazuh,
+  # set WAZUH_API_URL to point at it. No code changes needed.
+  mock-wazuh:
+    build:
+      context: .
+      dockerfile: docker/mock-wazuh.Dockerfile
+    profiles: ["pentest"]    # opt-in; same gate as scanner-pentest
+    restart: unless-stopped
+    environment:
+      MOCK_WAZUH_USER:     ${WAZUH_API_USER:-admin}
+      MOCK_WAZUH_PASSWORD: ${WAZUH_API_PASSWORD:-admin}
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://localhost:8080/health').status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    mem_limit: 128m
+    cpus: '0.25'
+
   # ── Playwright crawler sidecar (Phase 1) ──────────────────────────────────
   # Chromium-based SPA crawler invoked by the scanner during DAST scans.
   # Routes every browser request through ZAP so the active-scan phase has
@@ -497,6 +529,14 @@ services:
       OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5-coder:7b}
       INTERACTSH_URL: ${INTERACTSH_URL:-}
+      # Wazuh ingest — points at mock-wazuh by default (W3 validation).
+      # Operators with a real Wazuh manager set WAZUH_API_URL to the
+      # manager's API endpoint and the same credentials work.
+      WAZUH_API_URL:      ${WAZUH_API_URL:-http://mock-wazuh:8080}
+      WAZUH_API_USER:     ${WAZUH_API_USER:-admin}
+      WAZUH_API_PASSWORD: ${WAZUH_API_PASSWORD:-admin}
+      WAZUH_INSECURE_TLS: ${WAZUH_INSECURE_TLS:-true}
+      WAZUH_POLL_INTERVAL_SECONDS: ${WAZUH_POLL_INTERVAL_SECONDS:-60}
     networks:
       - internal
       - public     # needs outbound: GitHub API calls
