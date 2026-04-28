@@ -101,7 +101,18 @@ export const containerExposureBridge: Bridge = {
 };
 
 function isContainerFinding(f: Finding): boolean {
-  return f.targetType === "CONTAINER" && Boolean(f.containerId);
+  // Phase 28 Slice C iteration: skip RUNTIME findings here. RUNTIME alerts
+  // ALSO carry targetType=CONTAINER + containerId (so runtimeBridge can
+  // resolve them), but they're not container *CVEs* — they're real-world
+  // runtime activity. Letting containerExposureBridge fire on RUNTIME
+  // findings produces duplicate edges (~16 extra per RUNTIME finding on
+  // a real DVWA dataset) since runtimeBridge already covers the same
+  // RUNTIME ↔ DAST/PENTEST link with better semantics + reason text.
+  // The CONTAINER scanType filter keeps this bridge focused on what its
+  // name says: container-image vulnerability findings only.
+  return f.targetType === "CONTAINER"
+    && f.scanType    === "CONTAINER"
+    && Boolean(f.containerId);
 }
 
 function isWebFinding(f: Finding): boolean {

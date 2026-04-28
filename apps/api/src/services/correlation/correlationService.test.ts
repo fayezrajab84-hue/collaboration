@@ -305,6 +305,25 @@ describe("containerExposureBridge", () => {
     expect(containerExposureBridge.match(c1, c2, ctxLinked)).toBeNull();
   });
 
+  it("skips RUNTIME findings on the container side (runtimeBridge covers that link)", () => {
+    // Phase 28 Slice C iteration: RUNTIME findings carry targetType=CONTAINER
+    // + containerId so runtimeBridge can match them, but they're not
+    // container CVEs. Letting containerExposureBridge fire on them would
+    // produce duplicate edges (~16/run on DVWA). runtimeBridge already
+    // covers RUNTIME ↔ DAST/PENTEST_FULL with better reason text.
+    const r = fakeFinding({
+      id: "r", scanType: "RUNTIME", targetType: "CONTAINER",
+      containerId: "c1", severity: "CRITICAL", ruleId: "5715",
+    });
+    const d = fakeFinding({
+      id: "d", scanType: "DAST", targetType: "DOMAIN",
+      domainId: "d1", severity: "HIGH",
+    });
+    expect(containerExposureBridge.match(r, d, ctxLinked)).toBeNull();
+    // Symmetric — order shouldn't matter:
+    expect(containerExposureBridge.match(d, r, ctxLinked)).toBeNull();
+  });
+
   it("is symmetric — match(c, d) === match(d, c)", () => {
     const c = fakeFinding({ id: "c", scanType: "CONTAINER", targetType: "CONTAINER", containerId: "c1", severity: "CRITICAL", cveId: "CVE-X" });
     const d = fakeFinding({ id: "d", scanType: "DAST",      targetType: "DOMAIN",    domainId:    "d1", severity: "HIGH" });
