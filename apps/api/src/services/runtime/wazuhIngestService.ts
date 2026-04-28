@@ -67,6 +67,14 @@ export interface IngestRunSummary {
   agentsConsidered:  number;
   agentsPolled:      number;
   alertsIngested:    number;
+  /**
+   * Vulnerability state docs ingested per sweep — Wazuh 4.13's VD module
+   * writes to `wazuh-states-vulnerabilities-*` rather than the deprecated
+   * /vulnerability/<id> manager API. We pick those up alongside alerts so
+   * each agent's per-package CVE inventory becomes RUNTIME findings with
+   * proper cveId / packageName / fixVersion / cvssScore.
+   */
+  vulnerabilitiesIngested: number;
   findingsTouched:   number;
   errors:            string[];
 }
@@ -81,6 +89,7 @@ export interface IngestRunSummary {
 export async function runWazuhIngestionSweep(
   // Override hooks for unit testing — production passes undefined.
   fetcher: AlertsFetcher = defaultAlertsFetcher,
+  vdFetcher: VulnerabilityStateFetcher = defaultVulnerabilityStateFetcher,
 ): Promise<IngestRunSummary> {
   if (!config.WAZUH_API_URL) {
     return {
@@ -89,6 +98,7 @@ export async function runWazuhIngestionSweep(
       agentsConsidered: 0,
       agentsPolled:     0,
       alertsIngested:   0,
+      vulnerabilitiesIngested: 0,
       findingsTouched:  0,
       errors:           [],
     };
@@ -103,6 +113,7 @@ export async function runWazuhIngestionSweep(
     agentsConsidered: agents.length,
     agentsPolled:     0,
     alertsIngested:   0,
+    vulnerabilitiesIngested: 0,
     findingsTouched:  0,
     errors:           [],
   };
@@ -121,6 +132,26 @@ export async function runWazuhIngestionSweep(
 
       const touched = await ingestAlertsForAgent(agent.id, agent.orgId, alerts);
       summary.findingsTouched += touched;
+
+      // Vulnerability state sweep — only when the indexer is configured
+      // (modern Wazuh 4.13+; the legacy manager path doesn't expose VD).
+      // VD docs are PER-PACKAGE state, not time-series alerts, so we
+      // always pull the full agent inventory; dedup by stable fingerprint
+      // means re-pulling the same 26 vulns just refreshes lastSeen.
+      if (config.WAZUH_INDEXER_URL) {
+        try {
+          const vdDocs = await vdFetcher(agent.wazuhAgentId);
+          summary.vulnerabilitiesIngested += vdDocs.length;
+          if (vdDocs.length > 0) {
+            const vdTouched = await ingestVulnerabilitiesForAgent(agent.id, agent.orgId, vdDocs);
+            summary.findingsTouched += vdTouched;
+          }
+        } catch (err) {
+          // VD failure shouldn't kill the alert-ingest path for the same
+          // agent — operators may have alerts working but VD disabled.
+          summary.errors.push(`agent ${agent.wazuhAgentId} VD: ${(err as Error).message}`);
+        }
+      }
 
       await prisma.workloadAgent.update({
         where: { id: agent.id },
@@ -683,6 +714,286 @@ async function defaultAlertsFetcher(wazuhAgentId: string, sinceIso: string): Pro
   );
   const hits = (response.data?.hits?.hits ?? []) as Array<{ _source: Record<string, unknown> }>;
   return hits.map((hit) => normaliseAlert(hit._source)).filter(Boolean) as WazuhAlert[];
+}
+
+// ── Vulnerability state ingestion (Wazuh 4.13+ VD module) ────────────────
+//
+// Wazuh 4.13 retired the manager API path `/vulnerability/<id>` (returns
+// 404 even with valid auth) and now writes the VD module's per-package
+// CVE inventory directly to OpenSearch indices named
+// `wazuh-states-vulnerabilities-<cluster_name>`. Each doc represents ONE
+// (agent, package, CVE) tuple — not a time-series alert.
+//
+// Doc shape (Wazuh schema 1.0.0):
+//   agent.{id,name,version}
+//   host.os.{full,kernel,name,platform,type,version}
+//   package.{architecture,description,name,size,type,version}
+//   vulnerability.{id, severity, score.{base,version}, scanner.condition,
+//                  fix.versions[], description, reference, detected_at,
+//                  published_at, classification, enumeration, category,
+//                  under_evaluation}
+//
+// Ingestion model:
+//   - Fingerprint = SHA-256(orgId|wazuhAgentId|cveId|packageName|packageVersion)
+//     so the same vuln on the same agent ends up in the same Finding row
+//     across polls. Re-running the sweep just bumps lastSeen.
+//   - severity, cveId, packageName, packageVersion, fixVersion, cvssScore,
+//     references all flow into the typed Finding columns — operators get
+//     the same drill-down they have for Trivy CONTAINER findings.
+//   - confidence = LIKELY (one notch above POSSIBLE since the package is
+//     observed installed on a running host, vs. potentially-unused base
+//     image layers in a container scan).
+//   - When the agent is operator-linked to a Container, Finding.containerId
+//     is populated so the Reachability drawer surfaces these as BOTH /
+//     RUNTIME_ONLY tier rows alongside the Trivy image scan.
+
+export interface WazuhVulnerabilityDoc {
+  agent: { id: string; name?: string };
+  host?: {
+    os?: { full?: string; name?: string; platform?: string; version?: string };
+  };
+  package?: {
+    name?:    string;
+    version?: string;
+    architecture?: string;
+    type?:    string;
+    description?: string;
+  };
+  vulnerability: {
+    id:           string;
+    severity?:    string;
+    description?: string;
+    reference?:   string;
+    detected_at?: string;
+    published_at?: string;
+    classification?: string;
+    score?:       { base?: number; version?: string };
+    fix?:         { versions?: string[] };
+    scanner?:     { condition?: string; reference?: string; source?: string; vendor?: string };
+  };
+}
+
+export type VulnerabilityStateFetcher = (
+  wazuhAgentId: string,
+) => Promise<WazuhVulnerabilityDoc[]>;
+
+/**
+ * Pulls VD state for a single agent from the indexer. Paginates via
+ * `search_after` so we can scale past the default 10k window if an
+ * agent has unusually many vulns. Cap at 5k per sweep to bound JSON
+ * size — operators with denser inventories can rerun more frequently.
+ */
+async function defaultVulnerabilityStateFetcher(
+  wazuhAgentId: string,
+): Promise<WazuhVulnerabilityDoc[]> {
+  if (!config.WAZUH_INDEXER_URL) return [];
+  const client = await getIndexerClient();
+
+  const collected: WazuhVulnerabilityDoc[] = [];
+  let searchAfter: unknown[] | null = null;
+  // Hard cap protects the API process from a runaway agent — 5k vulns is
+  // already excessive for any single workload; an operator hitting this
+  // wall has a bigger inventory hygiene issue.
+  const HARD_CAP = 5000;
+
+  while (collected.length < HARD_CAP) {
+    const body: Record<string, unknown> = {
+      size:  500,
+      query: { term: { "agent.id": wazuhAgentId } },
+      sort:  [{ "vulnerability.detected_at": "asc" }, { _id: "asc" }],
+    };
+    if (searchAfter) body["search_after"] = searchAfter;
+
+    const response = await client.post(`/wazuh-states-vulnerabilities-*/_search`, body);
+    const hits = (response.data?.hits?.hits ?? []) as Array<{
+      _source: Record<string, unknown>;
+      sort?:   unknown[];
+    }>;
+    if (hits.length === 0) break;
+
+    for (const hit of hits) {
+      // Cast through unknown — _source is a generic Record<string, unknown>
+      // while WazuhVulnerabilityDoc has typed nested fields. The
+      // structural fields we read are runtime-validated by the
+      // `src?.vulnerability?.id` guard below before we trust the doc.
+      const src = hit._source as unknown as WazuhVulnerabilityDoc;
+      if (src?.vulnerability?.id) collected.push(src);
+    }
+    if (hits.length < 500) break;
+    searchAfter = hits[hits.length - 1]!.sort ?? null;
+    if (!searchAfter) break;
+  }
+
+  return collected;
+}
+
+/**
+ * Wazuh `vulnerability.severity` strings → BreachLens Severity enum.
+ * Wazuh emits "Critical" | "High" | "Medium" | "Low" | "Untriaged" (or
+ * empty); we fold Untriaged/empty to LOW so the row still appears but
+ * doesn't dominate the dashboard.
+ */
+function mapVdSeverity(s: string | undefined): Severity {
+  switch ((s ?? "").toUpperCase()) {
+    case "CRITICAL": return "CRITICAL";
+    case "HIGH":     return "HIGH";
+    case "MEDIUM":   return "MEDIUM";
+    case "LOW":      return "LOW";
+    default:         return "INFO";
+  }
+}
+
+/**
+ * Parse a fix-version hint out of `vulnerability.scanner.condition` when
+ * `fix.versions[]` is empty. Wazuh's Debian feed populates `condition`
+ * as e.g. "Package less than 3.5.5-1~deb13u2" — extract the version
+ * after the keyword.
+ */
+function extractFixVersion(vd: WazuhVulnerabilityDoc["vulnerability"]): string | null {
+  const fromVersions = vd.fix?.versions?.[0];
+  if (fromVersions) return fromVersions;
+  const cond = vd.scanner?.condition ?? "";
+  const m = cond.match(/(?:less than|<=?|>=?|equal to|equals)\s*([\w.\-+~:]+)/i);
+  return m ? m[1]! : null;
+}
+
+async function ingestVulnerabilitiesForAgent(
+  agentRowId: string,
+  orgId:      string,
+  docs:       WazuhVulnerabilityDoc[],
+): Promise<number> {
+  if (docs.length === 0) return 0;
+
+  // Mirror ingestAlertsForAgent's container-linking + ScanJob-reuse
+  // pattern so VD findings land on the same canonical RUNTIME ScanJob
+  // row as Wazuh alerts (they describe the same workload).
+  const agentRow = await prisma.workloadAgent.findUnique({
+    where:  { id: agentRowId },
+    select: { linkedContainerId: true, wazuhAgentId: true, wazuhAgentName: true },
+  });
+  if (!agentRow) return 0;
+  const linkedContainerId = agentRow.linkedContainerId ?? null;
+
+  let scanJob = await prisma.scanJob.findFirst({
+    where: {
+      orgId,
+      targetType:  "CONTAINER",
+      containerId: linkedContainerId,
+      scanTypes:   { has: "RUNTIME" },
+    },
+    select: { id: true },
+  });
+  if (!scanJob) {
+    scanJob = await prisma.scanJob.create({
+      data: {
+        orgId,
+        targetType:     "CONTAINER",
+        containerId:    linkedContainerId,
+        scanTypes:      ["RUNTIME"],
+        status:         "COMPLETED",
+        totalScans:     1,
+        completedScans: 1,
+        startedAt:      new Date(),
+        completedAt:    new Date(),
+      },
+      select: { id: true },
+    });
+  }
+
+  let touched = 0;
+  for (const doc of docs) {
+    const v   = doc.vulnerability;
+    const pkg = doc.package ?? {};
+    const cveId          = v.id;
+    const packageName    = pkg.name ?? null;
+    const packageVersion = pkg.version ?? null;
+    const fixVersion     = extractFixVersion(v);
+    const cvssScore      = typeof v.score?.base === "number" ? v.score.base : null;
+    const severity       = mapVdSeverity(v.severity);
+
+    // Stable fingerprint — same (agent, package, CVE) → same Finding row.
+    const fingerprint = sha256(
+      `${orgId}|${doc.agent.id}|${cveId}|${packageName ?? ""}|${packageVersion ?? ""}`,
+    );
+
+    const title       = `${cveId} in ${packageName ?? "unknown"}${packageVersion ? "@" + packageVersion : ""}`;
+    const description =
+      v.description?.slice(0, 1000) ??
+      `Wazuh VD detected ${cveId} on ${doc.agent.name ?? doc.agent.id}.`;
+
+    const evidence: Record<string, unknown> = {
+      source:       "wazuh-vd",
+      agentId:      doc.agent.id,
+      agentName:    doc.agent.name,
+      package:      pkg,
+      hostOs:       doc.host?.os,
+      vulnerability: {
+        cveId,
+        severity:    v.severity,
+        cvssScore,
+        cvssVersion: v.score?.version,
+        fixVersion,
+        condition:   v.scanner?.condition,
+        feedSource:  v.scanner?.source,
+        reference:   v.reference,
+        detectedAt:  v.detected_at,
+        publishedAt: v.published_at,
+      },
+    };
+
+    const references: string[] = [];
+    if (v.reference)         references.push(v.reference);
+    if (v.scanner?.reference) references.push(v.scanner.reference);
+
+    const existing = await prisma.finding.findUnique({ where: { fingerprint } });
+    if (existing) {
+      await prisma.finding.update({
+        where: { id: existing.id },
+        data: {
+          lastSeen: new Date(),
+          // Severity / fix version can shift as Wazuh's CVE feed updates;
+          // refresh them on every poll so the operator sees current state.
+          severity,
+          cvssScore,
+          fixVersion,
+          evidence,
+          // Preserve operator status (ACKNOWLEDGED, FALSE_POSITIVE, FIXED)
+          // — never auto-revert to OPEN on re-ingest.
+        },
+      });
+    } else {
+      await prisma.finding.create({
+        data: {
+          orgId,
+          scanJobId:   scanJob.id,
+          targetType:  "CONTAINER",
+          containerId: linkedContainerId,
+          scanType:    "RUNTIME",
+          title,
+          description,
+          severity,
+          cveId,
+          packageName,
+          packageVersion,
+          fixVersion,
+          cvssScore,
+          scanner:     "wazuh-vd",
+          ruleId:      cveId,
+          fingerprint,
+          confidence:  "LIKELY",
+          rawOutput:   { source: "wazuh-vd", doc: doc as unknown as Record<string, unknown> },
+          evidence,
+          references,
+        },
+      });
+    }
+    touched++;
+  }
+
+  logger.info(
+    `[wazuh-vd] agent ${agentRow.wazuhAgentId}: ingested ${docs.length} doc(s), touched ${touched} finding(s)`,
+  );
+  return touched;
 }
 
 let cachedIndexerClient: AxiosInstance | null = null;
