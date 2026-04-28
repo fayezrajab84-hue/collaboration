@@ -2288,7 +2288,263 @@ function HuntKV({ k, v, mono = false }: { k: string; v: React.ReactNode; mono?: 
   );
 }
 
-function RuntimeThreatHuntPanel({ evidence }: { evidence: Record<string, unknown> }) {
+// ── Wazuh VD detail panel ─────────────────────────────────────────────
+//
+// Phase 4 — vulnerability-detail panel for findings ingested from the
+// Wazuh VD module (scanner === "wazuh-vd"). The attack-event panel below
+// reads "—" for every section because VD findings have none of those
+// fields populated; instead we surface what VD actually produces:
+//
+//   Vulnerability   — CVE, severity, CVSS score (+ version), classification
+//   Package         — name, version, architecture, type, description, OS
+//   Fix             — fix version (typed col), feed source, scanner condition
+//   Timeline        — published_at, detected_at, lastSeen
+//   MITRE ATT&CK    — synthesised tactics/techniques (dashed border, basis)
+//   References      — vendor advisory + Wazuh CTI link + NVD lookup
+//
+// The data sources are a mix of typed Finding columns (cveId,
+// packageName, packageVersion, fixVersion, cvssScore) and evidence JSON
+// (full package metadata, host OS, scanner condition, MITRE, timestamps).
+// Typed columns win when both sources have the value — they're the
+// canonical store and don't drift across re-ingest.
+
+function VdDetailPanel({
+  finding,
+}: { finding: Finding & Record<string, unknown> }) {
+  const ev   = (finding.evidence ?? {}) as Record<string, unknown>;
+  const vuln = (ev["vulnerability"] as Record<string, unknown> | null) ?? null;
+  const pkg  = (ev["package"]       as Record<string, unknown> | null) ?? null;
+  const os   = (ev["hostOs"]        as Record<string, unknown> | null) ?? null;
+  const mitre = (ev["mitre"] as {
+    ids?: string[];
+    tactics?: string[];
+    techniques?: string[];
+    synthesized?: boolean;
+    basis?: string;
+  } | null) ?? null;
+
+  const cveId          = finding.cveId ?? (vuln?.["cveId"] as string | undefined) ?? null;
+  const cvssScore      = finding.cvssScore ?? (vuln?.["cvssScore"] as number | undefined) ?? null;
+  const cvssVersion    = vuln?.["cvssVersion"] as string | undefined;
+  const fixVersion     = finding.fixVersion ?? (vuln?.["fixVersion"] as string | undefined) ?? null;
+  const condition      = vuln?.["condition"]  as string | undefined;
+  const feedSource     = vuln?.["feedSource"] as string | undefined;
+  const reference      = vuln?.["reference"]  as string | undefined;
+  const detectedAt     = vuln?.["detectedAt"] as string | undefined;
+  const publishedAt    = vuln?.["publishedAt"] as string | undefined;
+  const wazuhSeverity  = vuln?.["severity"]   as string | undefined; // "Critical" / "High" etc.
+  const packageName    = finding.packageName    ?? (pkg?.["name"]    as string | undefined) ?? null;
+  const packageVersion = finding.packageVersion ?? (pkg?.["version"] as string | undefined) ?? null;
+  const pkgArch        = pkg?.["architecture"] as string | undefined;
+  const pkgType        = pkg?.["type"]         as string | undefined;
+  const pkgDesc        = pkg?.["description"]  as string | undefined;
+  const agentName      = ev["agentName"] as string | undefined;
+  const agentId        = ev["agentId"]   as string | undefined;
+  const osFull         = (os?.["full"] as string | undefined) ?? null;
+
+  // CVSS severity-tier color mirrors the Findings table's column.
+  const cvssClass = cvssScore == null ? "text-gray-300"
+                  : cvssScore >= 9  ? "text-red-300"
+                  : cvssScore >= 7  ? "text-red-400/80"
+                  :                   "text-gray-300";
+
+  return (
+    <div>
+      <div className="mb-2 flex items-center gap-2">
+        <AlertTriangle className="h-3.5 w-3.5 text-indigo-400" />
+        <span className="text-xs font-semibold text-gray-200">Vulnerability detail</span>
+        <span className="rounded-full border border-indigo-900/50 bg-indigo-950/40 px-2 py-0.5 text-[10px] font-medium text-indigo-300">
+          Wazuh VD
+        </span>
+      </div>
+      <div className="space-y-2.5">
+
+        {/* ── Vulnerability — CVE + severity + CVSS ── */}
+        <HuntSection title="Vulnerability">
+          {cveId && (
+            <HuntKV
+              k="CVE"
+              v={
+                <a
+                  href={`https://nvd.nist.gov/vuln/detail/${cveId}`}
+                  target="_blank" rel="noopener noreferrer"
+                  className="font-mono text-indigo-300 hover:text-indigo-200 hover:underline"
+                >
+                  {cveId}
+                </a>
+              }
+            />
+          )}
+          {wazuhSeverity && <HuntKV k="Severity"     v={wazuhSeverity} />}
+          {cvssScore != null && (
+            <HuntKV
+              k="CVSS"
+              v={
+                <span className={`font-mono font-semibold ${cvssClass}`}>
+                  {cvssScore.toFixed(1)}
+                  {cvssVersion && (
+                    <span className="ml-1.5 font-normal text-gray-500">v{cvssVersion}</span>
+                  )}
+                </span>
+              }
+            />
+          )}
+          {feedSource && <HuntKV k="Feed source" v={feedSource} />}
+        </HuntSection>
+
+        {/* ── Package — what's installed ── */}
+        {(packageName || packageVersion) && (
+          <HuntSection title="Package">
+            {packageName    && <HuntKV k="Name"    v={packageName}    mono />}
+            {packageVersion && <HuntKV k="Version" v={packageVersion} mono />}
+            {pkgArch        && <HuntKV k="Arch"    v={pkgArch}        mono />}
+            {pkgType        && <HuntKV k="Type"    v={pkgType} />}
+            {pkgDesc        && <HuntKV k="About"   v={pkgDesc} />}
+            {osFull         && <HuntKV k="Host OS" v={osFull} />}
+          </HuntSection>
+        )}
+
+        {/* ── Fix — what version resolves it ── */}
+        {(fixVersion || condition) && (
+          <HuntSection title="Fix">
+            {fixVersion && (
+              <HuntKV
+                k="Fix version"
+                v={<span className="font-mono text-emerald-300">{fixVersion}</span>}
+              />
+            )}
+            {condition && <HuntKV k="Scanner rule" v={condition} mono />}
+            {!fixVersion && !condition && (
+              <span className="text-xs text-gray-500">No fix available yet — under evaluation.</span>
+            )}
+          </HuntSection>
+        )}
+
+        {/* ── MITRE ATT&CK (synthesised) — dashed border + basis tooltip
+             so the operator sees this came from the heuristic, not from
+             a Wazuh detection. ── */}
+        {(mitre?.tactics?.length || mitre?.techniques?.length) ? (
+          <HuntSection title="MITRE ATT&CK">
+            {mitre?.synthesized && (
+              <div className="mb-2 text-[10px] text-gray-500">
+                Inferred from CVE
+                {mitre.basis ? ` — ${mitre.basis}` : ""}
+              </div>
+            )}
+            {mitre.tactics && mitre.tactics.length > 0 && (
+              <div className="mb-2">
+                <div className="mb-1 text-[10px] text-gray-500">Tactic</div>
+                <div className="flex flex-wrap gap-1">
+                  {mitre.tactics.map((t) => (
+                    <span
+                      key={t}
+                      className={`rounded px-2 py-0.5 text-[11px] font-medium text-indigo-200 ${
+                        mitre.synthesized
+                          ? "border border-dashed border-indigo-700/60 bg-indigo-950/20"
+                          : "border border-indigo-900/50 bg-indigo-950/40"
+                      }`}
+                    >
+                      {t}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {mitre.techniques && mitre.techniques.length > 0 && (
+              <div>
+                <div className="mb-1 text-[10px] text-gray-500">Technique</div>
+                <div className="space-y-1">
+                  {mitre.techniques.map((tech, i) => {
+                    const id = mitre.ids?.[i] ?? tech;
+                    return (
+                      <div key={`${tech}-${i}`} className="flex items-center gap-2 text-xs">
+                        <a
+                          href={`https://attack.mitre.org/techniques/${id.replace(".", "/")}/`}
+                          target="_blank" rel="noopener noreferrer"
+                          className="rounded border border-gray-700 bg-gray-800/60 px-1.5 py-0.5 font-mono text-[10px] text-gray-300 hover:border-indigo-700 hover:text-indigo-300"
+                        >
+                          {id}
+                        </a>
+                        <span className="text-gray-300">{tech}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </HuntSection>
+        ) : null}
+
+        {/* ── Timeline — when CVE was disclosed + when Wazuh detected it ── */}
+        {(publishedAt || detectedAt) && (
+          <HuntSection title="Timeline">
+            {publishedAt && <HuntKV k="Published"  v={new Date(publishedAt).toUTCString()} />}
+            {detectedAt  && <HuntKV k="Detected"   v={new Date(detectedAt).toUTCString()} />}
+            <HuntKV       k="Last refresh" v={new Date(finding.lastSeen).toUTCString()} />
+          </HuntSection>
+        )}
+
+        {/* ── Source — where the finding came from ── */}
+        <HuntSection title="Source">
+          {agentName && <HuntKV k="Agent"   v={agentName} mono />}
+          {agentId   && <HuntKV k="Wazuh ID" v={agentId}  mono />}
+          <HuntKV k="Scanner" v="wazuh-vd" mono />
+        </HuntSection>
+
+        {/* ── References — links to dig deeper ── */}
+        {(reference || cveId) && (
+          <HuntSection title="References">
+            <div className="space-y-1">
+              {reference && (
+                <a
+                  href={reference}
+                  target="_blank" rel="noopener noreferrer"
+                  className="flex items-center gap-1.5 text-xs text-indigo-300 hover:text-indigo-200 hover:underline"
+                >
+                  <ExternalLink className="h-3 w-3" />
+                  Vendor advisory
+                </a>
+              )}
+              {cveId && (
+                <>
+                  <a
+                    href={`https://cti.wazuh.com/vulnerabilities/cves/${cveId}`}
+                    target="_blank" rel="noopener noreferrer"
+                    className="flex items-center gap-1.5 text-xs text-indigo-300 hover:text-indigo-200 hover:underline"
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                    Wazuh CTI · {cveId}
+                  </a>
+                  <a
+                    href={`https://nvd.nist.gov/vuln/detail/${cveId}`}
+                    target="_blank" rel="noopener noreferrer"
+                    className="flex items-center gap-1.5 text-xs text-indigo-300 hover:text-indigo-200 hover:underline"
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                    NVD · {cveId}
+                  </a>
+                </>
+              )}
+            </div>
+          </HuntSection>
+        )}
+
+      </div>
+    </div>
+  );
+}
+
+function RuntimeThreatHuntPanel({
+  finding,
+}: { finding: Finding & Record<string, unknown> }) {
+  // Scanner-aware branch — wazuh-vd findings are STATE (vulnerability
+  // inventory) and need entirely different sections than the event-
+  // shaped attack panel.
+  if (finding.scanner === "wazuh-vd") {
+    return <VdDetailPanel finding={finding} />;
+  }
+
+  const evidence = (finding.evidence ?? {}) as Record<string, unknown>;
   const e = evidence;
   const geo  = e["geo"]           as Record<string, unknown> | null;
   const mitre = e["mitre"]        as { ids?: string[]; tactics?: string[]; techniques?: string[] } | null;
@@ -3137,13 +3393,15 @@ export default function FindingDetailDrawer({ finding, onClose }: Props) {
           )}
 
           {/* Evidence — hidden for DAST merged (each occurrence has its own evidence in the panel above) */}
-          {/* RUNTIME-specific Threat Hunt panel — structured drill-down
-              into the evidence captured by the wazuh ingest service. Sits
-              ABOVE the generic Detection-evidence list so threat hunters
-              get the organised view first; the flat dump remains as a
-              fallback for any keys we haven't given a section to. */}
-          {finding.scanType === "RUNTIME" && finding.evidence && (
-            <RuntimeThreatHuntPanel evidence={finding.evidence as Record<string, unknown>} />
+          {/* RUNTIME-specific drill-down. The panel branches on scanner:
+                wazuh    → Threat Hunt (event-shaped: attacker IP, process,
+                            HTTP, audit, file integrity, compliance, MITRE)
+                wazuh-vd → Vulnerability detail (state-shaped: CVE, package,
+                            fix, timeline, MITRE-synthesised, references).
+              Either way it sits ABOVE the generic Detection-evidence list
+              so the structured view comes first. */}
+          {finding.scanType === "RUNTIME" && (
+            <RuntimeThreatHuntPanel finding={finding} />
           )}
 
           {!isDastMerged && finding.evidence && Object.keys(finding.evidence).length > 0 && (
