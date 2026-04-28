@@ -95,26 +95,39 @@ export const SEVERITY_CHART: Record<string, string> = {
  * FIXED / IGNORED).  Each value is a complete Tailwind class string that can
  * be spread onto the badge element.
  */
-// FIXED / COMPLETED moved off warm emerald onto cool teal — the emerald was
-// the only warm hue in an otherwise cool scheme (indigo / slate / blue / teal
-// / sky) and stood out uncomfortably. Teal matches the Domain target icon
-// and sits naturally alongside the rest of the palette.
+// FIXED is the empty-state-reward case — the operator just shipped a
+// remediation, the badge should *feel like a reward*. Per UX pattern #4
+// (`breachlens-ux-patterns.md`), zero-vuln / closed-out states use emerald.
+// Teal was used previously to match the cool palette but read as "in
+// progress" rather than "done well"; emerald reads correctly as success
+// and is the only warm hue we make a deliberate exception for.
+//
+// ACKNOWLEDGED stays on brand-indigo (in-flow neutral). FALSE_POSITIVE /
+// IGNORED stay on muted gray — they are dismissed but not celebrated.
 export const FINDING_STATUS_BADGE: Record<string, { cls: string; label: string }> = {
-  OPEN:           { cls: "bg-gray-800/60    text-gray-300    border border-gray-700/50",    label: "Open"           },
-  ACKNOWLEDGED:   { cls: "bg-indigo-950/60  text-indigo-300  border border-indigo-800/50",  label: "Acknowledged"   },
-  FALSE_POSITIVE: { cls: "bg-gray-800/40    text-gray-500    border border-gray-700/40",    label: "False Positive" },
-  FIXED:          { cls: "bg-teal-950/40    text-teal-400    border border-teal-800/40",    label: "Fixed"          },
-  IGNORED:        { cls: "bg-gray-800/40    text-gray-500    border border-gray-700/40",    label: "Ignored"        },
+  OPEN:           { cls: "bg-gray-800/60     text-gray-300     border border-gray-700/50",     label: "Open"           },
+  ACKNOWLEDGED:   { cls: "bg-indigo-950/60   text-indigo-300   border border-indigo-800/50",   label: "Acknowledged"   },
+  FALSE_POSITIVE: { cls: "bg-gray-800/40     text-gray-500     border border-gray-700/40",     label: "False Positive" },
+  FIXED:          { cls: "bg-emerald-950/40  text-emerald-400  border border-emerald-800/40",  label: "Fixed"          },
+  IGNORED:        { cls: "bg-gray-800/40     text-gray-500     border border-gray-700/40",     label: "Ignored"        },
 };
 
 // ── Confidence ────────────────────────────────────────────────────────────────
 
 // Confidence is secondary metadata — keep it muted so it doesn't compete
 // with the severity badge in the same row. Slightly tinted text only.
+//
+// CONFIRMED is the only confidence level that earns colour (red — pairs
+// with Proof-of-Exploit's CRITICAL-by-default story). LIKELY moved off
+// amber because amber competes with MEDIUM severity badges on the same
+// row — confidence and severity are *two different axes* and shouldn't
+// share a colour channel (UX pattern #5: badge label matches meaning).
+// Brand-indigo for LIKELY signals "elevated but not proven" without
+// stealing the severity hue.
 export const CONFIDENCE_BADGE: Record<string, { cls: string; label: string }> = {
-  CONFIRMED: { cls: "bg-gray-800/60  text-red-300/90    border border-gray-700/50", label: "Confirmed" },
-  LIKELY:    { cls: "bg-gray-800/60  text-amber-300/90  border border-gray-700/50", label: "Likely"    },
-  POSSIBLE:  { cls: "bg-gray-800/40  text-gray-400      border border-gray-700/50", label: "Possible"  },
+  CONFIRMED: { cls: "bg-gray-800/60  text-red-300/90      border border-gray-700/50", label: "Confirmed" },
+  LIKELY:    { cls: "bg-gray-800/60  text-indigo-300/90   border border-gray-700/50", label: "Likely"    },
+  POSSIBLE:  { cls: "bg-gray-800/40  text-gray-400        border border-gray-700/50", label: "Possible"  },
 };
 
 // ── Scan status ───────────────────────────────────────────────────────────────

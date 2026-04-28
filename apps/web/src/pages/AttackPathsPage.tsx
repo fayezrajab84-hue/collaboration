@@ -156,7 +156,11 @@ function AiSummaryPanel({
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="text-sm font-semibold text-white">AI summary</h3>
             {summary.stale && (
-              <span className="inline-flex items-center gap-1 rounded-full border border-amber-800 bg-amber-950/30 px-2 py-0.5 text-[10px] text-amber-300">
+              // Stale is an advisory state ("regenerate to refresh"), not severity.
+              // Amber would compete with MEDIUM severity badges on the same row —
+              // moved to neutral gray so the badge reads as "informational hint"
+              // rather than "warning" (UX pattern #5: one axis per colour channel).
+              <span className="inline-flex items-center gap-1 rounded-full border border-gray-700 bg-gray-800/60 px-2 py-0.5 text-[10px] text-gray-400">
                 Stale — chain content changed
               </span>
             )}
@@ -233,9 +237,15 @@ const VERDICT_LABELS: Record<string, string> = {
   MIXED_SIGNAL:  "Mixed signal",
   LIKELY_NOISE:  "Likely noise",
 };
+// Verdict colour gradient encodes urgency (operator triage axis), NOT
+// vulnerability severity. Kept off amber (which is reserved for MEDIUM
+// severity badges per `breachlens-brand-colors.md`) — yellow reads as
+// "needs a look" without colliding with MEDIUM severity on the same view.
+// Red here reads "investigate now" because the verdict is gating chain
+// triage, not finding severity (UX pattern #5: one axis per channel).
 const VERDICT_STYLE: Record<string, string> = {
   LIKELY_REAL:   "border-red-700 bg-red-950/40 text-red-300",
-  MIXED_SIGNAL:  "border-amber-700 bg-amber-950/40 text-amber-300",
+  MIXED_SIGNAL:  "border-yellow-700 bg-yellow-950/40 text-yellow-300",
   LIKELY_NOISE:  "border-gray-700 bg-gray-800/60 text-gray-400",
 };
 
