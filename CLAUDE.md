@@ -327,9 +327,139 @@ Phases (see `orchestrator.py`):
 | 0.5 | Crawler | Playwright OR recorded ZAP context | 30-60s |
 | 1 | Recon | subfinder + httpx | <1s for one domain |
 | 2 | Discovery | nmap + ffuf | 5-10s |
+| **1.5** | **Recon enhance (27.6 Tier 2)** | **subzy + Arjun + LinkFinder** | **30-90s** |
 | 3 | Vuln | nuclei + nikto + testssl | **~25 min** (1500s nuclei wall clock) |
 | 3.5 | Targeted | per-host probes | 1-5s |
-| 4 | Exploit | sqlmap + xsstrike + dalfox | 10-25 min |
+| **3.6** | **Misconfig sweep (27.6 Item 1)** | **shcheck + CORStest + wafw00f** | **30-60s** |
+| 4 | Exploit | sqlmap + xsstrike + dalfox + **commix + SSTImap + NoSQLMap + LFI** | 10-30 min |
+| **4.5** | **Targeted OWASP (27.6 Item 2 + 4 + Tier 1)** | **jwt_tool + SSRFmap + Fuxploider** | **5-15 min** |
+| **5** | **OOB callback wait (27.6 Item 4)** | **interactsh-client poll** | **60s + processing** |
+
+Phase 27.6 expansion (modules in `pentest_full/modules/`) closes 8 of 10
+OWASP Top 10 categories with reproducible Proof-of-Exploit evidence.
+
+### Phase 27.6 modules — the OWASP expansion pattern
+
+`pentest_full/modules/` contains 13 tool wrappers added in Phase 27.6 to
+close OWASP Top 10 / Top 10 API gaps the original 5-tool pipeline missed:
+
+| Module | OWASP | Phase | Tool wrapped |
+|---|---|---|---|
+| `misconfig_sweep` | A05 | 3.6 | shcheck + CORStest + wafw00f |
+| `commix_runner` | A03 | 4 | commix (OS command injection) |
+| `sstimap_runner` | A03 | 4 | SSTImap (SSTI — modern tplmap fork) |
+| `nosqlmap_runner` | A03 | 4 | NoSQLi auth bypass via direct probing |
+| `lfi_runner` | A03 | 4 | LFI/RFI signature probes |
+| `jwt_attacker` | A07 | 4.5 | jwt_tool + passive analyser |
+| `ssrf_attacker` | A10 | 4.5 | SSRFmap + interactsh OOB |
+| `fuxploider_runner` | A03+A04 | 4.5 | Fuxploider (file upload bypass) |
+| **`xxe_runner`** | **A08** | **4.5** | **In-band file:// + OOB blind XXE (Phase 27.6 b3)** |
+| **`deser_runner`** | **A08** | **4.5** | **ysoserial Java + PHPGGC PHP + ASP.NET ViewState (Phase 27.6 b3)** |
+| `oob_collector` | (cross-cutting) | 3→5 | interactsh-client persistent poll |
+| `subzy_runner` | A05 | 1.5 | subdomain takeover |
+| `param_discovery` | A03 (boost) | 1.5 | Arjun + LinkFinder (no findings — augments crawler_urls.txt) |
+
+**Shared helpers in `modules/helpers.py`:** every module imports
+`build_curl_reproducer`, `make_finding`, `strip_ansi`, `sanitize_text`,
+`slice_around`, `parameterised_urls`, `host_filtered_urls`,
+`url_with_payload`. **Do not re-implement these per-module** — that's
+how the "every finding has a curl_command" Proof-of-Exploit contract
+drifts.
+
+**Per-target URL caps** keep Phase 4/4.5 inside their wall-time budgets:
+
+- `COMMIX_PER_TARGET_CAP = 8`
+- `SSTIMAP_PER_TARGET_CAP = 8`
+- `NOSQL_PER_TARGET_CAP = 6`
+- `LFI_PER_TARGET_CAP = 8`
+- `SSRFMAP_PER_TARGET_CAP = 6`
+- `FUXPLOIDER_PER_TARGET_CAP = 4` (uploads are slow)
+
+### OOB collector lifecycle (Phase 27.6 Item 4)
+
+`OobCollector` runs as a long-lived subprocess from Phase 3 setup
+through Phase 5. It wraps `interactsh-client -json -o <log>` with a
+correlation-ID-keyed payload registry.
+
+- `INTERACTSH_URL` env var unset → public oast.fun (PD's hosted infra).
+- `INTERACTSH_URL=https://your-domain` → self-hosted (privacy-preserving).
+
+Other modules call `oob.register_payload(...)` before injection, get
+back a `(correlation_id, payload_with_callback_url)` tuple, and inject
+the payload. Phase 5 sleeps 60s for delayed callbacks (cron/queue
+processors), then `oob.collect_findings(...)` matches every interaction
+back to its originating finding via correlation ID.
+
+If `interactsh-client` isn't installed, `oob.start()` returns None and
+all OOB-aware modules silently fall back to non-OOB payloads (regular
+detection). **Don't gate the orchestrator on OOB availability** — it's
+opt-in by binary presence.
+
+### Five production-readiness bugs Phase 27.6 surfaced (don't recur)
+
+The validation pass against DVWA + Juice Shop hit five bugs that ALL
+have non-obvious root causes. They're documented in code comments + the
+Dockerfile NOTE block already, but the gist for new contributors:
+
+1. **OOB collector blocking pipe deadlock.** `subprocess.Popen` +
+   `text=True` + `os.set_blocking(fd, False)` causes `stdout.read()` to
+   return `None` instead of `''` when no data is ready, crashing with
+   `TypeError: underlying read() should have returned a bytes-like
+   object, not 'NoneType'`. Fix: bytes-mode + decode manually. Also,
+   `readline()` blocks past the deadline because Python's pipe-readline
+   doesn't honour timeouts — use non-blocking `read(4096)` polled with a
+   wall-clock deadline. See `oob_collector.py:start()` for the
+   reference implementation.
+
+2. **interactsh-client routes startup banner to stderr under `-json`.**
+   The structured event stream goes to stdout but the callback URL only
+   appears on stderr. Merge them with `stderr=subprocess.STDOUT` or you
+   poll the wrong stream forever.
+
+3. **Python shebang missing `/usr/bin/python3`.** fuxploider, ssrfmap,
+   nosqlmap all hardcode `#!/usr/bin/python3` which doesn't exist in
+   `python:3.12-slim` (only `/usr/local/bin/python3.12` does). The
+   subprocess fails with `FileNotFoundError` BEFORE the script runs —
+   misleading because `which fuxploider` succeeds. Fix: Dockerfile
+   symlinks `/usr/bin/python3` + `/usr/bin/python` →
+   `/usr/local/bin/python3.12`. **Add this for any new Python tool that
+   ships with a hardcoded shebang.**
+
+4. **shcheck installs as `shcheck.py`.** pip drops the entry point at
+   `/usr/local/bin/shcheck.py`, not `shcheck`. Fix: Dockerfile
+   `ln -sf shcheck.py shcheck`. Several pip-installed pentest tools
+   ship `.py` filenames as their console script — always check after
+   install with `which <tool>`.
+
+5. **CORStest path varies between versions.** Older repos ship
+   `cors.py`; the RUB-NDS rewrite ships `corstest.py`. Probe both
+   paths, fall through silently. The runner module already does this
+   pattern via a list of candidate paths.
+
+These five are why the FIRST run of Phase 27.6 against DVWA produced
+zero findings from misconfig_sweep + zero CONFIRMED PoE from
+fuxploider. After fixes, lfi-probe captured a real PoE finding (LFI
+on DVWA `/vulnerabilities/fi/?page=/etc/passwd`) — proof the pipeline
+works end-to-end.
+
+### Adding a new Phase 4/4.5 module
+
+Pattern (mirror the existing 13):
+
+1. Write `modules/<tool>_runner.py` with a top-level `run_<tool>(scanner_obj,
+   request, target, workspace, recorded_urls, auth_headers)` function.
+2. Use the shared helpers — `parameterised_urls`, `host_filtered_urls`,
+   `make_finding`, `build_curl_reproducer`. Do NOT re-implement them.
+3. Set per-target URL caps as a module constant (commix uses
+   `COMMIX_PER_TARGET_CAP = 8`).
+4. Reserve `Confidence.CONFIRMED` for actual proof-of-exploit (curl
+   command reproduces the attack). Pattern matches → `LIKELY` or
+   `POSSIBLE`.
+5. Add `evidence.url`, `evidence.curl_command`, and `evidence.attack`
+   for any CONFIRMED finding — the **Proof-of-Exploit badge** requires
+   all three.
+6. Wire into `exploit.py` (Phase 4 pool) OR `orchestrator.py` (Phase
+   4.5+) inside a try/except so the module can't kill the pipeline.
 
 ### Phase 4 only runs when `Domain.pentestDepth == 'AGGRESSIVE'`
 
