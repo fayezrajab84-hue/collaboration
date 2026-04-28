@@ -330,7 +330,7 @@ ${occBlocks}
 Remove every hardcoded credential above. Load each from process.env.<SUITABLE_NAME> (or equivalent for the language) — pick a name that fits the file's context. The same secret CAN map to the same env var across files.
 
 IMPORTANT — multi-file diff:
-- Output ONE unified diff that contains a `--- a/<path>` + `+++ b/<path>` pair for EACH file above (${allOccs.length} pair${allOccs.length > 1 ? "s" : ""} total)
+- Output ONE unified diff that contains a "--- a/<path>" + "+++ b/<path>" pair for EACH file above (${allOccs.length} pair${allOccs.length > 1 ? "s" : ""} total)
 - Each @@ hunk uses the real line number stated for that occurrence
 - Do NOT skip any occurrence — every secret listed must be patched
 - Do NOT add explanatory comments
