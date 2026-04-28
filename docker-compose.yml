@@ -287,11 +287,27 @@ services:
 
   # ── interactsh — Out-of-band (OAST) callback server for blind vuln detection ──
   # interactsh-server requires a real public IP/domain to function (DNS callbacks).
-  # For local Docker deployments, Nuclei automatically uses ProjectDiscovery's
-  # hosted OAST infrastructure (oast.pro / oast.fun) when INTERACTSH_URL is unset.
-  # To use a self-hosted interactsh, set INTERACTSH_URL=https://your-domain and run:
-  #   interactsh-server -d your-domain -i <public-ip> -sa
-  # The scanner containers are on the `public` network and have outbound internet access.
+  #
+  # Two operating modes:
+  #
+  #   1. **Public OAST (default)** — INTERACTSH_URL unset. Both nuclei (Phase 3
+  #      vuln scan) AND the new Phase 27.6 OWASP-expansion modules (Phase 4.5
+  #      ssrf_attacker, oob_collector) automatically use ProjectDiscovery's
+  #      hosted OAST infrastructure (oast.pro / oast.fun). Works out of the box.
+  #      Trade-off: callback metadata (target IPs, payload context) is visible
+  #      to ProjectDiscovery's hosted infra.
+  #
+  #   2. **Self-hosted (privacy-preserving)** — set INTERACTSH_URL to the URL
+  #      of your own interactsh-server. All callbacks stay private. Requires:
+  #
+  #          interactsh-server -d your-domain.com -i <public-ip> -sa
+  #
+  #      …running on a public IP with DNS A and NS records pointing at it.
+  #      The Phase 27.6 oob_collector module reads INTERACTSH_URL and passes
+  #      it to the interactsh-client subprocess via ``-server``.
+  #
+  # The scanner-pentest container is on the `public` network and has outbound
+  # internet access for both modes.
 
   # ── Playwright crawler sidecar (Phase 1) ──────────────────────────────────
   # Chromium-based SPA crawler invoked by the scanner during DAST scans.
