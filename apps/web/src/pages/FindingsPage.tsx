@@ -896,7 +896,11 @@ export default function FindingsPage() {
                           target="_blank"
                           rel="noopener noreferrer"
                           onClick={(e) => e.stopPropagation()}
-                          className="inline-flex items-center gap-1 truncate text-xs text-sky-400 hover:text-sky-300 hover:underline max-w-full"
+                          // Operator request: URL column reads as data, not
+                          // as a coloured link — text-white aids scanability
+                          // across many rows. The ExternalLink icon + hover
+                          // underline still convey clickability.
+                          className="inline-flex items-center gap-1 truncate text-xs text-white hover:text-gray-300 hover:underline max-w-full"
                           title={f.filePath}
                         >
                           <span className="truncate">{f.filePath}</span>
