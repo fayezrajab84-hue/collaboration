@@ -179,24 +179,58 @@ async function ingestAlertsForAgent(
   });
   const linkedContainerId = agentRow?.linkedContainerId ?? null;
 
-  // We need a real ScanJob row to satisfy the Finding.scanJobId FK. Create
-  // one container "scan job" per ingestion run per agent — fast, indexed.
-  // Status=COMPLETED so it doesn't show up in active-scan UIs.
-  const scanJob = await prisma.scanJob.create({
-    data: {
+  // Phase 28 Slice C bugfix (P3 follow-up): reuse a per-container ScanJob
+  // row across polls instead of creating a fresh one every 60 seconds.
+  //
+  // The previous design created a new ScanJob per ingestion run per agent
+  // — fine in theory, but with the recurring sweep firing every 60s and
+  // the mock-wazuh service always returning canned alerts, this churned
+  // 60 ScanJob rows/hour into the scan history (38 spam rows in 38
+  // minutes during a real test session). The Finding.scanJobId FK
+  // requires a real ScanJob, so the original create-per-run pattern was
+  // safe but UX-hostile: the Scans page filled up with empty
+  // "RUNTIME (Wazuh)" rows the operator never asked for.
+  //
+  // Find-or-create: one canonical ScanJob row per
+  // (orgId, containerId, scanType=RUNTIME) tuple. ScanJob has typed FKs
+  // (containerId / repositoryId / domainId) — no generic targetId
+  // column — so we use linkedContainerId as the natural key. Multiple
+  // agents on the same container share one row (good — they're
+  // monitoring the same workload anyway). Unlinked agents share a single
+  // null-container row (acceptable; operator should link the agent to
+  // get clean attribution).
+  let scanJob = await prisma.scanJob.findFirst({
+    where: {
       orgId,
-      targetType:     "CONTAINER",
-      // No targetId — Wazuh agents aren't necessarily linked to a Container
-      // yet. The runtime UI will resolve via WorkloadAgent.linkedContainerId
-      // when present. Other code paths must not assume a target row exists.
-      scanTypes:      ["RUNTIME"],
-      status:         "COMPLETED",
-      totalScans:     1,
-      completedScans: 1,
-      startedAt:      new Date(),
-      completedAt:    new Date(),
+      targetType: "CONTAINER",
+      containerId: linkedContainerId,
+      scanTypes:  { has: "RUNTIME" },
     },
+    select: { id: true },
   });
+  if (!scanJob) {
+    scanJob = await prisma.scanJob.create({
+      data: {
+        orgId,
+        targetType:     "CONTAINER",
+        containerId:    linkedContainerId,
+        scanTypes:      ["RUNTIME"],
+        status:         "COMPLETED",
+        totalScans:     1,
+        completedScans: 1,
+        startedAt:      new Date(),
+        completedAt:    new Date(),
+      },
+      select: { id: true },
+    });
+  } else {
+    // Touch the timestamps so the Scans page reflects "last ingest run"
+    // rather than "first ever ingest".
+    await prisma.scanJob.update({
+      where: { id: scanJob.id },
+      data:  { startedAt: new Date(), completedAt: new Date(), status: "COMPLETED" },
+    });
+  }
 
   // Bucket by hour + agent + rule so 100 shell-spawn alerts in the same hour
   // upsert into ONE Finding row (matches the Phase 28 scope decision).

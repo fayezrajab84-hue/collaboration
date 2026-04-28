@@ -278,15 +278,76 @@ ${FORMAT}`;
 
   // ── SECRET: hardcoded credential fix ─────────────────────────────────────
   if (scanType === "SECRET") {
-    const file = filePath ?? "src/config.js";
     const detector = (raw["DetectorName"] ?? raw["DetectorType"] ?? "credential") as string;
+
+    // Phase 27.6.x P3 — merged-occurrence fix completeness:
+    // A merged SECRET finding has N occurrences (the canonical filePath +
+    // sub-locations under raw.occurrences[]). The previous prompt only
+    // patched the canonical occurrence, leaving sub-locations 2..N still
+    // leaking the credential. Now we collect ALL occurrences and ask the
+    // model for a multi-file unified diff.
+    interface SecretOcc {
+      filePath?:  string;
+      lineStart?: number;
+      snippet?:   string;
+    }
+    const isMerged = raw["merged"] === true && Array.isArray(raw["occurrences"]);
+    const allOccs: SecretOcc[] = isMerged
+      ? (raw["occurrences"] as SecretOcc[])
+      : [{
+          filePath:  filePath ?? "src/config.js",
+          lineStart: lineStart ?? undefined,
+          snippet:   snippet ?? undefined,
+        }];
+
+    if (allOccs.length > 1) {
+      // Multi-occurrence prompt — produces multi-file diff with one hunk
+      // per affected file. The DiffViewer already handles multi-file diffs
+      // (parses each `--- a/` block as its own section).
+      const occBlocks = allOccs.map((occ, i) => {
+        const f    = occ.filePath ?? "(unknown)";
+        const ln   = occ.lineStart ?? "?";
+        const lang = detectLanguage(f) ?? "source code";
+        const code = occ.snippet
+          ? stripSemgrepLinePrefixes(occ.snippet)
+          : "(snippet unavailable — fix the line based on detector + line number)";
+        return `[Occurrence ${i + 1}]
+File          : ${f}
+Language      : ${lang}
+Line          : ${ln}
+Code context (secret redacted):
+${code}`;
+      }).join("\n\n");
+
+      return `Fix ${allOccs.length} occurrences of the same hardcoded secret across ${allOccs.length === 2 ? "two files" : "multiple files"}. Replace each one with a secure alternative (environment variable or secrets manager lookup).
+
+Secret type   : ${detector}
+Description   : ${description}
+${remediation  ? `Fix hint     : ${remediation}` : ""}
+
+${occBlocks}
+
+Remove every hardcoded credential above. Load each from process.env.<SUITABLE_NAME> (or equivalent for the language) — pick a name that fits the file's context. The same secret CAN map to the same env var across files.
+
+IMPORTANT — multi-file diff:
+- Output ONE unified diff that contains a `--- a/<path>` + `+++ b/<path>` pair for EACH file above (${allOccs.length} pair${allOccs.length > 1 ? "s" : ""} total)
+- Each @@ hunk uses the real line number stated for that occurrence
+- Do NOT skip any occurrence — every secret listed must be patched
+- Do NOT add explanatory comments
+
+${FORMAT}`;
+    }
+
+    // Single-occurrence path (non-merged or merged with exactly 1 occ)
+    const occ = allOccs[0]!;
+    const file = occ.filePath ?? filePath ?? "src/config.js";
     const lang = detectLanguage(file) ?? "source code";
     return `Fix this hardcoded secret by replacing it with a secure alternative (environment variable or secrets manager lookup).
 
 Secret type   : ${detector}
 File          : ${file}
 Language      : ${lang}
-Line          : ${lineStart ?? "?"}
+Line          : ${occ.lineStart ?? lineStart ?? "?"}
 Description   : ${description}
 ${remediation  ? `Fix hint     : ${remediation}` : ""}
 ${snippet      ? `\nCode context (secret value is redacted):\n${snippet}` : ""}
