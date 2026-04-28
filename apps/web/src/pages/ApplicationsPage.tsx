@@ -20,6 +20,7 @@
 import { useState } from "react";
 import { Link, useParams, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import FindingCountBadges from "../components/FindingCountBadges";
 import {
   Plus, Pencil, Trash2, X, Boxes, GitBranch, Container as ContainerIcon, Network, Layers,
   AlertTriangle, ChevronRight,
@@ -125,8 +126,6 @@ function AppRow({ app }: { app: Application }) {
   const total = (app.componentCounts?.repositories ?? 0)
               + (app.componentCounts?.containers ?? 0)
               + (app.componentCounts?.domains ?? 0);
-  const critCount = app.findingCounts?.CRITICAL ?? 0;
-  const highCount = app.findingCounts?.HIGH ?? 0;
   return (
     <tr className="hover:bg-gray-800/40">
       <td className="px-4 py-3">
@@ -149,14 +148,15 @@ function AppRow({ app }: { app: Application }) {
         )}
       </td>
       <td className="px-4 py-3">
-        {critCount + highCount === 0 ? (
-          <span className="text-emerald-400 text-xs">all clean</span>
-        ) : (
-          <span className="text-xs">
-            {critCount > 0 && <span className="text-red-400 mr-2">{critCount} crit</span>}
-            {highCount > 0 && <span className="text-orange-400">{highCount} high</span>}
-          </span>
-        )}
+        {/*
+          UX pattern #5 — one axis per colour channel. Previously rendered
+          severity counts as raw `text-red-400 / text-orange-400` inline
+          spans, which competed with the SEVERITY_PILL standard everywhere
+          else (DashboardPage, FindingsPage). Replaced with the canonical
+          FindingCountBadges component so all 4 severities show up as
+          consistent muted-background pills with severity-tinted text.
+        */}
+        <FindingCountBadges counts={app.findingCounts} />
       </td>
       <td className="px-4 py-3 text-xs text-gray-500">{app.owner ?? "—"}</td>
       <td className="px-4 py-3 text-right">
