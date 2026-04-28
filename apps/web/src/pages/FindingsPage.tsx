@@ -1086,10 +1086,45 @@ export default function FindingsPage() {
                               <span className="text-gray-600">—</span>
                             )}
                           </td>
-                          {/* MITRE — empty for VD rows until Phase 3
-                              synthesises tactics from CVE description. */}
+                          {/* MITRE — synthesised from CVE description /
+                              CVSS by the wazuh ingest service. Dashed
+                              border distinguishes inferred-from-CVE
+                              tactics from observed-in-alert tactics on
+                              wazuh attack rows. Tooltip exposes the
+                              technique IDs + the classification basis
+                              ("RCE keyword in CVE description" etc.). */}
                           <td className="px-4 py-3">
-                            <span className="text-xs text-gray-600">—</span>
+                            {(() => {
+                              const mitre = (ev["mitre"] as {
+                                tactics?: string[];
+                                techniques?: string[];
+                                synthesized?: boolean;
+                                basis?: string;
+                              } | null) ?? null;
+                              const tactics    = mitre?.tactics    ?? [];
+                              const techniques = mitre?.techniques ?? [];
+                              if (tactics.length === 0) {
+                                return <span className="text-xs text-gray-600">—</span>;
+                              }
+                              const tooltip =
+                                (techniques.length ? `${techniques.join(", ")}` : "") +
+                                (mitre?.basis ? ` · inferred: ${mitre.basis}` : " · inferred from CVE");
+                              return (
+                                <div className="flex flex-wrap gap-1" title={tooltip.trim()}>
+                                  {tactics.slice(0, 2).map((t) => (
+                                    <span
+                                      key={t}
+                                      className="rounded border border-dashed border-indigo-700/60 bg-indigo-950/20 px-1.5 py-0.5 text-[10px] font-medium text-indigo-300/90"
+                                    >
+                                      {t}
+                                    </span>
+                                  ))}
+                                  {tactics.length > 2 && (
+                                    <span className="text-[10px] text-gray-500">+{tactics.length - 2}</span>
+                                  )}
+                                </div>
+                              );
+                            })()}
                           </td>
                           {/* Hits / CVSS — CVSS score + fix version */}
                           <td className="px-4 py-3 text-right text-xs">

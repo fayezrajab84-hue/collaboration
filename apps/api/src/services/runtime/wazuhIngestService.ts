@@ -857,6 +857,122 @@ function extractFixVersion(vd: WazuhVulnerabilityDoc["vulnerability"]): string |
   return m ? m[1]! : null;
 }
 
+// ── MITRE synthesis on VD findings ───────────────────────────────────────
+//
+// Wazuh's VD module doesn't tag CVEs with MITRE ATT&CK — but the dashboard
+// MITRE-tactic chart reads `evidence.mitre.tactics[]` on every RUNTIME
+// finding to compute its bars, so VD findings without MITRE are invisible
+// to the chart. We classify them with a small heuristic over the CVE
+// description + CVSS score.
+//
+// Coverage hierarchy (first match wins):
+//   1. RCE / arbitrary code execution     → Execution + Initial Access
+//   2. Privilege escalation                → Privilege Escalation
+//   3. Auth bypass / credential disclosure → Credential Access
+//   4. SSRF / SQL injection / XSS / IDOR   → Initial Access (web vector)
+//   5. Denial of service / crash           → Impact
+//   6. Default for CVSS ≥ 7                → Initial Access (network attack)
+//   7. Otherwise                           → no tactics (chart skips it)
+//
+// Every classification carries `synthesized: true` so the UI can mark
+// these as "(inferred from CVE)" — the operator can tell at a glance
+// whether MITRE on a row came from Wazuh detection (event evidence) or
+// our heuristic (state inference). Event-only predicates
+// (runtime-attack / runtime-exploit / activeAttacks24h) explicitly skip
+// scanner=wazuh-vd findings so synthesized MITRE doesn't contaminate
+// attack counters.
+//
+// Calibration corpus: openssl + libssl + ngtcp2 CVEs from Debian 13
+// agent c0263b172aab (the dev-cluster's only linked agent). This is a
+// deliberately conservative classifier — false negatives default to "no
+// MITRE", which is honest, rather than over-tagging things as Initial
+// Access. Operators can refine the rules as new CVE description shapes
+// surface; the regex blocks below are the single source of truth.
+
+interface SynthesisedMitre {
+  tactics:     string[];
+  techniques:  string[];
+  synthesized: true;
+  basis:       string;  // short human-readable why-this-classification
+}
+
+function vulnToMitre(v: WazuhVulnerabilityDoc["vulnerability"]): SynthesisedMitre | null {
+  const desc  = (v.description ?? "").toLowerCase();
+  const score = typeof v.score?.base === "number" ? v.score.base : 0;
+
+  // 1. RCE / arbitrary code execution. Hits openssl heap-overflow
+  //    "attacker controlled code execution", BIND remote-RCE, etc.
+  if (/\b(remote\s+code\s+execution|rce|arbitrary\s+code|attacker[ -]?controlled\s+code|command\s+injection)\b/i.test(desc)) {
+    return {
+      tactics:     ["Execution", "Initial Access"],
+      techniques:  ["T1203", "T1190"],
+      synthesized: true,
+      basis:       "RCE keyword in CVE description",
+    };
+  }
+
+  // 2. Privilege escalation. "local privilege escalation", "privesc".
+  if (/\bprivilege[ -]?escalat(?:ion|ed|e)|local\s+privilege|privesc\b/i.test(desc)) {
+    return {
+      tactics:     ["Privilege Escalation"],
+      techniques:  ["T1068"],
+      synthesized: true,
+      basis:       "Privilege escalation in CVE description",
+    };
+  }
+
+  // 3. Auth bypass / credential disclosure / password recovery.
+  if (/\b(authentication\s+bypass|auth(?:n|z)?[ -]?bypass|credential[s]?\s+(?:disclosure|theft|leak)|password\s+(?:disclosure|recovery)|hardcoded\s+credential)\b/i.test(desc)) {
+    return {
+      tactics:     ["Credential Access"],
+      techniques:  ["T1078"],
+      synthesized: true,
+      basis:       "Credential / auth-bypass in CVE description",
+    };
+  }
+
+  // 4. Web-vector classics — SSRF, SQLi, XSS, IDOR, path traversal,
+  //    deserialization. All map to Initial Access via T1190 (Exploit
+  //    Public-Facing Application).
+  if (/\b(ssrf|server[ -]?side\s+request|sql\s+injection|sqli|cross[ -]?site\s+scripting|xss|idor|insecure\s+direct\s+object|path\s+traversal|directory\s+traversal|deserialization|unsafe\s+deserialization|xxe|xml\s+external\s+entity)\b/i.test(desc)) {
+    return {
+      tactics:     ["Initial Access"],
+      techniques:  ["T1190"],
+      synthesized: true,
+      basis:       "Web-vector class (SSRF/SQLi/XSS/etc.) in description",
+    };
+  }
+
+  // 5. Denial of service / crash — Impact, not Initial Access.
+  //    Heap-overflow "may lead to a crash" is ambiguous (could be RCE),
+  //    so we order rule 1 before this so RCE wins when both keywords appear.
+  if (/\b(denial[ -]?of[ -]?service|\bdos\b|crash|hang|infinite\s+loop)\b/i.test(desc)) {
+    return {
+      tactics:     ["Impact"],
+      techniques:  ["T1499"],
+      synthesized: true,
+      basis:       "DoS / crash in CVE description",
+    };
+  }
+
+  // 6. CVSS-score fallback. ≥7 base score on a network-reachable CVE
+  //    almost always represents an Initial Access opportunity even when
+  //    the description doesn't use any of the keywords above.
+  if (score >= 7.0) {
+    return {
+      tactics:     ["Initial Access"],
+      techniques:  ["T1190"],
+      synthesized: true,
+      basis:       `High CVSS (${score.toFixed(1)}) — default Initial Access`,
+    };
+  }
+
+  // 7. Below-threshold + no keyword match — leave unclassified rather
+  //    than synthesise a wrong tactic. Honest "we don't know" beats a
+  //    false-precise label.
+  return null;
+}
+
 async function ingestVulnerabilitiesForAgent(
   agentRowId: string,
   orgId:      string,
@@ -921,6 +1037,13 @@ async function ingestVulnerabilitiesForAgent(
       v.description?.slice(0, 1000) ??
       `Wazuh VD detected ${cveId} on ${doc.agent.name ?? doc.agent.id}.`;
 
+    // Synthesize MITRE classification from CVE description + CVSS so VD
+    // findings show up in the dashboard's tactic chart. `synthesized: true`
+    // marks these as inferred (vs. observed); event-only predicates skip
+    // scanner=wazuh-vd findings so this never contaminates attack
+    // counters (see findingTags.hasActiveAttack + runtime/dashboard).
+    const synthesized = vulnToMitre(v);
+
     const evidence: Record<string, unknown> = {
       source:       "wazuh-vd",
       agentId:      doc.agent.id,
@@ -939,11 +1062,18 @@ async function ingestVulnerabilitiesForAgent(
         detectedAt:  v.detected_at,
         publishedAt: v.published_at,
       },
+      ...(synthesized ? { mitre: synthesized } : {}),
     };
 
     const references: string[] = [];
     if (v.reference)         references.push(v.reference);
     if (v.scanner?.reference) references.push(v.scanner.reference);
+    // Surface MITRE technique IDs as references too — the existing
+    // FindingDetailDrawer renders any "MITRE ATT&CK <T-id>" reference
+    // as a clickable link to attack.mitre.org/techniques/<id>.
+    for (const t of synthesized?.techniques ?? []) {
+      references.push(`MITRE ATT&CK ${t}`);
+    }
 
     const existing = await prisma.finding.findUnique({ where: { fingerprint } });
     if (existing) {
@@ -957,8 +1087,11 @@ async function ingestVulnerabilitiesForAgent(
           cvssScore,
           fixVersion,
           evidence,
-          // Preserve operator status (ACKNOWLEDGED, FALSE_POSITIVE, FIXED)
-          // — never auto-revert to OPEN on re-ingest.
+          // Refresh the references list (synthesized MITRE T-codes shift
+          // with classifier updates). Preserve operator status
+          // (ACKNOWLEDGED, FALSE_POSITIVE, FIXED) — never auto-revert
+          // to OPEN on re-ingest.
+          references,
         },
       });
     } else {

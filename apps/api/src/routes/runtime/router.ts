@@ -278,7 +278,9 @@ router.get("/dashboard", async (req, res, next) => {
         },
         // title + description are read by the success-text regex below
         // (matches "Successful sudo to root", "privilege escalation", etc.)
-        select: { evidence: true, aiFpAnalysis: true, title: true, description: true },
+        // scanner needed so we can exclude wazuh-vd (STATE) from
+        // attack/exploit counters even though it shares scanType=RUNTIME.
+        select: { evidence: true, aiFpAnalysis: true, title: true, description: true, scanner: true },
       }),
       prisma.workloadAgent.findMany({
         where:   { orgId },
@@ -297,6 +299,11 @@ router.get("/dashboard", async (req, res, next) => {
         falsePositives24h++;
         continue;
       }
+      // Wazuh-VD findings are STATE, not events. They carry synthesized
+      // MITRE so the tactic chart sees them (aggregation below), but
+      // they must NOT inflate "Active Attacks" / "Exploits Succeeded".
+      // Mirrors the guard in services/findingTags.ts:hasActiveAttack.
+      if (f.scanner === "wazuh-vd") continue;
       const ev = f.evidence as Record<string, unknown> | null;
       const det = ev?.["detection"] as { groups?: string[] } | undefined;
       const groups = det?.groups ?? [];

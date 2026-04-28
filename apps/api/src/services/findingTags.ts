@@ -101,6 +101,13 @@ function isAiSuppressed(f: FindingForTagging): boolean {
 
 function hasActiveAttack(f: FindingForTagging): boolean {
   if (f.scanType !== "RUNTIME") return false;
+  // Wazuh-VD findings are STATE (a CVE exists in an installed package),
+  // not EVENT (an attack happened). They carry synthesized MITRE
+  // (Initial Access etc.) so the tactic chart sees them — but the
+  // attack/exploit predicates must NOT count them as observed attacks,
+  // or we'd inflate "Active Attacks" by the size of the package
+  // inventory's CVE backlog.
+  if (f.scanner === "wazuh-vd") return false;
   if (isAiSuppressed(f)) return false;
 
   const ev = f.evidence as Record<string, unknown> | null;
