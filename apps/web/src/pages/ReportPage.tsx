@@ -28,47 +28,38 @@ const TARGET_ICON: Record<string, React.ElementType> = {
   DOMAIN:     Globe,
 };
 
-// ── Severity mini-bar ─────────────────────────────────────────────────────────
+// ── Severity chips (compact dot+count breakdown) ────────────────────────────
 
+// Function still named SevBar for grep stability across the codebase, but the
+// horizontal stacked progress bar was removed by operator request — only the
+// dot+count chips remain. The bar carried the same information twice (counts
+// + proportions) and the per-chip dots already encode severity at a glance.
+// "Clean" empty-state moved off teal onto emerald to match UX pattern #4
+// (success-as-reward) — see colors.ts FINDING_STATUS_BADGE.FIXED comment.
 function SevBar({ meta }: { meta: ReportMeta["metadata"] }) {
-  const total = meta.totalFindings || 1;
-  // Colour lives only in the progress bar + a single small dot per chip.
-  // The chip body itself is neutral gray — easier on the eyes at a glance.
   const segs = [
-    { sev: "CRITICAL", label: "Critical", short: "C", count: meta.CRITICAL, bar: "bg-red-500/80",    dot: "bg-red-400"     },
-    { sev: "HIGH",     label: "High",     short: "H", count: meta.HIGH,     bar: "bg-orange-500/80", dot: "bg-orange-400"  },
-    { sev: "MEDIUM",   label: "Medium",   short: "M", count: meta.MEDIUM,   bar: "bg-amber-500/80",  dot: "bg-amber-400"   },
-    { sev: "LOW",      label: "Low",      short: "L", count: meta.LOW,      bar: "bg-sky-600/70",    dot: "bg-sky-400"     },
-    { sev: "INFO",     label: "Info",     short: "I", count: meta.INFO,     bar: "bg-gray-500/70",   dot: "bg-gray-400"    },
+    { sev: "CRITICAL", label: "Critical", short: "C", count: meta.CRITICAL, dot: "bg-red-400"     },
+    { sev: "HIGH",     label: "High",     short: "H", count: meta.HIGH,     dot: "bg-orange-400"  },
+    { sev: "MEDIUM",   label: "Medium",   short: "M", count: meta.MEDIUM,   dot: "bg-amber-400"   },
+    { sev: "LOW",      label: "Low",      short: "L", count: meta.LOW,      dot: "bg-sky-400"     },
+    { sev: "INFO",     label: "Info",     short: "I", count: meta.INFO,     dot: "bg-gray-400"    },
   ].filter((s) => s.count > 0);
 
-  if (segs.length === 0) return <span className="text-xs text-teal-400/90">✓ Clean</span>;
+  if (segs.length === 0) return <span className="text-xs text-emerald-400/90">✓ Clean</span>;
 
   return (
-    <div className="flex items-center gap-3 flex-wrap">
-      <div className="flex h-1.5 w-28 overflow-hidden rounded-full bg-gray-800" title={`${total} findings`}>
-        {segs.map((s) => (
-          <div
-            key={s.sev}
-            className={`h-full ${s.bar}`}
-            style={{ width: `${(s.count / total) * 100}%` }}
-            title={`${s.label}: ${s.count}`}
-          />
-        ))}
-      </div>
-      <div className="flex flex-wrap gap-1">
-        {segs.map((s) => (
-          <span
-            key={s.sev}
-            title={`${s.count} ${s.label}`}
-            className="inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 text-[11px] font-medium text-gray-300 bg-gray-800/70"
-          >
-            <span className={`h-1.5 w-1.5 rounded-full ${s.dot}`} />
-            <span className="tabular-nums">{s.count}</span>
-            <span className="text-gray-500">{s.short}</span>
-          </span>
-        ))}
-      </div>
+    <div className="flex flex-wrap gap-1">
+      {segs.map((s) => (
+        <span
+          key={s.sev}
+          title={`${s.count} ${s.label}`}
+          className="inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 text-[11px] font-medium text-gray-300 bg-gray-800/70"
+        >
+          <span className={`h-1.5 w-1.5 rounded-full ${s.dot}`} />
+          <span className="tabular-nums">{s.count}</span>
+          <span className="text-gray-500">{s.short}</span>
+        </span>
+      ))}
     </div>
   );
 }
