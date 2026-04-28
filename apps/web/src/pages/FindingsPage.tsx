@@ -887,15 +887,21 @@ export default function FindingsPage() {
                   column makes navigation/triage drastically faster than digging
                   into the drawer. */}
               {tab === "web" && <th className="px-4 py-3 font-medium">URL</th>}
-              {/* Runtime tab — threat-hunting columns. Pulled from evidence
-                  JSONB by the wazuh ingest service. Operators living in
-                  this view think in IPs / agents / processes / MITRE the
-                  same way Web-tab operators think in URLs. */}
-              {tab === "runtime" && <th className="px-4 py-3 font-medium">Attacker IP</th>}
+              {/* Runtime tab — dual-purpose threat-hunting columns. The
+                  Runtime tab mixes two scanner subtypes:
+                    wazuh    — attack/intrusion alerts (event-driven). Cells
+                               read as Attacker IP · Process · User · Hits.
+                    wazuh-vd — vulnerability state (CVEs in installed
+                               packages). Cells read as Package · Version
+                               · CVSS · Fix.
+                  Headers are compound (e.g. "Attacker / Package") so the
+                  operator sees that the column is dual-purpose; per-row
+                  rendering picks the right slot based on f.scanner. */}
+              {tab === "runtime" && <th className="px-4 py-3 font-medium">Attacker / Package</th>}
               {tab === "runtime" && <th className="px-4 py-3 font-medium">Agent</th>}
-              {tab === "runtime" && <th className="px-4 py-3 font-medium">Process / User</th>}
+              {tab === "runtime" && <th className="px-4 py-3 font-medium">Process / Version</th>}
               {tab === "runtime" && <th className="px-4 py-3 font-medium">MITRE</th>}
-              {tab === "runtime" && <th className="px-4 py-3 font-medium">Hits</th>}
+              {tab === "runtime" && <th className="px-4 py-3 font-medium">Hits / CVSS</th>}
               {tab !== "runtime" && <th className="px-4 py-3 font-medium">Target</th>}
               {tab !== "runtime" && <SortTh field="scanType"   label="Type"       sort={sort} sortOrder={sortOrder} toggle={toggleSort} />}
               <SortTh field="confidence" label="Confidence" sort={sort} sortOrder={sortOrder} toggle={toggleSort} />
@@ -1030,13 +1036,91 @@ export default function FindingsPage() {
                       RuntimeEvidence by the wazuh ingest service). */}
                   {tab === "runtime" && (() => {
                     const ev = (f.evidence ?? {}) as Record<string, unknown>;
+                    // Branch on scanner — wazuh-vd rows are STATE
+                    // (vulnerability inventory), wazuh rows are EVENTS
+                    // (attack alerts). The five column slots stay the
+                    // same; the cell content reflects the row's nature.
+                    const isVd  = f.scanner === "wazuh-vd";
+                    const agent = (ev["wazuhAgentName"] as string | undefined)
+                                  ?? (ev["agentName"]       as string | undefined)
+                                  ?? null;
+
+                    if (isVd) {
+                      const pkg          = ev["package"]       as Record<string, unknown> | undefined;
+                      const pkgName      = (pkg?.["name"]       as string | undefined) ?? f.packageName ?? null;
+                      const pkgVersion   = (pkg?.["version"]    as string | undefined) ?? f.packageVersion ?? null;
+                      const pkgArch      = (pkg?.["architecture"] as string | undefined) ?? null;
+                      const cvssScore    = f.cvssScore ?? null;
+                      const fixVersion   = f.fixVersion ?? null;
+                      // CVSS severity-tier color: ≥9 red, ≥7 amber-as-red,
+                      // else gray. Operators eyeball this column to find
+                      // criticals.
+                      const cvssClass    = cvssScore == null ? "text-gray-500"
+                                         : cvssScore >= 9  ? "text-red-300"
+                                         : cvssScore >= 7  ? "text-red-400/80"
+                                         :                   "text-gray-300";
+                      return (
+                        <>
+                          {/* Attacker / Package — package name */}
+                          <td className="px-4 py-3 text-xs">
+                            {pkgName ? (
+                              <div className="font-mono">
+                                <div className="text-gray-200">{pkgName}</div>
+                                {pkgArch && (
+                                  <div className="text-[10px] text-gray-500">{pkgArch}</div>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-gray-600">—</span>
+                            )}
+                          </td>
+                          {/* Agent — same as wazuh */}
+                          <td className="px-4 py-3 font-mono text-xs text-gray-300">
+                            {agent ?? <span className="text-gray-600">—</span>}
+                          </td>
+                          {/* Process / Version — installed package version */}
+                          <td className="px-4 py-3 text-xs">
+                            {pkgVersion ? (
+                              <span className="font-mono text-gray-300">{pkgVersion}</span>
+                            ) : (
+                              <span className="text-gray-600">—</span>
+                            )}
+                          </td>
+                          {/* MITRE — empty for VD rows until Phase 3
+                              synthesises tactics from CVE description. */}
+                          <td className="px-4 py-3">
+                            <span className="text-xs text-gray-600">—</span>
+                          </td>
+                          {/* Hits / CVSS — CVSS score + fix version */}
+                          <td className="px-4 py-3 text-right text-xs">
+                            {cvssScore != null ? (
+                              <div>
+                                <div className={`font-mono font-semibold ${cvssClass}`}>
+                                  {cvssScore.toFixed(1)}
+                                </div>
+                                {fixVersion ? (
+                                  <div className="text-[10px] text-emerald-300/80">
+                                    fix → {fixVersion}
+                                  </div>
+                                ) : (
+                                  <div className="text-[10px] text-gray-500">no fix yet</div>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-gray-600">—</span>
+                            )}
+                          </td>
+                        </>
+                      );
+                    }
+
+                    // Default: wazuh attack-event row.
                     const ips        = (ev["attackerIps"] as string[] | undefined) ?? [];
                     const ipCount    = (ev["attackerIpCount"] as number | undefined) ?? ips.length;
                     const primaryIp  = (ev["attackerIp"] as string | undefined) ?? ips[0] ?? null;
-                    const agent      = (ev["wazuhAgentName"] as string | undefined) ?? null;
                     const procName   = (ev["processName"] as string | undefined) ?? null;
                     const procUser   = (ev["user"] as string | undefined) ?? null;
-                    const mitre      = (ev["mitre"] as { ids?: string[]; tactics?: string[] } | null) ?? null;
+                    const mitre      = (ev["mitre"] as { ids?: string[]; tactics?: string[]; techniques?: string[] } | null) ?? null;
                     const hits       = (ev["occurrencesTotal"] as number | undefined) ?? (ev["occurrencesInBucket"] as number | undefined) ?? null;
                     return (
                       <>

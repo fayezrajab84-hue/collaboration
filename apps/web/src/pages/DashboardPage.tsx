@@ -876,14 +876,30 @@ export default function DashboardPage() {
         })()}
         {tab === "runtime" ? (() => {
           // Runtime cards source their counts from server-side
-          // tagCounts so card-count ≡ destination-count for both tags.
-          const runtimeAttackTotal  = stats?.tagCounts?.["runtime-attack"]  ?? 0;
-          const runtimeExploitTotal = stats?.tagCounts?.["runtime-exploit"] ?? 0;
-          const totalAttackPatterns = runtimeAttackTotal + runtimeExploitTotal;
+          // tagCounts so card-count ≡ destination-count for every tag.
+          //
+          // Three-card model (alongside the Lead "Exploits Landed" above
+          // and the trailing "Runtime Agents" below):
+          //   Active Attacks       — event-driven, runtime-attack tag
+          //                           (Wazuh detected attack, no landing
+          //                            signal yet)
+          //   Vulnerable Packages  — STATE-driven, runtime-vulnerability
+          //                           tag (Wazuh VD found a known CVE in
+          //                           an installed package — what COULD
+          //                           be exploited, distinct from what IS
+          //                           being attacked).
+          //
+          // The earlier "All Attack Patterns" card (sum of attack +
+          // exploit) was redundant — operators read the lead card +
+          // Active Attacks and got the same signal. Vulnerable Packages
+          // adds a real new dimension (state, not event) that the
+          // event-only cards couldn't surface.
+          const runtimeAttackTotal = stats?.tagCounts?.["runtime-attack"]        ?? 0;
+          const runtimeVulnTotal   = stats?.tagCounts?.["runtime-vulnerability"] ?? 0;
           return (
             <>
               <StatsCard
-                label="Attacks Attempted"
+                label="Active Attacks"
                 value={runtimeAttackTotal}
                 valueClassName="text-rose-300"
                 icon={<Activity className="h-5 w-5 text-rose-400/70" />}
@@ -891,12 +907,12 @@ export default function DashboardPage() {
                 hint={runtimeAttackTotal > 0 ? "Attack patterns · no landing signal" : "Quiet"}
               />
               <StatsCard
-                label="All Attack Patterns"
-                value={totalAttackPatterns}
-                valueClassName="text-gray-200"
-                icon={<Activity className="h-5 w-5 text-gray-400" />}
-                onClick={() => navigate(`/findings?tab=runtime&severity=CRITICAL,HIGH,MEDIUM`)}
-                hint="Landed + attempted"
+                label="Vulnerable Packages"
+                value={runtimeVulnTotal}
+                valueClassName="text-indigo-200"
+                icon={<ShieldAlert className="h-5 w-5 text-indigo-400/70" />}
+                onClick={() => navigate(`/findings?tab=runtime&tag=runtime-vulnerability`)}
+                hint={runtimeVulnTotal > 0 ? "Wazuh VD · MED+ severity" : "None detected"}
               />
             </>
           );

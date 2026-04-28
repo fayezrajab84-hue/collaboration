@@ -14,17 +14,26 @@
  * mismatch bug; this module replaces it.
  *
  * Vocabulary:
- *   - runtime-exploit   — Wazuh detected attack succeeded (HTTP 2xx, audit
- *                         success, post-compromise tactic, success-language).
- *   - runtime-attack    — Wazuh detected attack but no success signal.
- *   - confirmed-exploit — scanner-confirmed Proof of Exploit. confidence=
- *                         CONFIRMED + evidence.url + evidence.attack. Cross-
- *                         tier (DAST / PENTEST / RUNTIME). This is the
- *                         badge-eligible "we have a working reproducer"
- *                         population.
- *   - ai-suppressed     — AI false-positive detector flagged the finding
- *                         as LIKELY_FP at HIGH or MEDIUM confidence. Useful
- *                         for the "what is the AI hiding from me?" view.
+ *   - runtime-exploit       — Wazuh detected attack succeeded (HTTP 2xx,
+ *                             audit success, post-compromise tactic,
+ *                             success-language). EVENT-driven.
+ *   - runtime-attack        — Wazuh detected attack but no success signal.
+ *                             EVENT-driven.
+ *   - runtime-vulnerability — Wazuh VD detected a known CVE in an
+ *                             installed package (scanner="wazuh-vd"). STATE,
+ *                             not event — "what could be exploited" rather
+ *                             than "what is being attacked". Severity floor
+ *                             at MEDIUM keeps the LOW/INFO long tail off
+ *                             the dashboard.
+ *   - confirmed-exploit     — scanner-confirmed Proof of Exploit. confidence=
+ *                             CONFIRMED + evidence.url + evidence.attack.
+ *                             Cross-tier (DAST / PENTEST / RUNTIME). This is
+ *                             the badge-eligible "we have a working
+ *                             reproducer" population.
+ *   - ai-suppressed         — AI false-positive detector flagged the finding
+ *                             as LIKELY_FP at HIGH or MEDIUM confidence.
+ *                             Useful for the "what is the AI hiding from me?"
+ *                             view.
  *
  * Implementation note: Prisma JSON queries can express array_contains
  * but not regex / numeric-coerce on JSON paths, so tag evaluation is a
@@ -41,12 +50,14 @@ import type { Finding } from "@prisma/client";
 export type TagName =
   | "runtime-exploit"
   | "runtime-attack"
+  | "runtime-vulnerability"
   | "confirmed-exploit"
   | "ai-suppressed";
 
 export const ALL_TAGS: TagName[] = [
   "runtime-exploit",
   "runtime-attack",
+  "runtime-vulnerability",
   "confirmed-exploit",
   "ai-suppressed",
 ];
@@ -74,6 +85,7 @@ interface FindingForTagging {
   scanType:     string;
   severity:     string;
   confidence:   string;     // "CONFIRMED" | "LIKELY" | "POSSIBLE"
+  scanner:      string;     // "wazuh" | "wazuh-vd" | "trivy" | etc.
   evidence:     unknown;
   aiFpAnalysis: unknown;
   title:        string | null;
@@ -147,6 +159,16 @@ const PREDICATES: Record<TagName, (f: FindingForTagging) => boolean> = {
     if (!["CRITICAL","HIGH","MEDIUM"].includes(f.severity)) return false;
     return hasActiveAttack(f) && !isExploit(f);
   },
+  // Runtime vulnerability: Wazuh VD module reported a known CVE in a
+  // package on a running host. State, not event — answers "what could
+  // be exploited" alongside the event-driven attack/exploit tags.
+  // Severity floor at MEDIUM keeps the long tail off the dashboard;
+  // operators can still filter to LOW via the severity chip if needed.
+  "runtime-vulnerability": (f) => {
+    if (f.scanner !== "wazuh-vd") return false;
+    if (!["CRITICAL","HIGH","MEDIUM"].includes(f.severity)) return false;
+    return true;
+  },
   // Confirmed exploit (cross-tier): scanner-confirmed Proof of Exploit.
   // Same contract the badge UI uses — confidence=CONFIRMED + evidence
   // contains a reproducible url + attack vector. AI-suppressed findings
@@ -190,6 +212,14 @@ export function tagCandidateWhere(tag: TagName): Record<string, unknown> {
         severity: { in: ["CRITICAL", "HIGH", "MEDIUM"] },
         status:   { not: "FALSE_POSITIVE" },
       };
+    case "runtime-vulnerability":
+      // scanner=wazuh-vd is indexed implicitly via Finding lookups; cheap
+      // narrow by scanner+severity floor before the JS predicate runs.
+      return {
+        scanner:  "wazuh-vd",
+        severity: { in: ["CRITICAL", "HIGH", "MEDIUM"] },
+        status:   { not: "FALSE_POSITIVE" },
+      };
     case "confirmed-exploit":
       // confidence is indexed implicitly via finding lookups; cheap narrow
       // dramatically reduces the JS pass since CONFIRMED is rare.
@@ -215,6 +245,7 @@ export const TAG_PREDICATE_SELECT = {
   scanType:     true,
   severity:     true,
   confidence:   true,
+  scanner:      true,
   evidence:     true,
   aiFpAnalysis: true,
   title:        true,
