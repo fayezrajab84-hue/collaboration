@@ -46,9 +46,15 @@ function isAiFalsePositive(
  * through this helper so the rule can't drift between them.
  */
 export function hasProofOfExploit(
-  finding: Pick<Finding, "confidence" | "evidence">,
+  finding: Pick<Finding, "confidence" | "evidence" | "scanner">,
 ): boolean {
   if (finding.confidence !== "CONFIRMED") return false;
+  // Wazuh-VD findings are STATE — even at CONFIRMED confidence (we
+  // currently ingest them as LIKELY, but the predicate stays guarded
+  // for future-proofing) they describe a vulnerability inventory entry,
+  // not a scanner-reproduced exploit. The badge is reserved for things
+  // the platform can WALK an operator through reproducing.
+  if (finding.scanner === "wazuh-vd") return false;
   const ev = finding.evidence;
   if (!ev || typeof ev !== "object") return false;
   return typeof ev["url"] === "string" && typeof ev["attack"] === "string";
@@ -121,9 +127,25 @@ function matchesAttackText(text: string | null | undefined): boolean {
 }
 
 export function hasActiveAttack(
-  finding: Pick<Finding, "scanType" | "evidence" | "title" | "description" | "aiFpAnalysis">,
+  finding: Pick<Finding, "scanType" | "scanner" | "evidence" | "title" | "description" | "aiFpAnalysis">,
 ): boolean {
   if (finding.scanType !== "RUNTIME") return false;
+  // Wazuh-VD findings are STATE (a CVE in an installed package), not
+  // EVENT (an attack happened). Without this guard:
+  //   • The synthesized MITRE classifier (Phase 3) tags VD findings
+  //     with offensive tactics (Initial Access, Execution, Impact) so
+  //     the dashboard MITRE chart sees them — but those tactics also
+  //     match the OFFENSIVE_TACTICS set below, false-firing ATTACK.
+  //   • CVE descriptions routinely contain words like "attacker",
+  //     "exploit", "code execution" so even the title/description
+  //     regex fallback at the bottom of this function would match.
+  // Either path made every wazuh-vd row render an ATTACK pill, and
+  // the 11 DoS-class CVEs (synthesised tactic "Impact" — in
+  // SUCCESS_TACTICS) further earned the EXPLOIT pill via
+  // wasExploitSuccessful. Mirrors the server-side guard in
+  // services/findingTags.ts:hasActiveAttack and the dashboard
+  // route's activeAttacks24h count.
+  if (finding.scanner === "wazuh-vd") return false;
   // AI override — confidently-FP findings drop their badges so the
   // table doesn't scream EXPLOIT at a known-benign Wazuh alert.
   if (isAiFalsePositive(finding)) return false;
@@ -209,8 +231,14 @@ function matchesSuccessText(text: string | null | undefined): boolean {
 }
 
 export function wasExploitSuccessful(
-  finding: Pick<Finding, "scanType" | "evidence" | "title" | "description" | "aiFpAnalysis" | "confidence">,
+  finding: Pick<Finding, "scanType" | "scanner" | "evidence" | "title" | "description" | "aiFpAnalysis" | "confidence">,
 ): boolean {
+  // Defense in depth — the runtime path below calls hasActiveAttack
+  // which already guards on scanner=wazuh-vd, but adding the guard
+  // here too means any future change that bypasses hasActiveAttack
+  // (e.g. a refactor of the proof-of-exploit branch) can't accidentally
+  // earn a VD finding the EXPLOIT badge. State ≠ event.
+  if (finding.scanner === "wazuh-vd") return false;
   // ── Scanner-proven exploit (CHECK FIRST, before AI override) ────
   // Concrete proof outranks AI heuristics. When the scanner ran a
   // payload (xsstrike/sqlmap/dalfox/lfi-probe) and CONFIRMED reflection
