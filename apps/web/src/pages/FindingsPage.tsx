@@ -23,6 +23,44 @@ type SortField = "severity" | "firstSeen" | "lastSeen" | "title" | "scanType" | 
 type SortOrder = "asc" | "desc";
 const PAGE_SIZES = [25, 50, 100] as const;
 
+// ── Tag filter dropdown options ─────────────────────────────────────────
+//
+// Mirrors the server-side vocabulary in services/findingTags.ts. The
+// names ARE the source of truth — these labels are pure operator-facing
+// copy. Group key controls which dropdown section the option appears in
+// (Runtime tags vs cross-tier tags).
+//
+// Per-tab visibility (ALL_TAG_OPTIONS_BY_TAB below):
+//   Code/Web tab → confirmed-exploit + ai-suppressed only. Runtime-*
+//                   tags would always return zero on these tabs since the
+//                   tab itself filters out RUNTIME scan type.
+//   Runtime tab  → all 5 tags. Operators here triage runtime-specific
+//                   buckets + the cross-tier ones if relevant.
+//
+// Display order matches operator workflow: most-actionable first
+// (exploits / attacks), then state (vulnerabilities), then cross-tier
+// signals (confirmed-exploit), then meta (ai-suppressed).
+interface TagOption {
+  value:  string;
+  label:  string;
+  group:  "Runtime" | "Cross-tier";
+  hint?:  string;
+}
+const TAG_OPTIONS: TagOption[] = [
+  { value: "runtime-exploit",       label: "Exploits landed",       group: "Runtime",    hint: "Wazuh detected attack succeeded" },
+  { value: "runtime-attack",        label: "Active attacks",        group: "Runtime",    hint: "Attack patterns · no landing yet" },
+  { value: "runtime-vulnerability", label: "Vulnerable packages",   group: "Runtime",    hint: "Wazuh VD · MED+ severity CVEs" },
+  { value: "confirmed-exploit",     label: "Confirmed exploits",    group: "Cross-tier", hint: "Scanner reproduced (any tier)" },
+  { value: "ai-suppressed",         label: "AI-suppressed",         group: "Cross-tier", hint: "AI flagged as LIKELY_FP" },
+];
+const TAG_OPTIONS_BY_TAB: Record<"code" | "web" | "runtime", TagOption[]> = {
+  // Runtime predicates only return matches when scanType=RUNTIME, so
+  // showing them on Code/Web would be empty rows. Hide.
+  code:    TAG_OPTIONS.filter((t) => t.group !== "Runtime"),
+  web:     TAG_OPTIONS.filter((t) => t.group !== "Runtime"),
+  runtime: TAG_OPTIONS,
+};
+
 const SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"];
 // ── Code vs Web split ────────────────────────────────────────────────────────
 // Code findings have a file path + line number (the artefact is source).
@@ -253,6 +291,106 @@ function FindingGroupsView() {
         <FindingGroupCard key={g.key} group={g} />
       ))}
     </div>
+  );
+}
+
+// ── Tag filter dropdown ──────────────────────────────────────────────────
+//
+// Single-select picker keyed off the server-side tag vocabulary
+// (services/findingTags.ts). Native <details> handles open/close so
+// click-outside + keyboard navigation come for free without a portal.
+//
+// Trigger button doubles as the active-state display: shows the
+// selected tag's friendly label (e.g. "Vulnerable packages") instead
+// of the raw machine name, plus an X to clear inline. The chip-only
+// treatment this replaces could only be CLEARED — there was no way to
+// pick a tag from the page itself; operators had to know the URL form
+// or click a dashboard card. The dropdown closes that gap.
+function TagFilter({
+  value, options, onChange,
+}: {
+  value:    string;
+  options:  TagOption[];
+  onChange: (next: string) => void;
+}) {
+  const active = options.find((o) => o.value === value);
+  const groups = Array.from(new Set(options.map((o) => o.group)));
+
+  return (
+    <details className="relative group">
+      <summary
+        className={`flex cursor-pointer list-none items-center gap-1.5 rounded px-2.5 py-1.5 text-xs font-medium transition-colors ${
+          active
+            ? "border border-indigo-700/60 bg-indigo-950/40 text-indigo-200 hover:bg-indigo-950/60"
+            : "border border-gray-700 bg-gray-800 text-gray-300 hover:border-indigo-600 hover:text-white"
+        }`}
+        title="Filter by tag (server-side predicate)"
+      >
+        <Target className="h-3 w-3" />
+        <span>{active ? active.label : "Tag"}</span>
+        {active && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onChange("");
+            }}
+            className="rounded-full p-0.5 hover:bg-indigo-900/50"
+            aria-label={`Clear tag filter (${active.label})`}
+          >
+            <X className="h-3 w-3" />
+          </button>
+        )}
+        <ChevronDown className="h-3 w-3 opacity-60" />
+      </summary>
+      <div className="absolute left-0 z-30 mt-1 w-72 overflow-hidden rounded-lg border border-gray-700 bg-gray-900 shadow-xl">
+        <button
+          type="button"
+          onClick={(e) => {
+            e.preventDefault();
+            onChange("");
+            (e.currentTarget.closest("details") as HTMLDetailsElement | null)?.removeAttribute("open");
+          }}
+          className={`flex w-full items-center justify-between border-b border-gray-800 px-3 py-2 text-left text-xs ${
+            !value ? "bg-indigo-950/40 text-indigo-200" : "text-gray-300 hover:bg-gray-800"
+          }`}
+        >
+          <span>All findings</span>
+          {!value && <Target className="h-3 w-3" />}
+        </button>
+        {groups.map((g) => {
+          const groupOptions = options.filter((o) => o.group === g);
+          if (groupOptions.length === 0) return null;
+          return (
+            <div key={g} className="border-b border-gray-800 last:border-b-0">
+              <div className="bg-gray-950 px-3 py-1.5 text-[10px] uppercase tracking-wide text-gray-500">
+                {g}
+              </div>
+              {groupOptions.map((o) => (
+                <button
+                  key={o.value}
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    onChange(o.value);
+                    (e.currentTarget.closest("details") as HTMLDetailsElement | null)?.removeAttribute("open");
+                  }}
+                  className={`flex w-full flex-col items-start px-3 py-2 text-left text-xs ${
+                    value === o.value ? "bg-indigo-950/40 text-indigo-200" : "text-gray-300 hover:bg-gray-800"
+                  }`}
+                >
+                  <span className="font-medium">{o.label}</span>
+                  {o.hint && (
+                    <span className="text-[10px] text-gray-500">{o.hint}</span>
+                  )}
+                </button>
+              ))}
+            </div>
+          );
+        })}
+      </div>
+    </details>
   );
 }
 
@@ -708,25 +846,23 @@ export default function FindingsPage() {
           )}
         </label>
 
-        {/* Tag filter chip — removable. Set by dashboard cards via
-            ?tag=runtime-exploit etc. Same removal pattern as the
-            MITRE tactic chip. */}
-        {tag && (
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-red-700/60 bg-red-950/40 px-2 py-1 text-xs text-red-300">
-            <Target className="h-3 w-3 text-red-400" />
-            Tag: {tag}
-            <button
-              onClick={() => setSearchParams((prev) => {
-                prev.delete("tag");
-                return prev;
-              })}
-              className="rounded-full p-0.5 hover:bg-red-900/50"
-              aria-label={`Clear tag filter (${tag})`}
-            >
-              <X className="h-3 w-3" />
-            </button>
-          </span>
-        )}
+        {/* Tag filter — single-select dropdown listing the server-side
+            tag vocabulary (services/findingTags.ts). Replaces the
+            old chip-only treatment that could only be REMOVED, never
+            set from inside the page. Tab-scoped via TAG_OPTIONS_BY_TAB
+            so Code/Web tabs only see cross-tier tags (Runtime tags
+            always return zero off the Runtime tab).
+            <details> drives the disclosure — click-outside-close and
+            keyboard-accessibility come for free. */}
+        <TagFilter
+          value={tag}
+          options={TAG_OPTIONS_BY_TAB[tab]}
+          onChange={(next) => setSearchParams((prev) => {
+            if (next) prev.set("tag", next); else prev.delete("tag");
+            return prev;
+          })}
+        />
+
 
         {/* MITRE tactic filter chip — removable. Only renders when set
             (driven by clicking a tactic on the dashboard). The Clear-all
