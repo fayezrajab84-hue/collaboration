@@ -339,8 +339,24 @@ export const findingsApi = {
    * vs "web" tab). `scanTypeCounts` always returns the full unfiltered
    * breakdown so the tab badges themselves don't depend on the active tab.
    */
-  stats: (scanType?: string) =>
-    apiClient.get<{
+  stats: (
+    options?: string | {
+      scanType?:    string;
+      repoId?:      string;
+      containerId?: string;
+      domainId?:    string;
+    },
+  ) => {
+    // Back-compat: old call sites passed scanType as a bare string. New
+    // call sites pass an options object so target filters compose cleanly
+    // with the scanType filter. Both forms reach the same endpoint.
+    const opts = typeof options === "string" ? { scanType: options } : (options ?? {});
+    const params: Record<string, string> = {};
+    if (opts.scanType)    params["scanType"]    = opts.scanType;
+    if (opts.repoId)      params["repoId"]      = opts.repoId;
+    if (opts.containerId) params["containerId"] = opts.containerId;
+    if (opts.domainId)    params["domainId"]    = opts.domainId;
+    return apiClient.get<{
       severityCounts: Array<{ severity: string; _count: number }>;
       scanTypeCounts: Array<{ scanType: string; _count: number }>;
       statusCounts: Array<{ status: string; _count: number }>;
@@ -350,9 +366,13 @@ export const findingsApi = {
       severityByScanType?: Array<{ scanType: string; severity: string; _count: number }>;
       // Server-side tag-predicate counts. Same evaluator as
       // /findings?tag=, so card-count == destination-count by
-      // construction. v1 vocabulary: runtime-exploit, runtime-attack.
+      // construction. Vocabulary: runtime-exploit, runtime-attack,
+      // confirmed-exploit, ai-suppressed.
       tagCounts?: Record<string, number>;
-    }>("/findings/summary/stats", { params: scanType ? { scanType } : undefined }).then((r) => r.data),
+    }>("/findings/summary/stats", {
+      params: Object.keys(params).length > 0 ? params : undefined,
+    }).then((r) => r.data);
+  },
   topTargets: (limit = 5) =>
     apiClient.get<Array<{
       targetType: "REPOSITORY" | "CONTAINER" | "DOMAIN";

@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
-import { ShieldAlert, GitBranch, Box, Globe, ArrowRight, Flame, Plus, Target, Code2, Activity, AlertTriangle } from "lucide-react";
+import { ShieldAlert, GitBranch, Box, Globe, ArrowRight, Flame, Plus, Target, Code2, Activity, AlertTriangle, Filter, ChevronDown, Check } from "lucide-react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { findingsApi, reposApi, containersApi, domainsApi, scansApi, runtimeApi, type RuntimeDashboardResponse } from "../lib/api";
 import { wasExploitSuccessful, hasActiveAttack } from "../lib/findings";
@@ -469,6 +469,115 @@ function ScanTargetName({ scan }: { scan: ScanJob }) {
 // Chart hex colors — imported from canonical colors.ts
 const SEVERITY_COLORS = SEVERITY_CHART;
 
+// ── Target filter dropdown ─────────────────────────────────────────────────
+//
+// Combined picker across repos / containers / domains. We deliberately
+// don't render three separate dropdowns — operators think in terms of
+// "this asset", not "this kind of asset", and a single combined picker
+// makes the URL state simple (`target=repo:<id>` etc).
+//
+// Disclosure UI uses a native `<details>` element so the click-outside-to-
+// close + keyboard accessibility comes for free, no portal / focus-trap
+// dance needed.
+function TargetFilter({
+  value, repos, containers, domains, onChange,
+}: {
+  value:      string;
+  repos:      Array<{ id: string; fullName?: string; name?: string }>;
+  containers: Array<{ id: string; imageRef: string }>;
+  domains:    Array<{ id: string; domain: string }>;
+  onChange:   (kind: "repo" | "container" | "domain" | null, id: string | null) => void;
+}) {
+  // Show the active selection's name in the trigger so the operator can
+  // see what they've scoped to without opening the menu.
+  const m = value.match(/^(repo|container|domain):([\w-]+)$/);
+  const activeKind = m ? (m[1] as "repo" | "container" | "domain") : null;
+  const activeId   = m ? m[2]! : null;
+  const activeName =
+    activeKind === "repo"      ? (repos.find((r)      => r.id === activeId)?.fullName ?? repos.find((r)      => r.id === activeId)?.name)
+  : activeKind === "container" ? containers.find((c)  => c.id === activeId)?.imageRef
+  : activeKind === "domain"    ? domains.find((d)     => d.id === activeId)?.domain
+  :                              null;
+  const label = value && activeName ? activeName : "All targets";
+
+  return (
+    <details className="relative group">
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded-lg border border-gray-700 bg-gray-900 px-3 py-1.5 text-xs font-medium text-gray-300 hover:border-indigo-600 hover:text-white">
+        <Filter className="h-3.5 w-3.5" />
+        <span className="max-w-[180px] truncate">{label}</span>
+        <ChevronDown className="h-3 w-3 opacity-60" />
+      </summary>
+      <div className="absolute left-0 z-30 mt-1 max-h-96 w-72 overflow-y-auto rounded-lg border border-gray-700 bg-gray-900 shadow-xl">
+        <button
+          onClick={(e) => { e.preventDefault(); onChange(null, null); (e.currentTarget.closest("details") as HTMLDetailsElement | null)?.removeAttribute("open"); }}
+          className={`flex w-full items-center justify-between border-b border-gray-800 px-3 py-2 text-left text-xs ${
+            !value ? "bg-indigo-950/40 text-indigo-200" : "text-gray-300 hover:bg-gray-800"
+          }`}
+        >
+          <span>All targets</span>
+          {!value && <Check className="h-3.5 w-3.5" />}
+        </button>
+
+        <TargetGroup
+          title="Repositories" icon={<GitBranch className="h-3 w-3" />}
+          rows={repos.map((r) => ({ id: r.id, label: r.fullName ?? r.name ?? r.id }))}
+          activeId={activeKind === "repo" ? activeId : null}
+          onPick={(id) => onChange("repo", id)}
+        />
+        <TargetGroup
+          title="Containers" icon={<Box className="h-3 w-3" />}
+          rows={containers.map((c) => ({ id: c.id, label: c.imageRef }))}
+          activeId={activeKind === "container" ? activeId : null}
+          onPick={(id) => onChange("container", id)}
+        />
+        <TargetGroup
+          title="Domains" icon={<Globe className="h-3 w-3" />}
+          rows={domains.map((d) => ({ id: d.id, label: d.domain }))}
+          activeId={activeKind === "domain" ? activeId : null}
+          onPick={(id) => onChange("domain", id)}
+        />
+      </div>
+    </details>
+  );
+}
+
+function TargetGroup({
+  title, icon, rows, activeId, onPick,
+}: {
+  title:    string;
+  icon:     React.ReactNode;
+  rows:     Array<{ id: string; label: string }>;
+  activeId: string | null;
+  onPick:   (id: string) => void;
+}) {
+  if (rows.length === 0) return null;
+  return (
+    <div className="border-b border-gray-800 last:border-b-0">
+      <div className="flex items-center gap-1.5 bg-gray-950 px-3 py-1.5 text-[10px] uppercase tracking-wide text-gray-500">
+        {icon}
+        {title}
+        <span className="ml-auto opacity-60">{rows.length}</span>
+      </div>
+      {rows.map((r) => (
+        <button
+          key={r.id}
+          onClick={(e) => {
+            e.preventDefault();
+            onPick(r.id);
+            (e.currentTarget.closest("details") as HTMLDetailsElement | null)?.removeAttribute("open");
+          }}
+          className={`flex w-full items-center justify-between px-3 py-1.5 text-left text-xs ${
+            activeId === r.id ? "bg-indigo-950/40 text-indigo-200" : "text-gray-300 hover:bg-gray-800"
+          }`}
+        >
+          <span className="truncate font-mono">{r.label}</span>
+          {activeId === r.id && <Check className="h-3.5 w-3.5 flex-shrink-0" />}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export default function DashboardPage() {
   const navigate = useNavigate();
   // URL-driven tab so refreshes / shared links preserve which view the user
@@ -486,6 +595,30 @@ export default function DashboardPage() {
     });
   };
 
+  // Per-target scope filter — single combined dropdown across repos /
+  // containers / domains. URL form: `?target=repo:<id>` (or container,
+  // domain). Backend already supports repoId / containerId / domainId on
+  // /findings, /findings/summary/stats, /findings/summary/top-rules. The
+  // dropdown is tab-agnostic so the operator can mix scopes (e.g. show
+  // me CONTAINER findings on a specific repo's image).
+  const targetRaw = searchParams.get("target") ?? "";
+  const [targetKind, targetId] = (() => {
+    const m = targetRaw.match(/^(repo|container|domain):([\w-]+)$/);
+    return m ? [m[1] as "repo" | "container" | "domain", m[2]!] : [null, null];
+  })();
+  const setTarget = (kind: "repo" | "container" | "domain" | null, id: string | null) => {
+    setSearchParams((prev) => {
+      if (!kind || !id) prev.delete("target");
+      else prev.set("target", `${kind}:${id}`);
+      return prev;
+    });
+  };
+  // Translate the URL form into the per-field shape the API client wants.
+  const targetParams = targetKind === "repo"      ? { repoId:      targetId! }
+                     : targetKind === "container" ? { containerId: targetId! }
+                     : targetKind === "domain"    ? { domainId:    targetId! }
+                     :                              {};
+
   const tabScanTypes =
     tab === "web"     ? WEB_SCAN_TYPES
     : tab === "runtime" ? RUNTIME_SCAN_TYPES
@@ -494,9 +627,11 @@ export default function DashboardPage() {
 
   // Tab-scoped stats (severity / status / confidence). scanTypeCounts comes
   // back unscoped so we can derive the Code/Web tab badges in the header.
+  // Target params (repo/container/domain) are applied here too, so the
+  // cards re-count when the operator picks a single asset.
   const { data: stats } = useQuery({
-    queryKey: ["findings", "stats", tab],
-    queryFn: () => findingsApi.stats(tabScanCsv),
+    queryKey: ["findings", "stats", tab, targetRaw],
+    queryFn: () => findingsApi.stats({ scanType: tabScanCsv, ...targetParams }),
   });
   // Unscoped stats — used only to render the Code / Web counts in the tab
   // strip itself. Tiny payload, cached separately, so switching tabs doesn't
@@ -518,10 +653,14 @@ export default function DashboardPage() {
     },
   });
   // Tab-scoped recent findings — filtered server-side via scanType. Cache key
-  // includes the tab so switching doesn't show stale rows from the other view.
+  // includes the tab + target so switching doesn't show stale rows.
   const { data: recentFindings } = useQuery({
-    queryKey: ["findings", "recent", tab],
-    queryFn: () => findingsApi.list({ limit: 5, page: 1, scanType: tabScanCsv as never } as never),
+    queryKey: ["findings", "recent", tab, targetRaw],
+    queryFn: () => findingsApi.list({
+      limit: 5, page: 1,
+      scanType: tabScanCsv as never,
+      ...targetParams,
+    } as never),
   });
   // Top rules — kept; powers the lower-row "noisy rules" widget. The
   // Top Risk Targets list was removed when the Exploits widget took
@@ -553,11 +692,16 @@ export default function DashboardPage() {
   // covers reasonable scale for a single org's scanner output) so the
   // count and the list both come from the same authoritative dataset.
   const exploitsQuery = useQuery({
-    queryKey: ["dashboard-exploits", tab],
+    queryKey: ["dashboard-exploits", tab, targetRaw],
     queryFn: () => findingsApi.list(
       tab === "runtime"
-        ? { scanType: "RUNTIME" as never, limit: 100 }
-        : { scanType: (tab === "web" ? "DAST,PENTEST_FULL" : "SAST,SCA,SECRET,IAC,CONTAINER") as never, confidence: "CONFIRMED" as never, limit: 100 },
+        ? { scanType: "RUNTIME" as never, limit: 100, ...targetParams }
+        : {
+            scanType: (tab === "web" ? "DAST,PENTEST_FULL" : "SAST,SCA,SECRET,IAC,CONTAINER") as never,
+            confidence: "CONFIRMED" as never,
+            limit: 100,
+            ...targetParams,
+          },
     ),
     refetchInterval: 60_000,
   });
@@ -611,7 +755,21 @@ export default function DashboardPage() {
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <h1 className="text-3xl font-bold text-white">Dashboard</h1>
+        <div className="flex items-center gap-3">
+          <h1 className="text-3xl font-bold text-white">Dashboard</h1>
+          {/* Per-target scope — single combined dropdown across repos /
+              containers / domains. Selecting one re-scopes every card,
+              chart, exploits widget, and recent-findings list to that
+              asset. URL-driven (`?target=repo:<id>`) so refreshes and
+              shared links preserve scope. */}
+          <TargetFilter
+            value={targetRaw}
+            repos={repos ?? []}
+            containers={containers ?? []}
+            domains={domains ?? []}
+            onChange={setTarget}
+          />
+        </div>
         {/* Tab strip — Code (file-based) vs Web (URL-based). Counts come
             from the unscoped globalStats so they remain stable across the
             active tab and accurately advertise what's in each view. */}

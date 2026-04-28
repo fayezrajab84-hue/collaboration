@@ -14,12 +14,14 @@
  * agent's alerts still ingest but they stay isolated from the existing
  * attack-chain graph.
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Activity, RefreshCcw, Trash2, Link2, Link2Off, X, AlertCircle,
   Copy, Check, Shield, RotateCw, KeyRound,
+  ShieldCheck, Database, Search,
 } from "lucide-react";
+import SeverityBadge from "../components/SeverityBadge";
 
 // ── OS brand icons ───────────────────────────────────────────────────────
 //
@@ -67,7 +69,7 @@ function DockerIcon({ className = "" }: { className?: string }) {
     </svg>
   );
 }
-import { runtimeApi, containersApi } from "../lib/api";
+import { runtimeApi, containersApi, type RuntimeVulnerabilityRow } from "../lib/api";
 import Can from "../components/Can";
 import { useToast } from "../hooks/useToast";
 import { formatRelative } from "../lib/utils";
@@ -402,6 +404,347 @@ docker exec -it single-node-wazuh.manager-1 cat /var/ossec/etc/authd.pass`}
 
 // (removed) Per-page dashboard tab consolidated into /dashboard?tab=runtime.
 
+// ── Reachability tab — cross-tier CVE comparison ─────────────────────────
+//
+// Reads /api/runtime/vulnerabilities. Joins CONTAINER findings (Trivy
+// image-CVEs) against RUNTIME findings (Wazuh VD on the running host)
+// and surfaces three tiers:
+//   • BOTH            — image-CVE confirmed by runtime; no triage gap.
+//   • CONTAINER_ONLY  — Trivy flagged it but Wazuh never saw it. When
+//                       the container IS monitored by an agent, this is
+//                       a reachability-suppression candidate (the package
+//                       is shipped but never invoked at runtime).
+//   • RUNTIME_ONLY    — Wazuh saw a CVE Trivy didn't flag. Often means
+//                       post-deployment install / drift from the image.
+//
+// Bulk action: select unreachable candidates → POST /vulnerabilities/suppress
+// flips their CONTAINER finding rows to reachability=NOT_REACHABLE so they
+// drop out of the default findings view.
+
+const TIER_PILL: Record<RuntimeVulnerabilityRow["tier"], string> = {
+  BOTH:           "border-indigo-700/60 bg-indigo-950/40 text-indigo-200",
+  CONTAINER_ONLY: "border-gray-700/60 bg-gray-800/60 text-gray-300",
+  RUNTIME_ONLY:   "border-red-700/60 bg-red-950/40 text-red-300",
+};
+
+const TIER_LABEL: Record<RuntimeVulnerabilityRow["tier"], string> = {
+  BOTH:           "BOTH",
+  CONTAINER_ONLY: "CONTAINER",
+  RUNTIME_ONLY:   "RUNTIME",
+};
+
+type TierFilter = "ALL" | RuntimeVulnerabilityRow["tier"] | "UNREACHABLE";
+
+function ReachabilityTab() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const [filter, setFilter] = useState<TierFilter>("ALL");
+  const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  const { data, isLoading } = useQuery({
+    queryKey: ["runtime-vulnerabilities"],
+    queryFn:  runtimeApi.vulnerabilities,
+    refetchInterval: 60_000,
+  });
+
+  // Bulk suppression — mark CONTAINER findings as NOT_REACHABLE.
+  const suppress = useMutation({
+    mutationFn: (findingIds: string[]) => runtimeApi.suppressVulnerabilities(findingIds),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["runtime-vulnerabilities"] });
+      qc.invalidateQueries({ queryKey: ["findings"] });
+      qc.invalidateQueries({ queryKey: ["finding-stats"] });
+      toast.success(`Marked ${r.updated} finding(s) as not reachable`);
+      setSelected(new Set());
+    },
+    onError: (err: Error) => toast.error(err.message || "Suppress failed"),
+  });
+
+  // Apply filter + search to rows. The backend returns the full list,
+  // and we filter client-side because the rows fit in a single page.
+  const visibleRows = useMemo(() => {
+    if (!data) return [];
+    const q = search.trim().toLowerCase();
+    return data.rows.filter((r) => {
+      if (filter === "UNREACHABLE" && !r.unreachableCandidate) return false;
+      if (filter !== "ALL" && filter !== "UNREACHABLE" && r.tier !== filter) return false;
+      if (q.length > 0) {
+        const blob = `${r.cve} ${r.packageName ?? ""} ${r.imageRef ?? ""} ${r.agentName ?? ""}`.toLowerCase();
+        if (!blob.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [data, filter, search]);
+
+  // Selectable subset = unreachable candidates only.
+  // We intentionally restrict bulk-suppress to the rows the backend
+  // pre-marked as candidates so the operator can't accidentally hide
+  // a CVE Wazuh actually observed.
+  const selectableInView = useMemo(
+    () => visibleRows.filter((r) => r.unreachableCandidate && r.containerFindingId),
+    [visibleRows],
+  );
+  const allInViewSelected =
+    selectableInView.length > 0 &&
+    selectableInView.every((r) => r.containerFindingId && selected.has(r.containerFindingId));
+
+  function toggleAllInView() {
+    const next = new Set(selected);
+    if (allInViewSelected) {
+      for (const r of selectableInView) {
+        if (r.containerFindingId) next.delete(r.containerFindingId);
+      }
+    } else {
+      for (const r of selectableInView) {
+        if (r.containerFindingId) next.add(r.containerFindingId);
+      }
+    }
+    setSelected(next);
+  }
+  function toggleOne(id: string) {
+    const next = new Set(selected);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    setSelected(next);
+  }
+
+  if (isLoading) {
+    return <div className="flex h-48 items-center justify-center text-gray-500">Loading…</div>;
+  }
+  if (!data) {
+    return (
+      <div className="flex h-64 flex-col items-center justify-center gap-3 text-gray-500">
+        <Database className="h-8 w-8" />
+        <p className="text-sm">No data</p>
+      </div>
+    );
+  }
+
+  const s = data.summary;
+
+  return (
+    <div className="space-y-5">
+      {/* Explainer */}
+      <div className="rounded-lg border border-indigo-900/40 bg-indigo-950/20 p-4">
+        <div className="flex items-start gap-3">
+          <ShieldCheck className="mt-0.5 h-4 w-4 flex-shrink-0 text-indigo-400" />
+          <div>
+            <h3 className="text-sm font-semibold text-indigo-200">
+              Reachability — image CVEs vs. runtime CVEs
+            </h3>
+            <p className="mt-1 text-xs text-indigo-300/80">
+              Cross-tier comparison of <span className="font-mono">CONTAINER</span>{" "}
+              (Trivy) and <span className="font-mono">RUNTIME</span> (Wazuh VD) findings.
+              CVEs that the image scanner flagged but the agent never reported are
+              candidates for bulk <span className="font-mono">NOT_REACHABLE</span> — the
+              package is shipped but never invoked at runtime.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Summary cards */}
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+        <SummaryCard label="Both tiers"           value={s.both}                 active={filter === "BOTH"}           onClick={() => setFilter("BOTH")} accent="indigo" />
+        <SummaryCard label="Container only"       value={s.containerOnly}        active={filter === "CONTAINER_ONLY"} onClick={() => setFilter("CONTAINER_ONLY")} accent="gray" />
+        <SummaryCard label="Runtime only"         value={s.runtimeOnly}          active={filter === "RUNTIME_ONLY"}   onClick={() => setFilter("RUNTIME_ONLY")} accent="red" />
+        <SummaryCard label="Unreachable"          value={s.unreachableCandidates} active={filter === "UNREACHABLE"}    onClick={() => setFilter("UNREACHABLE")} accent="indigo" sub="candidates" />
+        <SummaryCard label="Monitored containers" value={s.monitoredContainers}                                                                                                  accent="gray" />
+      </div>
+
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-500" />
+          <input
+            type="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search CVE, package, image…"
+            className="w-72 rounded border border-gray-700 bg-gray-900 py-1.5 pl-8 pr-3 text-sm text-gray-200 placeholder-gray-500 focus:border-indigo-600 focus:outline-none"
+          />
+        </div>
+        {filter !== "ALL" && (
+          <button
+            onClick={() => setFilter("ALL")}
+            className="flex items-center gap-1.5 rounded-full border border-indigo-800 bg-indigo-950/40 px-2.5 py-0.5 text-xs text-indigo-200 hover:bg-indigo-950/60"
+          >
+            {filter === "UNREACHABLE" ? "Unreachable" : TIER_LABEL[filter]}
+            <X className="h-3 w-3" />
+          </button>
+        )}
+        <div className="ml-auto flex items-center gap-3">
+          {selected.size > 0 && (
+            <span className="text-xs text-gray-400">{selected.size} selected</span>
+          )}
+          <Can role="ADMIN">
+            <button
+              onClick={() => suppress.mutate(Array.from(selected))}
+              disabled={selected.size === 0 || suppress.isPending}
+              className="flex items-center gap-2 rounded bg-indigo-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-600 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <ShieldCheck className="h-4 w-4" />
+              {suppress.isPending ? "Saving…" : "Mark NOT_REACHABLE"}
+            </button>
+          </Can>
+        </div>
+      </div>
+
+      {/* Table */}
+      {visibleRows.length === 0 ? (
+        <div className="flex h-48 flex-col items-center justify-center gap-2 rounded border border-gray-800 bg-gray-900/40 text-gray-500">
+          <Database className="h-7 w-7" />
+          <p className="text-sm">No vulnerabilities match this view.</p>
+          {(filter !== "ALL" || search) && (
+            <button
+              onClick={() => { setFilter("ALL"); setSearch(""); }}
+              className="text-xs text-indigo-400 hover:text-indigo-300 underline"
+            >
+              Clear filters
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="overflow-x-auto rounded-lg border border-gray-800">
+          <table className="w-full text-sm">
+            <thead className="border-b border-gray-800 bg-gray-900">
+              <tr className="text-left text-xs text-gray-500">
+                <th className="px-3 py-3 w-8">
+                  <input
+                    type="checkbox"
+                    checked={allInViewSelected}
+                    onChange={toggleAllInView}
+                    disabled={selectableInView.length === 0}
+                    className="h-3.5 w-3.5 rounded border-gray-600 bg-gray-800 text-indigo-600 focus:ring-1 focus:ring-indigo-500 disabled:cursor-not-allowed disabled:opacity-30"
+                    aria-label="Select all candidates in view"
+                  />
+                </th>
+                <th className="px-3 py-3 font-medium">Tier</th>
+                <th className="px-3 py-3 font-medium">CVE</th>
+                <th className="px-3 py-3 font-medium">Severity</th>
+                <th className="px-3 py-3 font-medium">Package</th>
+                <th className="px-3 py-3 font-medium">Image / Agent</th>
+                <th className="px-3 py-3 font-medium">Reachability</th>
+                <th className="px-3 py-3 font-medium">Last seen</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-800 bg-gray-900/50">
+              {visibleRows.map((r) => {
+                const id = r.containerFindingId ?? `runtime-${r.cve}-${r.runtimeFindingIds[0] ?? ""}`;
+                const checked = r.containerFindingId ? selected.has(r.containerFindingId) : false;
+                return (
+                  <tr key={id} className="hover:bg-gray-800/40">
+                    <td className="px-3 py-2.5">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => r.containerFindingId && toggleOne(r.containerFindingId)}
+                        disabled={!r.unreachableCandidate || !r.containerFindingId}
+                        className="h-3.5 w-3.5 rounded border-gray-600 bg-gray-800 text-indigo-600 focus:ring-1 focus:ring-indigo-500 disabled:cursor-not-allowed disabled:opacity-30"
+                        aria-label={`Select ${r.cve}`}
+                      />
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <span
+                        className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${TIER_PILL[r.tier]}`}
+                      >
+                        {TIER_LABEL[r.tier]}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2.5 font-mono text-xs text-gray-200">{r.cve}</td>
+                    <td className="px-3 py-2.5"><SeverityBadge severity={r.severity} /></td>
+                    <td className="px-3 py-2.5 text-xs text-gray-300">
+                      {r.packageName ? (
+                        <>
+                          <span className="font-mono">{r.packageName}</span>
+                          {r.packageVersion && (
+                            <span className="ml-1 text-gray-500">@ {r.packageVersion}</span>
+                          )}
+                          {r.fixVersion && (
+                            <div className="text-[11px] text-emerald-300/80">
+                              fix → {r.fixVersion}
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <span className="text-gray-600 italic">—</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2.5 font-mono text-xs">
+                      {r.imageRef ? (
+                        <span className="text-gray-200">{r.imageRef}</span>
+                      ) : (
+                        <span className="text-gray-600 italic">—</span>
+                      )}
+                      {r.agentName && (
+                        <div className="text-[11px] text-gray-500">{r.agentName}</div>
+                      )}
+                    </td>
+                    <td className="px-3 py-2.5 text-xs">
+                      <ReachabilityPill
+                        value={r.reachability}
+                        candidate={r.unreachableCandidate}
+                      />
+                    </td>
+                    <td className="px-3 py-2.5 text-xs text-gray-400">
+                      {formatRelative(r.lastSeen)}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SummaryCard({
+  label, value, sub, active, onClick, accent,
+}: {
+  label:    string;
+  value:    number;
+  sub?:     string;
+  active?:  boolean;
+  onClick?: () => void;
+  accent:   "indigo" | "gray" | "red";
+}) {
+  const tone =
+    accent === "red"   ? (active ? "border-red-600 bg-red-950/40 text-red-200"   : "border-gray-800 bg-gray-900/60 text-gray-300 hover:border-red-700/60")
+  : accent === "indigo"? (active ? "border-indigo-600 bg-indigo-950/40 text-indigo-200" : "border-gray-800 bg-gray-900/60 text-gray-300 hover:border-indigo-700/60")
+                       : (active ? "border-gray-500 bg-gray-800/60 text-gray-200" : "border-gray-800 bg-gray-900/60 text-gray-400 hover:border-gray-600");
+  const Tag = onClick ? "button" : "div";
+  return (
+    <Tag
+      onClick={onClick}
+      className={`rounded-lg border px-3 py-2.5 text-left transition-colors ${tone} ${onClick ? "cursor-pointer" : ""}`}
+    >
+      <div className="text-[11px] uppercase tracking-wide opacity-75">{label}</div>
+      <div className="mt-0.5 flex items-baseline gap-1">
+        <span className="text-2xl font-semibold">{value}</span>
+        {sub && <span className="text-[11px] opacity-60">{sub}</span>}
+      </div>
+    </Tag>
+  );
+}
+
+function ReachabilityPill({ value, candidate }: { value: string | null; candidate: boolean }) {
+  // Shows the existing reachability state, plus a "candidate" hint when
+  // the row is eligible for bulk-suppression. Operator-actionable rows
+  // get the indigo brand pill so they're visually scannable.
+  if (value === "NOT_REACHABLE") {
+    return <span className="inline-flex items-center rounded-full border border-gray-700/60 bg-gray-800/60 px-2 py-0.5 text-[11px] text-gray-300">NOT REACHABLE</span>;
+  }
+  if (value === "REACHABLE") {
+    return <span className="inline-flex items-center rounded-full border border-red-700/60 bg-red-950/40 px-2 py-0.5 text-[11px] text-red-300">REACHABLE</span>;
+  }
+  if (candidate) {
+    return <span className="inline-flex items-center rounded-full border border-indigo-700/60 bg-indigo-950/40 px-2 py-0.5 text-[11px] text-indigo-200">candidate</span>;
+  }
+  return <span className="text-gray-600 italic">unknown</span>;
+}
+
 
 // ── Page ──────────────────────────────────────────────────────────────────
 
@@ -496,7 +839,7 @@ export default function RuntimePage() {
 
       {/* Tabs */}
       <div className="mb-5 flex gap-1 border-b border-gray-800">
-        {(["agents", "install"] as const).map((t) => (
+        {(["agents", "reachability", "install"] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -506,13 +849,15 @@ export default function RuntimePage() {
                 : "border-transparent text-gray-500 hover:text-gray-300"
             }`}
           >
-            {t === "agents" ? "Agents" : "Install"}
+            {t === "agents" ? "Agents" : t === "reachability" ? "Reachability" : "Install"}
           </button>
         ))}
       </div>
 
       {tab === "install" ? (
         <InstallTab />
+      ) : tab === "reachability" ? (
+        <ReachabilityTab />
       ) : isLoading ? (
         <div className="flex h-48 items-center justify-center text-gray-500">Loading…</div>
       ) : !agents || agents.length === 0 ? (

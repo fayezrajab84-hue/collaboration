@@ -167,7 +167,8 @@ router.get("/", async (req, res, next) => {
     // subset of the cheap candidate set.
     const tagParam = q["tag"];
     let tagPredicate: ((f: import("../../services/findingTags.js").Finding & {
-      scanType: string; severity: string; evidence: unknown; aiFpAnalysis: unknown;
+      scanType: string; severity: string; confidence: string;
+      evidence: unknown; aiFpAnalysis: unknown;
       title: string | null; description: string | null;
     }) => boolean) | null = null;
     if (typeof tagParam === "string" && tagParam.length > 0) {
