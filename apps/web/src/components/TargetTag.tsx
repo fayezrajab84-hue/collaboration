@@ -10,10 +10,11 @@ import type { Finding } from "@devsecops/types";
  * `maxWidth` controls the max-width of the truncated label so different
  * densities (wide Findings table vs compact Dashboard card) look right.
  */
-// Unified target-type tag — neutral gray body, type distinguished by a small
-// icon tinted from a harmonious cool-family palette (slate / blue / teal).
-// Previously indigo/cyan/emerald all competed with each other and with the
-// primary indigo action accent elsewhere.
+// Unified target-type tag — neutral gray body. Repo and container icons keep
+// their slate/blue tints (they're the dominant target types and the colour
+// helps scan a long list); the domain icon uses gray-300 (light silver) so
+// web targets match the same Globe shade used everywhere else (dashboard
+// tabs, stats cards, recent scans, top targets).
 export default function TargetTag({
   finding,
   maxWidth = "max-w-[160px]",
@@ -42,7 +43,7 @@ export default function TargetTag({
   if (finding.domain) {
     return (
       <span className={chip}>
-        <Globe className="h-3 w-3 shrink-0 text-teal-400" />
+        <Globe className="h-3 w-3 shrink-0 text-gray-300" />
         <span className="truncate">{finding.domain.domain}</span>
       </span>
     );

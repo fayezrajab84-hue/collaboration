@@ -11,12 +11,13 @@ import { findingsApi, ticketsApi, suppressionsApi } from "../lib/api";
 import Can from "./Can";
 import SeverityBadge from "./SeverityBadge";
 import ConfidenceBadge from "./ConfidenceBadge";
-import ProofOfExploitBadge from "./ProofOfExploitBadge";
+import ActiveAttackBadge from "./ActiveAttackBadge";
+import ExploitSuccessBadge from "./ExploitSuccessBadge";
 import AttackPathBadge from "./AttackPathBadge";
 import DiffViewer from "./DiffViewer";
 import SyntaxHighlight from "./SyntaxHighlight";
 import { formatDate } from "../lib/utils";
-import { hasProofOfExploit } from "../lib/findings";
+import { hasActiveAttack, wasExploitSuccessful } from "../lib/findings";
 import { SEVERITY_BADGE } from "../lib/colors";
 
 // Severity badge class-name map used by SCA, Secret, SAST, and DAST subissues.
@@ -1771,7 +1772,13 @@ function CodeAnalysisModal({ finding, snippet, githubUrl, repoInfo, locationOver
           <div className="space-y-2">
             <div className="flex flex-wrap items-center gap-1.5">
               <SeverityBadge severity={finding.severity} />
-              {hasProofOfExploit(finding) && <ProofOfExploitBadge />}
+              {/* Mutually exclusive: EXPLOIT > ACTIVE ATTACK. The
+                  EXPLOIT pill subsumes the legacy Proof-of-Exploit
+                  badge — for scanner-reproduced exploits the same pill
+                  renders directly. */}
+              {wasExploitSuccessful(finding)
+                ? <ExploitSuccessBadge />
+                : hasActiveAttack(finding) && <ActiveAttackBadge />}
               <AttackPathBadge
                 groupId={finding.correlationGroupId}
                 pathLength={(finding.correlationEdges?.length ?? 0) + 1}
@@ -2245,6 +2252,269 @@ function FpPanel({
   );
 }
 
+// ── Runtime Threat-Hunt Panel ─────────────────────────────────────────────
+//
+// Phase 28 — structured drill-down for RUNTIME findings (Wazuh alerts).
+// The wazuh ingest service writes a rich `evidence` payload with 8 named
+// groups (geo, mitre, compliance, vulnerability, processTree, http,
+// audit, detection) plus flat top-level fields (attackerIp, processId,
+// etc). This panel renders those groups as labeled sections so the
+// threat hunter can read network → process → MITRE → compliance in a
+// natural order without parsing JSON.
+//
+// Every section is conditionally rendered — different Wazuh rule classes
+// populate different subsets, and a section with nothing to show is just
+// noise.
+
+function HuntSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded-lg border border-gray-800 bg-gray-950/60 p-3">
+      <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+        {title}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function HuntKV({ k, v, mono = false }: { k: string; v: React.ReactNode; mono?: boolean }) {
+  return (
+    <div className="flex items-start gap-2 py-0.5">
+      <span className="shrink-0 text-[11px] text-gray-500 min-w-[110px]">{k}</span>
+      <span className={`break-all text-xs text-gray-200 ${mono ? "font-mono" : ""}`}>
+        {v ?? <span className="text-gray-600">—</span>}
+      </span>
+    </div>
+  );
+}
+
+function RuntimeThreatHuntPanel({ evidence }: { evidence: Record<string, unknown> }) {
+  const e = evidence;
+  const geo  = e["geo"]           as Record<string, unknown> | null;
+  const mitre = e["mitre"]        as { ids?: string[]; tactics?: string[]; techniques?: string[] } | null;
+  const compliance = e["compliance"] as Record<string, string[]> | null;
+  const vuln  = e["vulnerability"] as Record<string, unknown> | null;
+  const proc  = e["processTree"]   as Record<string, unknown> | null;
+  const http  = e["http"]          as Record<string, unknown> | null;
+  const audit = e["audit"]         as Record<string, unknown> | null;
+  const det   = e["detection"]     as Record<string, unknown> | null;
+
+  const attackerIp     = e["attackerIp"]     as string | undefined;
+  const attackerIps    = (e["attackerIps"]    as string[] | undefined) ?? [];
+  const attackerIpCount = e["attackerIpCount"] as number | undefined;
+  const userAgent      = e["userAgent"]      as string | undefined;
+  const filePath       = e["filePath"]       as string | undefined;
+  const fileHash       = e["fileHash"]       as string | undefined;
+  const fileEvent      = e["fileEvent"]      as string | undefined;
+  const occurrencesTotal = e["occurrencesTotal"] as number | undefined;
+  const firstAlertAt   = e["firstAlertAt"]   as string | undefined;
+  const latestAlertAt  = e["latestAlertAt"]  as string | undefined;
+  const fullLog        = e["fullLog"]        as string | undefined;
+
+  return (
+    <div>
+      <div className="mb-2 flex items-center gap-2">
+        <KeyRound className="h-3.5 w-3.5 text-indigo-400" />
+        <span className="text-xs font-semibold text-gray-200">Threat hunt context</span>
+        {occurrencesTotal !== undefined && (
+          <span className="rounded-full bg-gray-800 px-2 py-0.5 text-[10px] font-medium text-gray-300">
+            {occurrencesTotal} hit{occurrencesTotal === 1 ? "" : "s"}
+          </span>
+        )}
+      </div>
+      <div className="space-y-2.5">
+
+        {/* ── MITRE ATT&CK ── tactics + technique list ── */}
+        {(mitre?.tactics?.length || mitre?.techniques?.length || mitre?.ids?.length) ? (
+          <HuntSection title="MITRE ATT&CK">
+            {mitre.tactics && mitre.tactics.length > 0 && (
+              <div className="mb-2">
+                <div className="mb-1 text-[10px] text-gray-500">Tactic</div>
+                <div className="flex flex-wrap gap-1">
+                  {mitre.tactics.map((t) => (
+                    <span key={t} className="rounded border border-indigo-900/50 bg-indigo-950/40 px-2 py-0.5 text-[11px] font-medium text-indigo-200">
+                      {t}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {mitre.techniques && mitre.techniques.length > 0 && (
+              <div className="mb-1">
+                <div className="mb-1 text-[10px] text-gray-500">Technique</div>
+                <div className="space-y-1">
+                  {mitre.techniques.map((tech, i) => (
+                    <div key={tech} className="flex items-center gap-2 text-xs">
+                      <a
+                        href={`https://attack.mitre.org/techniques/${(mitre.ids?.[i] ?? "").replace(".", "/")}/`}
+                        target="_blank" rel="noopener noreferrer"
+                        className="rounded border border-gray-700 bg-gray-800/60 px-1.5 py-0.5 font-mono text-[10px] text-gray-300 hover:border-indigo-700 hover:text-indigo-300"
+                      >
+                        {mitre.ids?.[i] ?? "—"}
+                      </a>
+                      <span className="text-gray-300">{tech}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </HuntSection>
+        ) : null}
+
+        {/* ── Network attribution ── */}
+        {(attackerIp || attackerIps.length > 0 || geo) && (
+          <HuntSection title="Network attribution">
+            {attackerIp && <HuntKV k="Attacker IP" v={attackerIp} mono />}
+            {(attackerIpCount ?? 0) > 1 && (
+              <HuntKV
+                k="Distinct IPs"
+                v={
+                  <div className="flex flex-wrap gap-1">
+                    {attackerIps.slice(0, 10).map((ip) => (
+                      <span key={ip} className="rounded bg-gray-800 px-1.5 py-0.5 font-mono text-[10px] text-gray-300">{ip}</span>
+                    ))}
+                    {attackerIpCount && attackerIpCount > 10 && (
+                      <span className="text-[10px] text-gray-500">+{attackerIpCount - 10} more</span>
+                    )}
+                  </div>
+                }
+              />
+            )}
+            {geo?.country  && <HuntKV k="Country" v={String(geo.country)} />}
+            {geo?.city     && <HuntKV k="City"    v={String(geo.city)} />}
+            {(geo?.distinctCountries as string[] | undefined)?.length ? (
+              <HuntKV
+                k="Origin spread"
+                v={(geo.distinctCountries as string[]).join(" · ")}
+              />
+            ) : null}
+            {userAgent && <HuntKV k="User-Agent" v={userAgent} mono />}
+          </HuntSection>
+        )}
+
+        {/* ── HTTP request (web rules) ── */}
+        {http && (http["url"] || http["method"] || http["statusCode"]) ? (
+          <HuntSection title="HTTP request">
+            {http["method"] && <HuntKV k="Method" v={String(http["method"])} mono />}
+            {http["url"]    && <HuntKV k="URL"    v={String(http["url"])}    mono />}
+            {http["statusCode"] && <HuntKV k="Status" v={String(http["statusCode"])} mono />}
+            {http["referrer"]   && <HuntKV k="Referrer" v={String(http["referrer"])} mono />}
+          </HuntSection>
+        ) : null}
+
+        {/* ── Process forensics (audit rules) ── */}
+        {proc && (proc["pid"] || proc["name"] || proc["cmdline"]) ? (
+          <HuntSection title="Process forensics">
+            {proc["name"]    && <HuntKV k="Process" v={String(proc["name"])} mono />}
+            {proc["pid"]     && <HuntKV k="PID"     v={String(proc["pid"])} mono />}
+            {proc["cmdline"] && <HuntKV k="Command" v={String(proc["cmdline"])} mono />}
+            {proc["parentName"] && <HuntKV k="Parent" v={`${proc["parentName"]} (PID ${proc["ppid"] ?? "?"})`} mono />}
+            {!proc["parentName"] && proc["ppid"] && <HuntKV k="Parent PID" v={String(proc["ppid"])} mono />}
+            {proc["ruid"] !== undefined && proc["ruid"] !== null && (
+              <HuntKV k="UID (real/effective)" v={`${proc["ruid"]} / ${proc["euid"] ?? "?"}`} mono />
+            )}
+            {proc["privEscalated"] === true && (
+              <div className="mt-1 inline-flex items-center gap-1 rounded border border-red-800/50 bg-red-950/30 px-2 py-0.5 text-[10px] font-semibold text-red-300">
+                ⚠ Privilege escalation suspected (ruid ≠ euid)
+              </div>
+            )}
+          </HuntSection>
+        ) : null}
+
+        {/* ── File integrity (FIM rules) ── */}
+        {(filePath || fileHash || fileEvent) && (
+          <HuntSection title="File integrity">
+            {filePath  && <HuntKV k="Path"   v={filePath}  mono />}
+            {fileEvent && <HuntKV k="Event"  v={fileEvent} />}
+            {fileHash  && <HuntKV k="Hash"   v={fileHash}  mono />}
+          </HuntSection>
+        )}
+
+        {/* ── Audit subsystem details ── */}
+        {audit && (audit["type"] || audit["key"]) ? (
+          <HuntSection title="Audit subsystem">
+            {audit["type"]    && <HuntKV k="Audit type"   v={String(audit["type"])} mono />}
+            {audit["key"]     && <HuntKV k="Audit key"    v={String(audit["key"])} mono />}
+            {audit["session"] && <HuntKV k="Session"      v={String(audit["session"])} mono />}
+            {audit["success"] && <HuntKV k="Success"      v={String(audit["success"])} />}
+          </HuntSection>
+        ) : null}
+
+        {/* ── Vulnerability detector ── */}
+        {vuln && vuln["cve"] ? (
+          <HuntSection title="Vulnerability detector">
+            <HuntKV k="CVE" v={
+              <a
+                href={`https://nvd.nist.gov/vuln/detail/${vuln["cve"]}`}
+                target="_blank" rel="noopener noreferrer"
+                className="font-mono text-indigo-300 hover:text-indigo-200 hover:underline"
+              >
+                {String(vuln["cve"])}
+              </a>
+            } />
+            {vuln["cvss3Score"] && <HuntKV k="CVSS v3" v={String(vuln["cvss3Score"])} />}
+            {vuln["packageName"] && (
+              <HuntKV
+                k="Package"
+                v={`${vuln["packageName"]}${vuln["packageVersion"] ? ` ${vuln["packageVersion"]}` : ""}`}
+                mono
+              />
+            )}
+            {vuln["status"] && <HuntKV k="Status" v={String(vuln["status"])} />}
+          </HuntSection>
+        ) : null}
+
+        {/* ── Compliance frameworks ── */}
+        {compliance && (
+          (compliance.pci_dss?.length || compliance.gdpr?.length ||
+           compliance.hipaa?.length   || compliance.nist_800_53?.length ||
+           compliance.tsc?.length) ? (
+            <HuntSection title="Compliance coverage">
+              <div className="space-y-1.5">
+                {compliance.pci_dss?.length     ? <HuntKV k="PCI-DSS"    v={compliance.pci_dss.join(" · ")} mono /> : null}
+                {compliance.gdpr?.length        ? <HuntKV k="GDPR"       v={compliance.gdpr.join(" · ")} mono /> : null}
+                {compliance.hipaa?.length       ? <HuntKV k="HIPAA"      v={compliance.hipaa.join(" · ")} mono /> : null}
+                {compliance.nist_800_53?.length ? <HuntKV k="NIST 800-53" v={compliance.nist_800_53.join(" · ")} mono /> : null}
+                {compliance.tsc?.length         ? <HuntKV k="SOC 2 (TSC)" v={compliance.tsc.join(" · ")} mono /> : null}
+              </div>
+            </HuntSection>
+          ) : null
+        )}
+
+        {/* ── Detection metadata ── always render (rule ID is always present) */}
+        <HuntSection title="Detection">
+          {det?.["ruleId"]      && <HuntKV k="Wazuh rule"   v={`#${det["ruleId"]} (level ${det["ruleLevel"] ?? "?"})`} mono />}
+          {det?.["decoder"]     && <HuntKV k="Decoder"      v={String(det["decoder"])} mono />}
+          {det?.["manager"]     && <HuntKV k="Manager"      v={String(det["manager"])} mono />}
+          {(det?.["groups"] as string[] | undefined)?.length ? (
+            <HuntKV k="Groups" v={(det.groups as string[]).join(" · ")} />
+          ) : null}
+          {(det?.["firedTimes"] !== undefined && det?.["firedTimes"] !== null) && (
+            <HuntKV k="Fired times" v={String(det["firedTimes"])} />
+          )}
+        </HuntSection>
+
+        {/* ── Time window ── */}
+        {(firstAlertAt || latestAlertAt) && (
+          <HuntSection title="Time window">
+            {firstAlertAt  && <HuntKV k="First alert"  v={firstAlertAt}  mono />}
+            {latestAlertAt && <HuntKV k="Latest alert" v={latestAlertAt} mono />}
+          </HuntSection>
+        )}
+
+        {/* ── Raw log line ── */}
+        {fullLog && (
+          <HuntSection title="Original log line">
+            <pre className="overflow-x-auto rounded bg-black p-2 text-[11px] text-gray-300">
+              {fullLog}
+            </pre>
+          </HuntSection>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Main Drawer ───────────────────────────────────────────────────────────────
 
 export default function FindingDetailDrawer({ finding, onClose }: Props) {
@@ -2515,7 +2785,13 @@ export default function FindingDetailDrawer({ finding, onClose }: Props) {
             <div className="mb-2 flex flex-wrap items-center gap-2">
               <SeverityBadge severity={finding.severity} />
               <ConfidenceBadge confidence={finding.confidence} />
-              {hasProofOfExploit(finding) && <ProofOfExploitBadge />}
+              {/* Mutually exclusive: EXPLOIT > ACTIVE ATTACK. The
+                  EXPLOIT pill subsumes the legacy Proof-of-Exploit
+                  badge — for scanner-reproduced exploits the same pill
+                  renders directly. */}
+              {wasExploitSuccessful(finding)
+                ? <ExploitSuccessBadge />
+                : hasActiveAttack(finding) && <ActiveAttackBadge />}
               <span className="rounded bg-gray-800 px-2 py-0.5 text-xs text-gray-400">
                 {finding.scanType}
               </span>
@@ -2861,6 +3137,15 @@ export default function FindingDetailDrawer({ finding, onClose }: Props) {
           )}
 
           {/* Evidence — hidden for DAST merged (each occurrence has its own evidence in the panel above) */}
+          {/* RUNTIME-specific Threat Hunt panel — structured drill-down
+              into the evidence captured by the wazuh ingest service. Sits
+              ABOVE the generic Detection-evidence list so threat hunters
+              get the organised view first; the flat dump remains as a
+              fallback for any keys we haven't given a section to. */}
+          {finding.scanType === "RUNTIME" && finding.evidence && (
+            <RuntimeThreatHuntPanel evidence={finding.evidence as Record<string, unknown>} />
+          )}
+
           {!isDastMerged && finding.evidence && Object.keys(finding.evidence).length > 0 && (
             <div>
               <button

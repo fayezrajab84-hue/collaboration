@@ -18,7 +18,7 @@ interface TriggerScanOptions {
   imageRef?: string;
   domain?: string;
   selectedSubdomains?: string[];
-  pentestDepth?: "STANDARD" | "AGGRESSIVE";
+  pentestDepth?: "QUICK" | "STANDARD" | "AGGRESSIVE";
   domainAuthConfigId?: string;
   // Interactive provenance — recorded ZAP context to active-scan against
   recordingContextId?: string;

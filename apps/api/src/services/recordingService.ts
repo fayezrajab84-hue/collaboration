@@ -232,7 +232,7 @@ export async function runScan(orgId: string, domainId: string) {
 export async function promote(
   orgId: string,
   domainId: string,
-  opts: { depth?: "STANDARD" | "AGGRESSIVE" } = {},
+  opts: { depth?: "QUICK" | "STANDARD" | "AGGRESSIVE" } = {},
 ) {
   const session = await prisma.recordingSession.findFirst({
     where:   { orgId, domainId, status: { in: ["ACTIVE", "SCANNING"] } },
@@ -407,6 +407,79 @@ async function sweepIdleSessions(): Promise<void> {
       sessionId: s.id, lastActivityAt: s.lastActivityAt, startedAt: s.startedAt,
     });
   }
+}
+
+/**
+ * Fetch the list of URLs ZAP has recorded for this domain. Pulls from
+ * ZAP's site tree filtered by `baseurl=<targetUrl>` so we only return
+ * URLs for THIS domain, not other things the browser may have hit while
+ * the proxy was on.
+ *
+ * Lifecycle nuance: ZAP's site tree is global to the ZAP daemon, not
+ * scoped to a recording context — URLs survive `recording.stop()` until
+ * either ZAP restarts or someone explicitly cleans the tree. This is
+ * the right behaviour for the UI: the operator wants to inspect the
+ * recorded surface even after they ended the session.
+ *
+ * Returns the most-recent RecordingSession (regardless of status) so the
+ * UI can surface "captured during session X, urlCount Y at stop time"
+ * context alongside the URL list. Null if the domain has never been
+ * recorded — the UI shows the "Start a recording to capture URLs"
+ * empty-state in that case.
+ */
+export async function listUrls(orgId: string, domainId: string): Promise<{
+  urls:    string[];
+  count:   number;
+  session: {
+    id:             string;
+    status:         string;
+    urlCount:       number;
+    startedAt:      Date;
+    endedAt:        Date | null;
+    contextName:    string;
+  } | null;
+}> {
+  const domain = await prisma.domain.findFirst({ where: { id: domainId, orgId } });
+  if (!domain) {
+    const e: Error & { code?: string } = new Error("Domain not found");
+    e.code = "NOT_FOUND";
+    throw e;
+  }
+
+  const session = await prisma.recordingSession.findFirst({
+    where:   { orgId, domainId },
+    orderBy: { startedAt: "desc" },
+  });
+
+  const targetUrl = await resolveTargetUrl(domain.domain);
+  let urls: string[] = [];
+  try {
+    const r = await axios.post(
+      scanner("/dast/recording/urls"),
+      { targetUrl },
+      { timeout: 10_000 },
+    );
+    urls = (r.data?.urls ?? []) as string[];
+  } catch (err) {
+    logger.warn("[recording] urls fetch failed", {
+      domainId, error: (err as Error).message,
+    });
+  }
+
+  return {
+    urls,
+    count:   urls.length,
+    session: session
+      ? {
+          id:          session.id,
+          status:      session.status,
+          urlCount:    session.urlCount,
+          startedAt:   session.startedAt,
+          endedAt:     session.endedAt,
+          contextName: session.zapContextName,
+        }
+      : null,
+  };
 }
 
 /** Probe https→http; mirrors the scanner's resolution logic. */

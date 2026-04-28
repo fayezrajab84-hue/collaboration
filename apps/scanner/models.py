@@ -21,8 +21,9 @@ class ScanType(str, Enum):
 
 
 class PentestDepth(str, Enum):
-    STANDARD = "STANDARD"
-    AGGRESSIVE = "AGGRESSIVE"
+    QUICK = "QUICK"            # Nuclei high+critical only — skip Nikto/testssl/exploit (~5-10 min)
+    STANDARD = "STANDARD"      # Full Nuclei + Nikto + testssl, no exploit  (~15-30 min)
+    AGGRESSIVE = "AGGRESSIVE"  # STANDARD + SQLMap + XSStrike exploitation  (~30-60+ min)
 
 
 class TargetType(str, Enum):
@@ -80,6 +81,15 @@ class AuthConfig(BaseModel):
     oauth2_client_secret: Optional[str] = None       # client_secret — never logged
     oauth2_scope: Optional[str] = None               # space-separated scopes
     oauth2_grant_type: OAuth2GrantType = OAuth2GrantType.CLIENT_CREDENTIALS
+
+    # CSRF token tracking — orthogonal to auth_type. The crawler sidecar reads
+    # the token from the configured source on each navigation and re-injects
+    # it as ``csrf_header_name`` (default ``X-CSRF-Token``) on subsequent
+    # requests. Required for SPAs that protect mutating endpoints with a
+    # custom header rather than a hidden form field.
+    csrf_meta_selector: Optional[str] = None        # e.g. 'meta[name="csrf-token"]'
+    csrf_cookie_name:   Optional[str] = None        # e.g. 'XSRF-TOKEN'
+    csrf_header_name:   Optional[str] = None        # null = use crawler default
 
 
 class ScanRequest(BaseModel):
@@ -202,6 +212,16 @@ class ScanResult(BaseModel):
     findings: list[NormalizedFinding] = []
     error: Optional[str] = None
     duration_ms: int
+
+    # The set of URLs / paths the scanner actually examined this run.
+    # Populated by PENTEST_FULL (from crawler_urls.txt) and DAST recording
+    # scans (from the ZAP context's URL list). Empty for everything else.
+    #
+    # Persisted to ScanJob.targetUrls and used by the diff endpoint to
+    # distinguish "genuinely fixed" findings (URL was in scope, vuln gone)
+    # from "out of scope this run" findings (URL was never re-scanned, so
+    # we can't claim anything about whether the vuln still exists).
+    target_urls: list[str] = []
 
 
 class VerifyRequest(BaseModel):

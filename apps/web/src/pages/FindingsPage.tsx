@@ -1,20 +1,21 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
-import { ShieldAlert, Search, Globe, Layers, Sparkles, ChevronDown, ChevronRight, ChevronsUpDown, ArrowUp, ArrowDown, KeyRound, Bot, Wrench, X, EyeOff, Eye, Download, CheckSquare, CheckCircle2, ShieldOff, RotateCcw, Ticket as TicketIcon, Code2, ExternalLink } from "lucide-react";
+import { ShieldAlert, Search, Globe, Layers, Sparkles, ChevronDown, ChevronRight, ChevronsUpDown, ArrowUp, ArrowDown, KeyRound, Bot, Wrench, X, EyeOff, Eye, Download, CheckSquare, CheckCircle2, ShieldOff, RotateCcw, Ticket as TicketIcon, Code2, ExternalLink, Activity, Target } from "lucide-react";
 import { findingsApi, reposApi, containersApi, domainsApi, suppressionsApi, applicationsApi } from "../lib/api";
 import type { Finding, FindingGroup } from "@devsecops/types";
 import Can from "../components/Can";
 import SeverityBadge from "../components/SeverityBadge";
 import ConfidenceBadge from "../components/ConfidenceBadge";
 import ReachabilityBadge from "../components/ReachabilityBadge";
-import ProofOfExploitBadge from "../components/ProofOfExploitBadge";
+import ActiveAttackBadge from "../components/ActiveAttackBadge";
+import ExploitSuccessBadge from "../components/ExploitSuccessBadge";
 import FindingStatusBadge from "../components/FindingStatusBadge";
 import FindingDetailDrawer from "../components/FindingDetailDrawer";
 import TargetTag from "../components/TargetTag";
 import MultiSelect from "../components/MultiSelect";
 import { formatRelative } from "../lib/utils";
-import { hasProofOfExploit } from "../lib/findings";
+import { hasActiveAttack, wasExploitSuccessful } from "../lib/findings";
 import { SEVERITY_BADGE } from "../lib/colors";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 
@@ -39,8 +40,18 @@ const WEB_SCAN_TYPE_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "DAST",         label: "DAST" },
   { value: "PENTEST_FULL", label: "Pentest" },
 ];
-const CODE_SCAN_TYPES = CODE_SCAN_TYPE_OPTIONS.map((o) => o.value);
-const WEB_SCAN_TYPES  = WEB_SCAN_TYPE_OPTIONS.map((o) => o.value);
+// Phase 28 — Runtime findings come from the live workload (Wazuh agent).
+// Distinct tab because they're production telemetry, not test-derived
+// findings: file path / URL columns don't apply, scanner is always wazuh,
+// and the operator's mental model is "what's happening on the host"
+// rather than "what could be exploited". Lives in its own tab so its
+// columns + filter set can specialise without polluting Code/Web.
+const RUNTIME_SCAN_TYPE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "RUNTIME", label: "Runtime (Wazuh)" },
+];
+const CODE_SCAN_TYPES    = CODE_SCAN_TYPE_OPTIONS.map((o) => o.value);
+const WEB_SCAN_TYPES     = WEB_SCAN_TYPE_OPTIONS.map((o) => o.value);
+const RUNTIME_SCAN_TYPES = RUNTIME_SCAN_TYPE_OPTIONS.map((o) => o.value);
 const STATUSES = ["OPEN", "ACKNOWLEDGED", "FALSE_POSITIVE", "FIXED", "IGNORED"];
 const CONFIDENCES = ["CONFIRMED", "LIKELY", "POSSIBLE"];
 // AI triage filter values — matched server-side against aiAnalysedAt/aiFixSuggestedAt
@@ -257,7 +268,7 @@ export default function FindingsPage() {
   // URL column only appears where it makes sense and dropdown options aren't
   // mixed across two very different finding shapes. Default to "code" since
   // most users add a repo first and code findings dominate volume.
-  const tab        = (searchParams.get("tab") as "code" | "web" | "groups") ?? "code";
+  const tab        = (searchParams.get("tab") as "code" | "web" | "runtime" | "groups") ?? "code";
   // Multi-select filters stored as comma-separated values in the URL so links
   // remain shareable; the server splits and parses them via `multi()`.
   const parseMulti = (v: string) => v.split(",").map((s) => s.trim()).filter(Boolean);
@@ -269,6 +280,14 @@ export default function FindingsPage() {
   // Phase 27.5 — filter by Application boundary
   const applications = parseMulti(searchParams.get("applicationId") ?? "");
   const aiFilter     = parseMulti(searchParams.get("ai") ?? "");
+  // Single-value MITRE tactic filter — set via the dashboard's clickable
+  // tactic bars. The runtime tab is the only tab where this makes sense
+  // (only RUNTIME findings carry mitre.tactics in evidence).
+  const mitreTactic  = searchParams.get("mitreTactic") ?? "";
+  // Phase 28 — server-side tag predicate (e.g. `runtime-exploit`).
+  // Set via the dashboard's lead cards so navigation count exactly
+  // matches the source card. See services/findingTags.ts.
+  const tag          = searchParams.get("tag") ?? "";
   const aiFilterKey  = aiFilter.join(",");
   // Stable primitives for dep arrays — arrays produced above are new every render.
   // (Note: no scanTypeKey — the API call uses `effectiveScanTypeKey` which folds
@@ -282,7 +301,10 @@ export default function FindingsPage() {
   // allowed set with whatever the user picked in the dropdown. If the user
   // picked nothing, fall back to the full tab set so Code/Web tabs don't
   // accidentally show each other's findings.
-  const tabScanTypes = tab === "web" ? WEB_SCAN_TYPES : CODE_SCAN_TYPES;
+  const tabScanTypes =
+    tab === "web"     ? WEB_SCAN_TYPES
+    : tab === "runtime" ? RUNTIME_SCAN_TYPES
+    : CODE_SCAN_TYPES;
   const effectiveScanTypes = scanType.length
     ? scanType.filter((t) => tabScanTypes.includes(t))
     : tabScanTypes;
@@ -329,7 +351,7 @@ export default function FindingsPage() {
   // Switching tabs also clears the scanType chip filter — selections from one
   // tab (e.g. "SAST" picked while in Code) wouldn't intersect with the other
   // tab's allowed set anyway, so leaving them stale would just be confusing.
-  const setTab = (t: "code" | "web" | "groups") => {
+  const setTab = (t: "code" | "web" | "runtime" | "groups") => {
     setSearchParams((prev) => {
       if (t === "code") prev.delete("tab"); else prev.set("tab", t);
       prev.delete("scanType");
@@ -444,7 +466,7 @@ export default function FindingsPage() {
   // Check whether any filters are active (to distinguish "no results" from "nothing scanned yet")
   const hasActiveFilters = !!(
     severity.length || scanType.length || status.length || confidence.length ||
-    reachability.length || aiFilter.length || search || target
+    reachability.length || aiFilter.length || search || target || mitreTactic || tag
   );
 
   const applicationsKey = applications.join(",");
@@ -452,7 +474,7 @@ export default function FindingsPage() {
     // Use effectiveScanTypeKey (tab ∩ user) so the cache invalidates correctly
     // when switching Code↔Web — same user-selected types but different tab
     // produces a different effective set, hence a different query.
-    queryKey: ["findings", { severityKey, effectiveScanTypeKey, statusKey, confidenceKey, reachabilityKey, applicationsKey, aiFilterKey, search, target, page, pageSize, sort, sortOrder, includeSuppressed }],
+    queryKey: ["findings", { severityKey, effectiveScanTypeKey, statusKey, confidenceKey, reachabilityKey, applicationsKey, aiFilterKey, search, target, mitreTactic, tag, page, pageSize, sort, sortOrder, includeSuppressed }],
     queryFn: () =>
       findingsApi.list({
         // Multi-select: send comma-joined values — server splits via `multi()`.
@@ -464,6 +486,8 @@ export default function FindingsPage() {
         search: search || undefined,
         ...targetFilter,
         ...(applicationsKey ? { applicationId: applicationsKey } : {}),
+        ...(mitreTactic ? { mitreTactic: mitreTactic as never } : {}),
+        ...(tag ? { tag } : {}),
         page,
         limit: pageSize,
         ...(aiFilterKey ? { ai: aiFilterKey as never } : {}),
@@ -504,6 +528,18 @@ export default function FindingsPage() {
           >
             <Globe className="h-3.5 w-3.5 text-gray-300" />
             Web
+          </button>
+          <button
+            onClick={() => setTab("runtime")}
+            className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+              tab === "runtime"
+                ? "bg-indigo-700 text-white"
+                : "text-gray-400 hover:text-white"
+            }`}
+            title="Wazuh runtime alerts from production hosts"
+          >
+            <Activity className="h-3.5 w-3.5 text-gray-300" />
+            Runtime
           </button>
           <button
             onClick={() => setTab("groups")}
@@ -549,18 +585,32 @@ export default function FindingsPage() {
           />
         )}
 
-        {/* Target filter — multi-select across repos, containers and domains.
-            Labels prefixed so mixed-type selection is legible in the chip. */}
-        <MultiSelect
-          label="Targets"
-          options={[
-            ...(repos       ?? []).map((r) => ({ value: `repo:${r.id}`,      label: `Repo · ${r.fullName}` })),
-            ...(containers  ?? []).map((c) => ({ value: `container:${c.id}`, label: `Container · ${c.imageRef}` })),
-            ...(domains     ?? []).map((d) => ({ value: `domain:${d.id}`,    label: `Domain · ${d.domain}` })),
-          ]}
-          value={parseMulti(target)}
-          onChange={(v) => setMultiFilter("target", v)}
-        />
+        {/*
+          Smart per-tab filter visibility:
+            Code     → Targets · Severities · Types(5) · Statuses · Confidence · Reachability(SCA) · AI triage
+            Web      → Targets · Severities · Types(2) · Statuses · Confidence · AI triage
+                       (Reachability is package-level, doesn't apply to URLs)
+            Runtime  → Severities · Statuses · Confidence
+                       (Type is always RUNTIME; Target is always the linked
+                        container; Reachability + AI triage don't apply.
+                        Runtime-specific filters — Agent, Attacker IP, MITRE
+                        tactic, Compliance, Attack signal — would need
+                        backend JSONB filters; tracked as a follow-up.)
+        */}
+
+        {/* Targets — hidden on Runtime (always Container via WorkloadAgent). */}
+        {tab !== "runtime" && (
+          <MultiSelect
+            label="Targets"
+            options={[
+              ...(repos       ?? []).map((r) => ({ value: `repo:${r.id}`,      label: `Repo · ${r.fullName}` })),
+              ...(containers  ?? []).map((c) => ({ value: `container:${c.id}`, label: `Container · ${c.imageRef}` })),
+              ...(domains     ?? []).map((d) => ({ value: `domain:${d.id}`,    label: `Domain · ${d.domain}` })),
+            ]}
+            value={parseMulti(target)}
+            onChange={(v) => setMultiFilter("target", v)}
+          />
+        )}
 
         <MultiSelect
           label="Severities"
@@ -569,15 +619,18 @@ export default function FindingsPage() {
           onChange={(v) => setMultiFilter("severity", v)}
         />
 
-        <MultiSelect
-          label="Types"
-          // Tab-scoped — Code tab shows file-based scanners, Web tab shows
-          // URL-based scanners. Mixing them was confusing and made the dropdown
-          // longer than necessary.
-          options={tab === "web" ? WEB_SCAN_TYPE_OPTIONS : CODE_SCAN_TYPE_OPTIONS}
-          value={scanType}
-          onChange={(v) => setMultiFilter("scanType", v)}
-        />
+        {/* Types — hidden on Runtime (only one scan type: RUNTIME). */}
+        {tab !== "runtime" && (
+          <MultiSelect
+            label="Types"
+            // Tab-scoped — Code tab shows file-based scanners, Web tab shows
+            // URL-based scanners. Mixing them was confusing and made the
+            // dropdown longer than necessary.
+            options={tab === "web" ? WEB_SCAN_TYPE_OPTIONS : CODE_SCAN_TYPE_OPTIONS}
+            value={scanType}
+            onChange={(v) => setMultiFilter("scanType", v)}
+          />
+        )}
 
         <MultiSelect
           label="Statuses"
@@ -593,29 +646,37 @@ export default function FindingsPage() {
           onChange={(v) => setMultiFilter("confidence", v)}
         />
 
-        {/* Phase 14 — reachability filter. Renders four options matching
-            the schema enum; "Reachable" is the auditor-grade default for
-            triage-first workflows. */}
-        <MultiSelect
-          label="Reachability"
-          options={[
-            { value: "REACHABLE",      label: "Reachable" },
-            { value: "NOT_REACHABLE",  label: "Not reachable" },
-            { value: "UNKNOWN",        label: "Unknown" },
-            { value: "NOT_APPLICABLE", label: "Not applicable" },
-          ]}
-          value={reachability}
-          onChange={(v) => setMultiFilter("reachability", v)}
-          title="Filter by package-level reachability (Phase 14 SCA classification)"
-        />
+        {/* Reachability — Code-only. Phase 14's package-level reachability
+            classification is meaningless for Web (URL-based) and Runtime
+            (production telemetry). Hiding here matches what we did on the
+            row's Confidence cell. */}
+        {tab === "code" && (
+          <MultiSelect
+            label="Reachability"
+            options={[
+              { value: "REACHABLE",      label: "Reachable" },
+              { value: "NOT_REACHABLE",  label: "Not reachable" },
+              { value: "UNKNOWN",        label: "Unknown" },
+              { value: "NOT_APPLICABLE", label: "Not applicable" },
+            ]}
+            value={reachability}
+            onChange={(v) => setMultiFilter("reachability", v)}
+            title="Filter by package-level reachability (Phase 14 SCA classification)"
+          />
+        )}
 
-        <MultiSelect
-          label="AI triage"
-          options={AI_FILTERS}
-          value={aiFilter}
-          onChange={(v) => setMultiFilter("ai", v)}
-          title="Filter by AI triage state"
-        />
+        {/* AI triage — hidden on Runtime. Wazuh findings don't go through
+            aiAnalyseService / aiFixSuggestionService yet, so this filter
+            would always return empty. */}
+        {tab !== "runtime" && (
+          <MultiSelect
+            label="AI triage"
+            options={AI_FILTERS}
+            value={aiFilter}
+            onChange={(v) => setMultiFilter("ai", v)}
+            title="Filter by AI triage state"
+          />
+        )}
 
         {/* Show suppressed toggle */}
         <label
@@ -646,6 +707,48 @@ export default function FindingsPage() {
             </span>
           )}
         </label>
+
+        {/* Tag filter chip — removable. Set by dashboard cards via
+            ?tag=runtime-exploit etc. Same removal pattern as the
+            MITRE tactic chip. */}
+        {tag && (
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-red-700/60 bg-red-950/40 px-2 py-1 text-xs text-red-300">
+            <Target className="h-3 w-3 text-red-400" />
+            Tag: {tag}
+            <button
+              onClick={() => setSearchParams((prev) => {
+                prev.delete("tag");
+                return prev;
+              })}
+              className="rounded-full p-0.5 hover:bg-red-900/50"
+              aria-label={`Clear tag filter (${tag})`}
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </span>
+        )}
+
+        {/* MITRE tactic filter chip — removable. Only renders when set
+            (driven by clicking a tactic on the dashboard). The Clear-all
+            button next to it also clears this; this chip lets the
+            operator drop just the tactic without dropping every other
+            filter they may have layered on. */}
+        {mitreTactic && (
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-indigo-700/60 bg-indigo-950/40 px-2 py-1 text-xs text-indigo-200">
+            <Target className="h-3 w-3 text-indigo-400" />
+            MITRE: {mitreTactic}
+            <button
+              onClick={() => setSearchParams((prev) => {
+                prev.delete("mitreTactic");
+                return prev;
+              })}
+              className="rounded-full p-0.5 hover:bg-indigo-900/50"
+              aria-label={`Clear MITRE tactic filter (${mitreTactic})`}
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </span>
+        )}
 
         {/* Clear all filters */}
         {hasActiveFilters && (
@@ -784,12 +887,21 @@ export default function FindingsPage() {
                   column makes navigation/triage drastically faster than digging
                   into the drawer. */}
               {tab === "web" && <th className="px-4 py-3 font-medium">URL</th>}
-              <th className="px-4 py-3 font-medium">Target</th>
-              <SortTh field="scanType"   label="Type"       sort={sort} sortOrder={sortOrder} toggle={toggleSort} />
+              {/* Runtime tab — threat-hunting columns. Pulled from evidence
+                  JSONB by the wazuh ingest service. Operators living in
+                  this view think in IPs / agents / processes / MITRE the
+                  same way Web-tab operators think in URLs. */}
+              {tab === "runtime" && <th className="px-4 py-3 font-medium">Attacker IP</th>}
+              {tab === "runtime" && <th className="px-4 py-3 font-medium">Agent</th>}
+              {tab === "runtime" && <th className="px-4 py-3 font-medium">Process / User</th>}
+              {tab === "runtime" && <th className="px-4 py-3 font-medium">MITRE</th>}
+              {tab === "runtime" && <th className="px-4 py-3 font-medium">Hits</th>}
+              {tab !== "runtime" && <th className="px-4 py-3 font-medium">Target</th>}
+              {tab !== "runtime" && <SortTh field="scanType"   label="Type"       sort={sort} sortOrder={sortOrder} toggle={toggleSort} />}
               <SortTh field="confidence" label="Confidence" sort={sort} sortOrder={sortOrder} toggle={toggleSort} />
-              <th className="px-4 py-3 font-medium">AI</th>
+              {tab !== "runtime" && <th className="px-4 py-3 font-medium">AI</th>}
               <SortTh field="status"     label="Status"     sort={sort} sortOrder={sortOrder} toggle={toggleSort} />
-              <SortTh field="firstSeen"  label="First Seen" sort={sort} sortOrder={sortOrder} toggle={toggleSort} />
+              <SortTh field={tab === "runtime" ? "lastSeen" : "firstSeen"} label={tab === "runtime" ? "Last Seen" : "First Seen"} sort={sort} sortOrder={sortOrder} toggle={toggleSort} />
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-800 bg-gray-900/50">
@@ -911,51 +1023,176 @@ export default function FindingsPage() {
                       )}
                     </td>
                   )}
-                  <td className="px-4 py-3"><TargetTag finding={f} /></td>
-                  <td className="px-4 py-3 text-xs text-gray-400">{f.scanType}</td>
+                  {/* ── Runtime-specific cells ─────────────────────────
+                      Only rendered when tab === "runtime"; the th headers
+                      above render in the same condition so column alignment
+                      is preserved. Reads from Finding.evidence (typed as
+                      RuntimeEvidence by the wazuh ingest service). */}
+                  {tab === "runtime" && (() => {
+                    const ev = (f.evidence ?? {}) as Record<string, unknown>;
+                    const ips        = (ev["attackerIps"] as string[] | undefined) ?? [];
+                    const ipCount    = (ev["attackerIpCount"] as number | undefined) ?? ips.length;
+                    const primaryIp  = (ev["attackerIp"] as string | undefined) ?? ips[0] ?? null;
+                    const agent      = (ev["wazuhAgentName"] as string | undefined) ?? null;
+                    const procName   = (ev["processName"] as string | undefined) ?? null;
+                    const procUser   = (ev["user"] as string | undefined) ?? null;
+                    const mitre      = (ev["mitre"] as { ids?: string[]; tactics?: string[] } | null) ?? null;
+                    const hits       = (ev["occurrencesTotal"] as number | undefined) ?? (ev["occurrencesInBucket"] as number | undefined) ?? null;
+                    return (
+                      <>
+                        <td className="px-4 py-3">
+                          {primaryIp ? (
+                            <div className="font-mono text-xs">
+                              <div className="text-gray-200">{primaryIp}</div>
+                              {ipCount > 1 && (
+                                <div className="text-[10px] text-gray-500">
+                                  +{ipCount - 1} more
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-xs text-gray-600">—</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 font-mono text-xs text-gray-300">
+                          {agent ?? <span className="text-gray-600">—</span>}
+                        </td>
+                        <td className="px-4 py-3 text-xs">
+                          {procName || procUser ? (
+                            <div className="font-mono">
+                              {procName && <div className="text-gray-200">{procName}</div>}
+                              {procUser && (
+                                <div className="text-[10px] text-gray-500">user: {procUser}</div>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-gray-600">—</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
+                          {(() => {
+                            // Column shows TACTIC names (broad MITRE category —
+                            // Initial Access / Execution / Persistence / etc.)
+                            // because they're more scannable than T-codes at a
+                            // glance. The technique IDs + names stay in the
+                            // finding detail drawer for drill-down. Tooltip
+                            // surfaces the matching technique IDs on hover.
+                            const tactics    = mitre?.tactics    ?? [];
+                            const techniques = mitre?.techniques ?? [];
+                            const ids        = mitre?.ids        ?? [];
+                            const tooltip = ids.length || techniques.length
+                              ? `${ids.join(", ")}${techniques.length ? ` · ${techniques.join(", ")}` : ""}`
+                              : undefined;
+                            if (tactics.length === 0) {
+                              // Fall back to T-codes when the rule didn't tag
+                              // tactics (rare but possible for custom rules).
+                              if (ids.length === 0) return <span className="text-xs text-gray-600">—</span>;
+                              return (
+                                <span
+                                  title={tooltip}
+                                  className="rounded border border-gray-700 bg-gray-800/50 px-1.5 py-0.5 font-mono text-[10px] text-gray-400"
+                                >
+                                  {ids[0]}{ids.length > 1 ? ` +${ids.length - 1}` : ""}
+                                </span>
+                              );
+                            }
+                            return (
+                              <div className="flex flex-wrap gap-1" title={tooltip}>
+                                {tactics.slice(0, 2).map((t) => (
+                                  <span
+                                    key={t}
+                                    className="rounded border border-indigo-900/40 bg-indigo-950/30 px-1.5 py-0.5 text-[10px] font-medium text-indigo-300"
+                                  >
+                                    {t}
+                                  </span>
+                                ))}
+                                {tactics.length > 2 && (
+                                  <span className="text-[10px] text-gray-500">+{tactics.length - 2}</span>
+                                )}
+                              </div>
+                            );
+                          })()}
+                        </td>
+                        <td className="px-4 py-3 text-right text-xs">
+                          {hits ? (
+                            <span className="font-mono text-gray-200">{hits}</span>
+                          ) : (
+                            <span className="text-gray-600">—</span>
+                          )}
+                        </td>
+                      </>
+                    );
+                  })()}
+                  {tab !== "runtime" && (
+                    <>
+                      <td className="px-4 py-3"><TargetTag finding={f} /></td>
+                      <td className="px-4 py-3 text-xs text-gray-400">{f.scanType}</td>
+                    </>
+                  )}
                   <td className="px-4 py-3">
-                    <span className="inline-flex flex-wrap items-center gap-1">
+                    {/* flex-nowrap so the Confidence chip + Attack/Exploit
+                        pill sit on a single baseline. flex-wrap was
+                        wrapping the second pill onto its own line whenever
+                        the cell got narrow enough; sibling pills should
+                        always read as a single horizontal cluster. */}
+                    <span className="inline-flex flex-nowrap items-center gap-1.5 whitespace-nowrap">
                       <ConfidenceBadge confidence={f.confidence} />
-                      {hasProofOfExploit(f) && <ProofOfExploitBadge size="sm" />}
-                      {/* Phase 14 — package-level reachability. Renders
-                          only for SCA/CONTAINER findings; NOT_APPLICABLE
-                          on other scan types returns null from the badge. */}
-                      <ReachabilityBadge
-                        reachability={(f as { reachability?: "REACHABLE" | "NOT_REACHABLE" | "UNKNOWN" | "NOT_APPLICABLE" }).reachability}
-                        evidence={(f as { reachabilityEvidence?: string[] | null }).reachabilityEvidence}
-                        scanType={f.scanType}
-                        size="xs"
-                      />
+                      {/* Mutually exclusive: EXPLOIT > ACTIVE ATTACK.
+                          wasExploitSuccessful() now subsumes the legacy
+                          hasProofOfExploit signal — for scanner findings
+                          the EXPLOIT pill renders directly without a
+                          separate Proof-of-Exploit chip. */}
+                      {wasExploitSuccessful(f)
+                        ? <ExploitSuccessBadge size="sm" />
+                        : hasActiveAttack(f) && <ActiveAttackBadge size="sm" />}
+                      {/* Phase 14 — package-level reachability. Suppressed
+                          on the Runtime tab because RUNTIME findings come
+                          from production telemetry (Wazuh) — reachability
+                          would render as "Unknown" for every row, adding
+                          column noise without information. */}
+                      {tab !== "runtime" && (
+                        <ReachabilityBadge
+                          reachability={(f as { reachability?: "REACHABLE" | "NOT_REACHABLE" | "UNKNOWN" | "NOT_APPLICABLE" }).reachability}
+                          evidence={(f as { reachabilityEvidence?: string[] | null }).reachabilityEvidence}
+                          scanType={f.scanType}
+                          size="xs"
+                        />
+                      )}
                     </span>
                   </td>
-                  {/* AI triage status — unified neutral chip; colour only in the icon */}
-                  <td className="px-4 py-3">
-                    {(() => {
-                      const hasAnalysis = !!(f as Record<string, unknown>)["aiAnalysedAt"];
-                      const hasFix      = !!(f as Record<string, unknown>)["aiFixSuggestedAt"];
-                      const chip = "inline-flex items-center gap-1 rounded-full bg-gray-800/80 px-1.5 py-0.5 text-[10px] font-semibold text-gray-300 border border-gray-700/60";
-                      if (hasAnalysis && hasFix) return (
-                        <span title="AI analysis + fix suggestion ready" className={chip}>
-                          <Sparkles className="h-2.5 w-2.5 text-indigo-400" /> Triaged
-                        </span>
-                      );
-                      if (hasAnalysis) return (
-                        <span title="AI analysis ready" className={chip}>
-                          <Bot className="h-2.5 w-2.5 text-indigo-400" /> Analysed
-                        </span>
-                      );
-                      if (hasFix) return (
-                        <span title="Fix suggestion ready" className={chip}>
-                          <Wrench className="h-2.5 w-2.5 text-indigo-400" /> Fix ready
-                        </span>
-                      );
-                      return <span className="text-[10px] text-gray-700">—</span>;
-                    })()}
-                  </td>
+                  {/* AI triage status — hidden on Runtime tab (Wazuh findings
+                      don't go through aiAnalyseService yet). */}
+                  {tab !== "runtime" && (
+                    <td className="px-4 py-3">
+                      {(() => {
+                        const hasAnalysis = !!(f as Record<string, unknown>)["aiAnalysedAt"];
+                        const hasFix      = !!(f as Record<string, unknown>)["aiFixSuggestedAt"];
+                        const chip = "inline-flex items-center gap-1 rounded-full bg-gray-800/80 px-1.5 py-0.5 text-[10px] font-semibold text-gray-300 border border-gray-700/60";
+                        if (hasAnalysis && hasFix) return (
+                          <span title="AI analysis + fix suggestion ready" className={chip}>
+                            <Sparkles className="h-2.5 w-2.5 text-indigo-400" /> Triaged
+                          </span>
+                        );
+                        if (hasAnalysis) return (
+                          <span title="AI analysis ready" className={chip}>
+                            <Bot className="h-2.5 w-2.5 text-indigo-400" /> Analysed
+                          </span>
+                        );
+                        if (hasFix) return (
+                          <span title="Fix suggestion ready" className={chip}>
+                            <Wrench className="h-2.5 w-2.5 text-indigo-400" /> Fix ready
+                          </span>
+                        );
+                        return <span className="text-[10px] text-gray-700">—</span>;
+                      })()}
+                    </td>
+                  )}
                   <td className="px-4 py-3">
                     <FindingStatusBadge status={f.status} />
                   </td>
-                  <td className="px-4 py-3 text-xs text-gray-500">{formatRelative(f.firstSeen)}</td>
+                  <td className="px-4 py-3 text-xs text-gray-500">
+                    {formatRelative(tab === "runtime" ? f.lastSeen : f.firstSeen)}
+                  </td>
                 </tr>
                 );
               })

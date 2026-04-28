@@ -738,6 +738,26 @@ router.get("/:id/recording/status", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// GET /api/domains/:id/urls — list captured URLs for the domain
+//
+// Pulls from ZAP's site tree filtered to the domain's host. Used by the
+// "URLs" inline panel on DomainsPage to render a tree view of the
+// recorded attack surface. Returns the list verbatim plus a small
+// snapshot of the most-recent RecordingSession so the UI can show
+// "captured during session X" context.
+router.get("/:id/urls", async (req, res, next) => {
+  try {
+    const member = await getActiveMembership(req);
+    if (!member) { res.status(403).json({ error: "Forbidden" }); return; }
+    const result = await recording.listUrls(member.orgId, req.params["id"]!);
+    res.json(result);
+  } catch (err) {
+    const code = (err as Error & { code?: string }).code;
+    if (code === "NOT_FOUND") { res.status(404).json({ error: (err as Error).message }); return; }
+    next(err);
+  }
+});
+
 router.post("/:id/recording/scan", async (req, res, next) => {
   try {
     const user = req.user as { id: string };

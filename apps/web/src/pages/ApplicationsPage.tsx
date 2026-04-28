@@ -23,12 +23,14 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import FindingCountBadges from "../components/FindingCountBadges";
 import {
   Plus, Pencil, Trash2, X, Boxes, GitBranch, Container as ContainerIcon, Network, Layers,
-  AlertTriangle, ChevronRight,
+  AlertTriangle, ChevronRight, Activity, AlertCircle, Link2, Link2Off,
 } from "lucide-react";
 import {
-  applicationsApi, reposApi, containersApi, domainsApi,
+  applicationsApi, reposApi, containersApi, domainsApi, runtimeApi,
   type ApplicationDetail,
 } from "../lib/api";
+import { formatRelative } from "../lib/utils";
+import type { WorkloadAgent, AgentStatus } from "@devsecops/types";
 import Can from "../components/Can";
 import { useToast } from "../hooks/useToast";
 import type { Application, ApplicationEnv, Criticality } from "@devsecops/types";
@@ -326,12 +328,27 @@ function ApplicationDetailView({ applicationId }: { applicationId: string }) {
   const { toast } = useToast();
   const navigate = useNavigate();
   const [showEdit, setShowEdit] = useState(false);
-  const [tab, setTab] = useState<"repositories" | "containers" | "domains">("repositories");
+  const [tab, setTab] = useState<"repositories" | "containers" | "domains" | "runtime">("repositories");
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["application", applicationId],
     queryFn:  () => applicationsApi.get(applicationId),
   });
+
+  // Runtime agents are linked to Containers (not directly to Applications),
+  // so the "Runtime" tab is the SET of agents whose linkedContainerId
+  // belongs to one of this application's containers. Pull all agents and
+  // filter client-side — the org typically has 1-50 agents, well below
+  // any concern about wire size.
+  const { data: allAgents } = useQuery({
+    queryKey: ["runtime-agents"],
+    queryFn:  runtimeApi.list,
+    refetchInterval: 30_000,
+  });
+  const containerIdSet = new Set((data?.components.containers ?? []).map((c) => c.id));
+  const appAgents = (allAgents ?? []).filter(
+    (a) => a.linkedContainerId !== null && containerIdSet.has(a.linkedContainerId),
+  );
 
   const remove = useMutation({
     mutationFn: () => applicationsApi.remove(applicationId),
@@ -398,11 +415,132 @@ function ApplicationDetailView({ applicationId }: { applicationId: string }) {
           icon={ContainerIcon} label="Containers" count={data.components.containers.length} />
         <TabButton active={tab === "domains"} onClick={() => setTab("domains")}
           icon={Network} label="Domains" count={data.components.domains.length} />
+        <TabButton active={tab === "runtime"} onClick={() => setTab("runtime")}
+          icon={Activity} label="Runtime" count={appAgents.length} />
       </div>
 
-      <ComponentsTab kind={tab} application={data} />
+      {tab === "runtime"
+        ? <RuntimeTab agents={appAgents} containers={data.components.containers} />
+        : <ComponentsTab kind={tab} application={data} />
+      }
 
       {showEdit && <CreateOrEditModal existing={data} onClose={() => setShowEdit(false)} />}
+    </div>
+  );
+}
+
+// ── Runtime tab ──────────────────────────────────────────────────────────
+//
+// Agents linked to any container in this application, derived client-side
+// from runtimeApi.list() ∩ application.components.containers. Read-only
+// here — operator manages the actual link from /runtime, not from inside
+// an Application.
+
+function AgentStatusDot({ status }: { status: AgentStatus }) {
+  const cls =
+    status === "HEALTHY" ? "bg-emerald-400"
+    : status === "STALE" ? "bg-amber-400"
+    : status === "OFFLINE" ? "bg-red-400"
+    : "bg-gray-500";
+  return <span className={`inline-block h-1.5 w-1.5 rounded-full ${cls}`} />;
+}
+
+function RuntimeTab({ agents, containers }: {
+  agents:     WorkloadAgent[];
+  containers: ApplicationDetail["components"]["containers"];
+}) {
+  const containerImageRef = new Map(containers.map((c) => [c.id, c.imageRef]));
+
+  if (containers.length === 0) {
+    return (
+      <div className="rounded-lg border border-gray-800 bg-gray-900/40 p-6 text-center text-sm text-gray-500">
+        Add a container to this application before linking runtime agents.
+      </div>
+    );
+  }
+  if (agents.length === 0) {
+    return (
+      <div className="space-y-3">
+        <p className="text-sm text-gray-500">
+          No runtime agents are monitoring this application's containers yet.
+        </p>
+        <div className="rounded-lg border border-gray-800 bg-gray-900/40 p-6 text-sm text-gray-400">
+          <p className="mb-2 flex items-center gap-2 text-gray-300">
+            <AlertCircle className="h-4 w-4 text-amber-400" />
+            <span>Runtime agents are linked through containers, not directly.</span>
+          </p>
+          <p className="mb-3 text-xs text-gray-500">
+            Install Wazuh on the host running one of this application's
+            {containers.length === 1 ? " container" : ` ${containers.length} containers`},
+            then go to <Link to="/runtime" className="text-indigo-400 hover:text-indigo-300">Runtime</Link>{" "}
+            and link the agent to the container.
+          </p>
+          <ul className="space-y-1 font-mono text-xs text-gray-300">
+            {containers.map((c) => (
+              <li key={c.id} className="flex items-center gap-2">
+                <ContainerIcon className="h-3 w-3 text-gray-500" />
+                {c.imageRef}
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <p className="mb-3 text-sm text-gray-500">
+        {agents.length} runtime agent{agents.length === 1 ? "" : "s"} linked to this
+        application's containers. Findings from these agents flow into the correlation
+        engine via the runtimeBridge.
+      </p>
+      <div className="overflow-hidden rounded-lg border border-gray-800">
+        <table className="w-full text-sm">
+          <thead className="border-b border-gray-800 bg-gray-900">
+            <tr className="text-left text-xs text-gray-500">
+              <th className="px-4 py-2.5 font-medium">Agent</th>
+              <th className="px-4 py-2.5 font-medium">Status</th>
+              <th className="px-4 py-2.5 font-medium">Container</th>
+              <th className="px-4 py-2.5 font-medium">Findings</th>
+              <th className="px-4 py-2.5 font-medium">Last Alert</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-800 bg-gray-900/40">
+            {agents.map((a) => (
+              <tr key={a.id} className="hover:bg-gray-800/40">
+                <td className="px-4 py-2.5">
+                  <div className="font-medium text-gray-200">{a.wazuhAgentName}</div>
+                  <div className="font-mono text-[10px] text-gray-500">
+                    ID {a.wazuhAgentId}
+                    {a.agentVersion && <span className="ml-2">v{a.agentVersion}</span>}
+                  </div>
+                </td>
+                <td className="px-4 py-2.5">
+                  <span className="inline-flex items-center gap-1.5 text-xs text-gray-300">
+                    <AgentStatusDot status={a.status} />
+                    {a.status}
+                  </span>
+                </td>
+                <td className="px-4 py-2.5 font-mono text-xs text-gray-300">
+                  {a.linkedContainerId
+                    ? containerImageRef.get(a.linkedContainerId) ?? a.linkedContainerImageRef ?? "—"
+                    : <span className="italic text-gray-600">unlinked</span>
+                  }
+                </td>
+                <td className="px-4 py-2.5 text-gray-300">{a.runtimeFindingCount ?? 0}</td>
+                <td className="px-4 py-2.5 text-xs text-gray-400">
+                  {a.lastAlertAt ? formatRelative(a.lastAlertAt) : "Never"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="mt-3 text-xs text-gray-600">
+        Manage agent ↔ container links from the{" "}
+        <Link to="/runtime" className="text-indigo-400 hover:text-indigo-300">Runtime</Link> page.
+      </p>
     </div>
   );
 }

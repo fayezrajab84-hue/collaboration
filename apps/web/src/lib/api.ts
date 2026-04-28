@@ -17,6 +17,7 @@ import type {
   Application, CreateApplicationRequest, UpdateApplicationRequest,
   UpdateApplicationComponentsRequest, ApplicationComponentsResponse,
   ApplicationEnv, Criticality,
+  WorkloadAgent, DiscoverAgentsResponse, IngestSummary,
 } from "@devsecops/types";
 
 export const apiClient = axios.create({
@@ -164,7 +165,28 @@ export const domainsApi = {
   /** Phase 27 Slice A — link this domain to backing containers. */
   updateAssetLinks: (id: string, data: UpdateDomainAssetLinksRequest) =>
     apiClient.patch<AssetLinksResponse>(`/domains/${id}/asset-links`, data).then((r) => r.data),
+  /**
+   * List captured URLs from ZAP for this domain. Source: live ZAP site
+   * tree filtered to the domain's host — survives recording.stop() until
+   * ZAP is restarted, so the operator can inspect captured surface
+   * after ending the session.
+   */
+  listUrls: (id: string) =>
+    apiClient.get<DomainUrlsResponse>(`/domains/${id}/urls`).then((r) => r.data),
 };
+
+export interface DomainUrlsResponse {
+  urls:    string[];
+  count:   number;
+  session: {
+    id:          string;
+    status:      string;
+    urlCount:    number;
+    startedAt:   string;
+    endedAt:     string | null;
+    contextName: string;
+  } | null;
+}
 
 export interface RecordingSessionView {
   sessionId: string;
@@ -323,6 +345,13 @@ export const findingsApi = {
       scanTypeCounts: Array<{ scanType: string; _count: number }>;
       statusCounts: Array<{ status: string; _count: number }>;
       confidenceCounts: Array<{ confidence: string; _count: number }>;
+      // scanType × severity cross-product for the dashboard stacked-bar
+      // chart. Drives "where are my CRITICALs concentrated?" answers.
+      severityByScanType?: Array<{ scanType: string; severity: string; _count: number }>;
+      // Server-side tag-predicate counts. Same evaluator as
+      // /findings?tag=, so card-count == destination-count by
+      // construction. v1 vocabulary: runtime-exploit, runtime-attack.
+      tagCounts?: Record<string, number>;
     }>("/findings/summary/stats", { params: scanType ? { scanType } : undefined }).then((r) => r.data),
   topTargets: (limit = 5) =>
     apiClient.get<Array<{
@@ -799,6 +828,105 @@ export const attackPathsApi = {
 };
 
 // ── Compliance (Phase 16) ────────────────────────────────────────────────
+
+// ── Runtime (Wazuh agents) ────────────────────────────────────────────────
+
+export const runtimeApi = {
+  list: () => apiClient.get<WorkloadAgent[]>("/runtime/agents").then((r) => r.data),
+  get:  (id: string) =>
+    apiClient.get<WorkloadAgent & { linkedContainer: { id: string; imageRef: string } | null }>(
+      `/runtime/agents/${id}`,
+    ).then((r) => r.data),
+  link: (id: string, linkedContainerId: string | null) =>
+    apiClient
+      .patch<WorkloadAgent>(`/runtime/agents/${id}`, { linkedContainerId })
+      .then((r) => r.data),
+  remove: (id: string) =>
+    apiClient.delete(`/runtime/agents/${id}`).then((r) => r.data),
+  discover: () =>
+    apiClient.post<DiscoverAgentsResponse>("/runtime/agents/discover").then((r) => r.data),
+  triggerIngest: () =>
+    apiClient.post<IngestSummary>("/runtime/ingest").then((r) => r.data),
+  dashboard: () =>
+    apiClient.get<RuntimeDashboardResponse>("/runtime/dashboard").then((r) => r.data),
+  vulnerabilities: () =>
+    apiClient.get<RuntimeVulnerabilitiesResponse>("/runtime/vulnerabilities").then((r) => r.data),
+  suppressVulnerabilities: (findingIds: string[]) =>
+    apiClient.post<{ updated: number }>("/runtime/vulnerabilities/suppress", { findingIds }).then((r) => r.data),
+};
+
+export interface RuntimeVulnerabilityRow {
+  tier:               "BOTH" | "CONTAINER_ONLY" | "RUNTIME_ONLY";
+  cve:                string;
+  severity:           string;
+  packageName:        string | null;
+  packageVersion:     string | null;
+  fixVersion:         string | null;
+  cvssScore:          number | null;
+  reachability:       string | null;
+  containerFindingId: string | null;
+  containerId:        string | null;
+  imageRef:           string | null;
+  runtimeFindingIds:  string[];
+  agentName:          string | null;
+  unreachableCandidate: boolean;
+  lastSeen:           string;
+}
+
+export interface RuntimeVulnerabilitiesResponse {
+  summary: {
+    containerCves:         number;
+    runtimeCves:           number;
+    both:                  number;
+    containerOnly:         number;
+    runtimeOnly:           number;
+    unreachableCandidates: number;
+    monitoredContainers:   number;
+  };
+  rows: RuntimeVulnerabilityRow[];
+}
+
+export interface RuntimeDashboardResponse {
+  summary: {
+    totalFindings:        number;
+    activeAttacks24h:     number;
+    exploitsSucceeded24h: number;
+    falsePositives24h:    number;
+    healthyAgents:        number;
+    totalAgents:          number;
+  };
+  mitreTactics: Array<{ tactic: string; count: number; techniques: string[] }>;
+  topAttackers: Array<{ ip: string; count: number; country: string | null; agents: string[] }>;
+  topAgents:    Array<{ name: string; findings: number; lastSeen: string | null }>;
+  recentEvents: Array<{
+    id:             string;
+    severity:       string;
+    title:          string;
+    scanner:        string;
+    ruleId:         string | null;
+    lastSeen:       string;
+    attackerIp:     string | null;
+    wazuhAgentName: string | null;
+    mitreTactics:   string[];
+  }>;
+  agentHealth: Array<{
+    id:                string;
+    wazuhAgentId:      string;
+    wazuhAgentName:    string;
+    status:            "HEALTHY" | "STALE" | "OFFLINE" | "UNKNOWN";
+    lastHeartbeatAt:   string | null;
+    lastAlertAt:       string | null;
+    agentVersion:      string | null;
+    linkedContainerId: string | null;
+  }>;
+  compliance: {
+    pci_dss:     string[];
+    gdpr:        string[];
+    hipaa:       string[];
+    nist_800_53: string[];
+    tsc:         string[];
+  };
+}
 
 export const complianceApi = {
   frameworks: () =>

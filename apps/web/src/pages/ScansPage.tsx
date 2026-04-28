@@ -8,11 +8,14 @@ import { formatRelative } from "../lib/utils";
 import type { ScanJob } from "@devsecops/types";
 
 // Unified target-type tag — matches TargetTag component. Neutral chip,
-// colour lives only in the icon (slate / blue / teal — harmonious cool family).
+// repo/container keep slate/blue tints; the domain icon uses gray-300 (light
+// silver) so every Globe in the app (dashboard tabs, stats cards, recent
+// scans, top targets, finding chips) reads as the same web semantic without
+// competing with the indigo action accent.
 const TYPE_ICONS: Record<string, React.ReactNode> = {
   REPOSITORY: <GitBranch className="h-3.5 w-3.5 text-slate-400" />,
   CONTAINER:  <Box        className="h-3.5 w-3.5 text-blue-400"  />,
-  DOMAIN:     <Globe      className="h-3.5 w-3.5 text-teal-400"  />,
+  DOMAIN:     <Globe      className="h-3.5 w-3.5 text-gray-300"  />,
 };
 
 const TYPE_CHIP = "bg-gray-800/80 text-gray-300 border border-gray-700/60";
@@ -47,18 +50,36 @@ type CrawlerProgress = {
   elapsedSecs:  number;
 };
 
-/** Subscribe to SSE for a scan job. Returns the latest phase progress (0-99)
- *  and the latest crawler progress snapshot (null until the first event). */
+/** Subscribe to SSE for a scan job. Returns the latest phase progress (0-99),
+ *  the current phase name (snake_case from the scanner), and the latest
+ *  crawler progress snapshot (null until the first event).
+ *
+ *  `seedPct` / `seedPhase` come from the scan object's `currentPhasePct` /
+ *  `currentPhase` fields — the API caches the last emitted progress in memory
+ *  so a fresh page load (or SSE reconnect after a drop) hydrates the bar
+ *  immediately, instead of staring at "Scanning…" until the next phase
+ *  boundary fires (Nuclei sits silent for ~25 min). */
 function usePhaseProgress(
   scanId: string,
-  active: boolean
-): { phasePct: number | null; crawler: CrawlerProgress | null } {
-  const [phasePct, setPct] = useState<number | null>(null);
+  active: boolean,
+  seedPct: number | null = null,
+  seedPhase: string | null = null,
+): { phasePct: number | null; phase: string | null; crawler: CrawlerProgress | null } {
+  const [phasePct, setPct] = useState<number | null>(seedPct);
+  const [phase, setPhase] = useState<string | null>(seedPhase);
   const [crawler, setCrawler] = useState<CrawlerProgress | null>(null);
   const esRef = useRef<EventSource | null>(null);
 
+  // Re-hydrate when the seed values change (e.g. on a refetch after the API
+  // has cached a newer phase). Don't downgrade to null if we already have
+  // newer state from SSE — only adopt seed values that are actually newer.
   useEffect(() => {
-    if (!active) { setPct(null); setCrawler(null); return; }
+    if (seedPct !== null) setPct((prev) => (prev === null ? seedPct : prev));
+    if (seedPhase !== null) setPhase((prev) => (prev === null ? seedPhase : prev));
+  }, [seedPct, seedPhase]);
+
+  useEffect(() => {
+    if (!active) { setPct(null); setPhase(null); setCrawler(null); return; }
     if (esRef.current) return; // already connected
 
     const es = new EventSource(`/api/scans/${scanId}/events`);
@@ -67,8 +88,14 @@ function usePhaseProgress(
     es.onmessage = (ev) => {
       try {
         const data = JSON.parse(ev.data);
-        if (data.type === "PHASE_PROGRESS" && typeof data.pct === "number") {
-          setPct(data.pct);
+        if (data.type === "PHASE_PROGRESS") {
+          if (typeof data.pct === "number") setPct(data.pct);
+          // The scanner emits a phase name on every progress callback (e.g.
+          // "spider_started", "active_scanning"). Stash it so the UI can show
+          // *what* the scanner is doing, not just how far along it is.
+          if (typeof data.phase === "string" && data.phase.length > 0) {
+            setPhase(data.phase);
+          }
         }
         if (data.type === "CRAWLER_PROGRESS") {
           setCrawler({
@@ -94,7 +121,65 @@ function usePhaseProgress(
     };
   }, [scanId, active]);
 
-  return { phasePct, crawler };
+  return { phasePct, phase, crawler };
+}
+
+/** Map raw scanner phase identifiers to human-readable labels. Falls back to
+ *  a snake_case → Title Case transform for any phase we haven't seen yet, so
+ *  new scanner phases automatically show up readable without code changes. */
+const PHASE_LABELS: Record<string, string> = {
+  probing:                 "Probing target",
+  auth_configured:         "Authentication configured",
+  playwright_crawl_done:   "Browser crawl complete",
+  katana_crawl_done:       "Katana crawl complete",
+  ffuf_discovery_done:     "FFUF discovery complete",
+  graphql_discovery_done:  "GraphQL discovery complete",
+  spider_started:          "Spider started",
+  spidering:               "Spidering",
+  spider_done:             "Spider complete",
+  active_scan_started:     "Active scan started",
+  active_scanning:         "Active scanning",
+  active_scan_done:        "Active scan complete",
+  active_scan_skipped:     "Active scan skipped — harvesting alerts",
+  collecting:              "Collecting findings",
+  confirming_findings:     "Confirming findings",
+  nuclei_api_scan:         "Nuclei API scan",
+  targeted_checks:         "Targeted checks",
+  scanning:                "Scanning",
+  // PENTEST_FULL phase labels (orchestrator emits these via _report_progress).
+  // Each phase has _started, _done, and _failed variants — _failed is emitted
+  // when the phase callable raises so the bar still advances past a broken
+  // scanner instead of stalling at the same %.
+  crawler_started:           "Crawling URLs",
+  crawler_done:              "Crawl complete",
+  recon_started:             "Recon (subfinder + httpx)",
+  recon_done:                "Recon complete",
+  recon_failed:              "Recon failed — continuing",
+  discovery_started:         "Discovery (nmap + ffuf)",
+  discovery_done:            "Discovery complete",
+  discovery_failed:          "Discovery failed — continuing",
+  // Recon and Discovery now run in parallel as a single segment
+  recon_discovery_started:   "Recon + Discovery (parallel)",
+  recon_discovery_done:      "Recon + Discovery complete",
+  vuln_scan_started:         "Vuln scan (Nuclei + Nikto + testssl)",
+  vuln_scan_done:            "Vuln scan complete",
+  vuln_scan_failed:          "Vuln scan failed — continuing",
+  targeted_checks_started: "Targeted checks (CORS, SSRF, IDOR…)",
+  targeted_checks_done:    "Targeted checks complete",
+  exploit_started:         "Exploitation (SQLMap + XSStrike)",
+  exploit_done:            "Exploitation complete",
+  exploit_failed:          "Exploitation failed — continuing",
+  finalizing:              "Finalizing",
+  done:                    "Finalizing",
+};
+function humanizePhase(raw: string): string {
+  if (PHASE_LABELS[raw]) return PHASE_LABELS[raw]!;
+  // Generic fallback: spider_done → "Spider done"
+  return raw
+    .split("_")
+    .filter(Boolean)
+    .map((w, i) => i === 0 ? w.charAt(0).toUpperCase() + w.slice(1) : w)
+    .join(" ");
 }
 
 /** Truncate a URL to its path (host elided) for compact progress display. */
@@ -111,7 +196,16 @@ function shortUrl(u: string): string {
 /** Thin animated progress bar for PENDING / RUNNING scans */
 function ScanProgressBar({ scan }: { scan: ScanJob }) {
   const isActive = scan.status === "PENDING" || scan.status === "RUNNING";
-  const { phasePct, crawler } = usePhaseProgress(scan.id, isActive);
+  // `currentPhasePct` / `currentPhase` come from the API's in-memory progress
+  // cache; if the user reloaded the page mid-scan, these seed the SSE hook
+  // so the progress bar appears immediately rather than waiting for the
+  // next phase boundary (which can be 25 min away during Nuclei).
+  const { phasePct, phase, crawler } = usePhaseProgress(
+    scan.id,
+    isActive,
+    (scan as { currentPhasePct?: number | null }).currentPhasePct ?? null,
+    (scan as { currentPhase?:    string | null }).currentPhase    ?? null,
+  );
 
   if (!isActive) return null;
 
@@ -122,23 +216,44 @@ function ScanProgressBar({ scan }: { scan: ScanJob }) {
   const displayPct = phasePct !== null ? phasePct : coarsePct;
   const isIndeterminate = displayPct === 0 && scan.status === "RUNNING";
 
+  // Promote the live phase name to the prominent top-row label so the user
+  // sees what's actually happening ("Vuln scan (Nuclei + Nikto + testssl)")
+  // instead of the generic "Scanning…" placeholder. Falls back gracefully
+  // when no phase has been emitted yet (PENDING, or pre-first-emit RUNNING).
   let label: string;
+  let labelIsPhase = false;
   if (scan.status === "PENDING") {
     label = "Queued…";
-  } else if (phasePct !== null) {
-    // We have real phase progress — show it
-    label = done > 0 ? `${done} / ${total} scanners` : "Scanning…";
+  } else if (phase) {
+    label = humanizePhase(phase);
+    labelIsPhase = true;
   } else if (done > 0) {
     label = `${done} / ${total} scanners`;
   } else {
     label = "Scanning…";
   }
 
+  // Secondary line: only worth showing when there are multiple scanner types
+  // (e.g., a multi-scan repo job: SAST + SCA + Secrets…). Single-scanner runs
+  // like PENTEST_FULL would just say "0 / 1 scanners" — noise.
+  const showScannerCount = total > 1 && labelIsPhase;
+
   return (
     <div className="mt-1.5 space-y-0.5">
-      <div className="flex items-center justify-between text-[10px] text-gray-500">
-        <span>{label}</span>
-        {displayPct > 0 && <span>{displayPct}%</span>}
+      <div className="flex items-center justify-between gap-2 text-[10px]">
+        <span
+          className={`flex min-w-0 items-center gap-1.5 ${
+            labelIsPhase ? "text-indigo-300" : "text-gray-500"
+          }`}
+        >
+          {labelIsPhase && (
+            <span className="inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-indigo-400" />
+          )}
+          <span className="truncate" title={labelIsPhase ? phase ?? undefined : undefined}>
+            {label}
+          </span>
+        </span>
+        {displayPct > 0 && <span className="shrink-0 text-gray-500">{displayPct}%</span>}
       </div>
       <div className="h-1 w-full overflow-hidden rounded-full bg-gray-700">
         {!isIndeterminate ? (
@@ -150,6 +265,11 @@ function ScanProgressBar({ scan }: { scan: ScanJob }) {
           <div className="h-full w-1/3 animate-pulse rounded-full bg-indigo-600/60" />
         )}
       </div>
+      {showScannerCount && (
+        <div className="pt-0.5 text-[10px] text-gray-500">
+          {done} / {total} scanners
+        </div>
+      )}
       {crawler && (
         <div className="flex items-center justify-between gap-2 pt-0.5 text-[10px] text-gray-500">
           <span className="font-mono">
@@ -363,10 +483,18 @@ function ScanDiffModal({ scanId, onClose }: { scanId: string; onClose: () => voi
             <div className="flex h-40 items-center justify-center text-red-400 text-sm">
               Failed to load diff — {(error as Error).message}
             </div>
-          ) : !data ? null : !data.scanA ? (
-            <div className="flex h-40 flex-col items-center justify-center gap-2 text-sm text-gray-500">
+          ) : !data ? null : !data.scanA || data.reason ? (
+            <div className="flex h-40 flex-col items-center justify-center gap-2 px-6 text-center text-sm text-gray-500">
               <GitCompare className="h-6 w-6" />
-              <p>No earlier completed scan for this target — nothing to compare against yet.</p>
+              <p>
+                {data.reason
+                  ?? "No earlier completed scan for this target — nothing to compare against yet."}
+              </p>
+              {data.effectiveScanTypes !== undefined && data.effectiveScanTypes.length === 0 && (
+                <p className="text-[11px] text-gray-600">
+                  Re-run the scan with overlapping scan types to enable comparison.
+                </p>
+              )}
             </div>
           ) : (
             <>
@@ -376,41 +504,77 @@ function ScanDiffModal({ scanId, onClose }: { scanId: string; onClose: () => voi
                   <div className="text-[10px] uppercase tracking-wider text-gray-500">Previous (A)</div>
                   <div className="font-mono text-gray-300">{data.scanA.id.slice(-12)}</div>
                   <div className="mt-0.5 text-gray-500">{fmtWhen(data.scanA.completedAt)}</div>
+                  {typeof data.scanA.targetUrlCount === "number" && (
+                    <div className="mt-1 text-[10px] text-gray-500">
+                      {data.scanA.targetUrlCount} URL(s) examined
+                    </div>
+                  )}
                 </div>
                 <div className="rounded border border-indigo-900/50 bg-indigo-950/30 px-3 py-2">
                   <div className="text-[10px] uppercase tracking-wider text-indigo-400">This scan (B)</div>
                   <div className="font-mono text-gray-200">{data.scanB.id.slice(-12)}</div>
                   <div className="mt-0.5 text-gray-500">{fmtWhen(data.scanB.completedAt)}</div>
+                  {typeof data.scanB.targetUrlCount === "number" && (
+                    <div className="mt-1 text-[10px] text-gray-500">
+                      {data.scanB.targetUrlCount} URL(s) examined
+                    </div>
+                  )}
                 </div>
               </div>
 
               {/* Summary pills */}
-              <div className="mb-4 flex items-center gap-2 text-xs">
+              <div className="mb-4 flex flex-wrap items-center gap-2 text-xs">
                 <span className="inline-flex items-center gap-1 rounded bg-emerald-950/60 px-2 py-1 text-emerald-300">
                   <Plus className="h-3 w-3" /> {data.added.length} added
                 </span>
                 <span className="inline-flex items-center gap-1 rounded bg-rose-950/60 px-2 py-1 text-rose-300">
-                  <Minus className="h-3 w-3" /> {data.removed.length} removed
+                  <Minus className="h-3 w-3" /> {data.removed.length} fixed
                 </span>
+                {data.scopeAware &&
+                  (data.outOfScopeRemoved.length > 0 || data.outOfScopeAdded.length > 0) && (
+                  <span
+                    className="inline-flex items-center gap-1 rounded bg-amber-950/60 px-2 py-1 text-amber-300"
+                    title="Findings whose URL was not re-visited in the other scan — we cannot claim they were fixed or newly introduced"
+                  >
+                    {data.outOfScopeRemoved.length + data.outOfScopeAdded.length} out of scope
+                  </span>
+                )}
                 <span className="inline-flex items-center gap-1 rounded bg-gray-800/70 px-2 py-1 text-gray-400">
                   {data.unchangedCount} unchanged
                 </span>
               </div>
 
-              {/* Added */}
+              {/* Added (in-scope) */}
               <DiffSection
                 title="Added in this scan"
                 Icon={Plus}
                 tone="emerald"
                 items={data.added}
               />
-              {/* Removed */}
+              {/* Removed (in-scope = genuinely fixed) */}
               <DiffSection
-                title="No longer present"
+                title={data.scopeAware ? "Fixed (URL re-scanned, vuln gone)" : "No longer present"}
                 Icon={Minus}
                 tone="rose"
                 items={data.removed}
               />
+              {/* Out of scope this run — only shown when scope info is available */}
+              {data.scopeAware && data.outOfScopeRemoved.length > 0 && (
+                <DiffSection
+                  title="Not re-checked (URL never visited in this scan)"
+                  Icon={Minus}
+                  tone="amber"
+                  items={data.outOfScopeRemoved}
+                />
+              )}
+              {data.scopeAware && data.outOfScopeAdded.length > 0 && (
+                <DiffSection
+                  title="Newly discovered URL surface"
+                  Icon={Plus}
+                  tone="amber"
+                  items={data.outOfScopeAdded}
+                />
+              )}
             </>
           )}
         </div>
@@ -424,11 +588,14 @@ function DiffSection({
 }: {
   title: string;
   Icon: React.ComponentType<{ className?: string }>;
-  tone: "emerald" | "rose";
+  tone: "emerald" | "rose" | "amber";
   items: Array<{ id: string; title: string; severity: string; scanType: string; filePath?: string | null; lineStart?: number | null }>;
 }) {
   if (items.length === 0) return null;
-  const toneText = tone === "emerald" ? "text-emerald-400" : "text-rose-400";
+  const toneText =
+    tone === "emerald" ? "text-emerald-400"
+    : tone === "rose"  ? "text-rose-400"
+    :                    "text-amber-400";
   return (
     <div className="mb-5">
       <div className={`mb-2 flex items-center gap-1.5 text-xs font-semibold ${toneText}`}>

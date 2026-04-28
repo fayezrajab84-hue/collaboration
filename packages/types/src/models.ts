@@ -1,4 +1,5 @@
 import type {
+  AgentStatus,
   ApplicationEnv,
   Confidence,
   Criticality,
@@ -117,6 +118,178 @@ export interface Domain {
   servesContainerIds?: string[];
   /** Phase 27.5 — Application boundary; null until operator assigns. */
   applicationId?: string | null;
+}
+
+// ── Phase 28 Slice B — Wazuh runtime agent (WorkloadAgent) ───────────────
+// One row per Wazuh-enrolled host/container the operator wants to surface
+// in BreachLens. linkedContainerId is the operator-declared graph edge that
+// lets runtimeBridge correlate RUNTIME findings with CONTAINER/DAST findings
+// on the same workload.
+export interface WorkloadAgent {
+  id:                string;
+  orgId:             string;
+  wazuhAgentId:      string;
+  wazuhAgentName:    string;
+  status:            AgentStatus;
+  linkedContainerId: string | null;
+  agentVersion:      string | null;
+  lastHeartbeatAt:   Date | string | null;
+  lastAlertAt:       Date | string | null;
+  lastIngestError:   string | null;
+  createdAt:         Date | string;
+  updatedAt:         Date | string;
+  // List endpoint hydrates these so the table doesn't N+1 fetch.
+  linkedContainerImageRef?: string | null;
+  runtimeFindingCount?:     number;
+}
+
+export interface DiscoveredAgent {
+  wazuhAgentId:   string;
+  wazuhAgentName: string;
+  status:         AgentStatus;
+  agentVersion:   string | null;
+}
+
+export interface DiscoverAgentsResponse {
+  enabled:    boolean;
+  reason?:    string;
+  discovered: DiscoveredAgent[];
+  upserted:   number;
+}
+
+export interface IngestSummary {
+  enabled:           boolean;
+  reason?:           string;
+  agentsConsidered:  number;
+  agentsPolled:      number;
+  alertsIngested:    number;
+  findingsTouched:   number;
+  errors:            string[];
+}
+
+// ── Phase 28 — Runtime evidence shape ─────────────────────────────────
+//
+// Structured payload stored on `Finding.evidence` when scanType=RUNTIME.
+// Produced by `extractRuntimeEvidence` in wazuhIngestService.ts. The
+// flat top-level fields are what the Findings table renders as columns;
+// the nested groups carry the richer drill-down for the drawer's
+// "Threat Hunt" panel.
+//
+// Every field is optional and best-effort — different Wazuh rule
+// classes populate different subsets. The UI handles missing fields
+// gracefully (renders "—").
+export interface RuntimeEvidence {
+  // ── FLAT (column-friendly) ─────────────────────────────────────
+  attackerIp?:      string | null;
+  attackerIpCount?: number;
+  attackerIps?:     string[];
+  destIp?:          string | null;
+  destPort?:        string | null;
+  srcPort?:         string | null;
+  userAgent?:       string | null;
+
+  processId?:       number | string | null;
+  processName?:     string | null;
+  processCommand?:  string | null;
+  parentProcessId?: number | string | null;
+  workingDir?:      string | null;
+
+  user?:            string | null;
+
+  filePath?:        string | null;
+  fileHash?:        string | null;
+  fileEvent?:       string | null;
+  fileSizeAfter?:   string | number | null;
+
+  wazuhRuleId?:     string;
+  wazuhRuleLevel?:  number;
+  wazuhAgentName?:  string;
+  wazuhAgentId?:    string;
+  location?:        string | null;
+  fullLog?:         string | null;
+
+  occurrencesInBucket?: number;
+  occurrencesTotal?:    number;
+  firstAlertAt?:        string | null;
+  latestAlertAt?:       string | null;
+
+  // ── NESTED (drawer-rendering) ──────────────────────────────────
+  geo?: {
+    country?:   string | null;
+    city?:      string | null;
+    region?:    string | null;
+    latitude?:  number | null;
+    longitude?: number | null;
+    distinctCountries?: string[];
+  } | null;
+
+  mitre?: {
+    ids:        string[];
+    tactics:    string[];
+    techniques: string[];
+  } | null;
+
+  compliance?: {
+    pci_dss:     string[];
+    gdpr:        string[];
+    hipaa:       string[];
+    nist_800_53: string[];
+    tsc:         string[];
+  } | null;
+
+  vulnerability?: {
+    cve?:            string | null;
+    cvss3Score?:     number | null;
+    packageName?:    string | null;
+    packageVersion?: string | null;
+    severity?:       string | null;
+    status?:         string | null;
+    title?:          string | null;
+    published?:      string | null;
+    updated?:        string | null;
+  } | null;
+
+  processTree?: {
+    pid?:           number | string | null;
+    name?:          string | null;
+    executable?:    string | null;
+    cmdline?:       string | null;
+    parent?:        string | number | null;
+    parentName?:    string | null;
+    ppid?:          number | string | null;
+    ruid?:          number | string | null;
+    euid?:          number | string | null;
+    privEscalated?: boolean;
+  } | null;
+
+  http?: {
+    url?:        string | null;
+    method?:     string | null;
+    statusCode?: string | number | null;
+    referrer?:   string | null;
+    userAgent?:  string | null;
+    tld?:        string | null;
+  } | null;
+
+  audit?: {
+    type?:    string | null;
+    key?:     string | null;
+    session?: string | null;
+    success?: string | null;
+  } | null;
+
+  detection?: {
+    ruleId:        string;
+    ruleLevel:     number;
+    groups:        string[];
+    frequency?:    number | null;
+    firedTimes?:   number | null;
+    decoder?:      string | null;
+    manager?:      string | null;
+    cluster?:      string | null;
+    predecoder?:   string | null;
+    agentLabels?:  Record<string, unknown> | null;
+  };
 }
 
 // ── Phase 27.5 — Application boundary ────────────────────────────────────

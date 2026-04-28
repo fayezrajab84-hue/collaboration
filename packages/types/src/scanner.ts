@@ -82,4 +82,16 @@ export interface ScanResult {
   findings: NormalizedFinding[];
   error?: string;
   durationMs: number;
+
+  /**
+   * The set of URLs / paths the scanner actually examined this run.
+   * Populated by PENTEST_FULL (from the Phase 0.5 crawler) and DAST recording
+   * scans (from the recorded ZAP context). Empty for repo/container scanners
+   * — they don't operate on URL surfaces.
+   *
+   * Persisted to ScanJob.targetUrls and consumed by the diff endpoint to
+   * distinguish "genuinely fixed" findings (URL was in scope, vuln gone)
+   * from "out of scope this run" findings (URL never re-visited).
+   */
+  targetUrls?: string[];
 }

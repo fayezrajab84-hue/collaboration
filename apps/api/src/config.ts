@@ -33,6 +33,14 @@ const envSchema = z.object({
   WAZUH_API_URL:                z.string().url().optional(),
   WAZUH_API_USER:               z.string().optional(),
   WAZUH_API_PASSWORD:           z.string().optional(),
+  // Wazuh 4.x stores alerts in the indexer (OpenSearch), not behind the
+  // manager API. The manager API is still used for agent management /
+  // status; alerts come from the indexer via basic auth on
+  // /wazuh-alerts-*/_search. When unset, the ingest service falls back
+  // to the manager-API path (works on older Wazuh deployments only).
+  WAZUH_INDEXER_URL:            z.string().url().optional(),
+  WAZUH_INDEXER_USER:           z.string().optional(),
+  WAZUH_INDEXER_PASSWORD:       z.string().optional(),
   WAZUH_POLL_INTERVAL_SECONDS:  z.coerce.number().int().min(30).default(60),
   // For tests / dev: skip TLS validation against Wazuh's self-signed certs.
   // Defaults to false (strict TLS) in production.

@@ -290,6 +290,41 @@ async def dast_recording_scan(payload: dict) -> ScanResult:
         )
 
 
+@app.post("/dast/recording/urls")
+async def dast_recording_urls(payload: dict) -> dict:
+    """
+    Body: { targetUrl: str }
+    Returns { urls: [str, ...], count: int } from ZAP's site tree, filtered
+    to URLs whose URL string starts with `baseurl=targetUrl` (i.e. the
+    proxy-recorded surface for THIS domain only).
+
+    Used by /api/domains/:id/urls so the UI can render a tree view of
+    everything ZAP has captured — both during an active recording and
+    after the operator stops (the context lives until /dast/recording/stop
+    actively removes it).
+    """
+    target_url = payload.get("targetUrl")
+    if not target_url:
+        raise HTTPException(status_code=400, detail="targetUrl required")
+    session = InteractiveDASTSession()
+    loop = asyncio.get_event_loop()
+
+    def _fetch() -> dict:
+        try:
+            resp = session._zap("/JSON/core/view/urls/", {"baseurl": target_url})
+            urls = resp.get("urls", []) or []
+            # Defensive cap — UI tree gets unwieldy past a few thousand.
+            return {"urls": urls[:5000], "count": len(urls)}
+        except Exception as exc:
+            # Empty list is correct when there's no ACTIVE context (e.g.
+            # ZAP was restarted, or the user stopped the recording). The
+            # API translates this to a 200 with empty URLs so the UI shows
+            # "No URLs recorded yet" instead of an error.
+            return {"urls": [], "count": 0, "error": str(exc)[:300]}
+
+    return await loop.run_in_executor(_executor, _fetch)
+
+
 @app.post("/dast/recording/stop")
 async def dast_recording_stop(payload: dict) -> dict:
     """Body: { contextName: str }. Removes the ZAP context."""

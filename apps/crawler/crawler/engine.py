@@ -44,6 +44,7 @@ from models import (
 )
 
 from .auth import apply_auth
+from .csrf import refresh_from_page
 from .dedupe import in_scope, normalize_url
 from .forms import walk_forms
 from .openapi import fetch_and_extract_urls
@@ -118,6 +119,13 @@ async def crawl(req: CrawlRequest) -> CrawlResult:
                 lambda r: _on_request(r, xhr_observed, discovered, origin_host, req),
             )
 
+            # Headers that must ride alongside any context.set_extra_http_headers
+            # call (Playwright replaces, doesn't merge). Seeded with run_id and
+            # extended by auth (bearer / api-key) and CSRF below.
+            preserved_headers: dict[str, str] = {}
+            if req.run_id:
+                preserved_headers["X-Crawler-Run-Id"] = req.run_id
+
             # Authenticate before the BFS starts so session cookies / bearer
             # tokens / injected headers apply to every subsequent request.
             if req.auth is not None:
@@ -130,6 +138,16 @@ async def crawl(req: CrawlRequest) -> CrawlResult:
                     log.warning("auth failed, continuing unauthenticated: %s", result.evidence)
                 else:
                     log.info("auth succeeded: %s", result.evidence)
+                # Auth strategies may have set additional headers (HeaderAuth /
+                # OAuth2Auth bearer). Carry them forward so the CSRF refresh
+                # below preserves them. Playwright doesn't expose the active
+                # extra headers, so we re-derive from the auth payload.
+                preserved_headers.update(_headers_from_auth(req.auth))
+
+            # CSRF token tracked across the crawl. Primed on the first BFS
+            # iteration's _visit() and re-read after every navigation by the
+            # in-loop refresh below. Stays None when csrf isn't configured.
+            csrf_token: Optional[str] = None
 
             # OpenAPI pre-seeding — every declared path becomes a BFS seed,
             # so the crawl sees endpoints even if nothing links to them.
@@ -179,6 +197,27 @@ async def crawl(req: CrawlRequest) -> CrawlResult:
 
                 nav = await _visit(page, task, max_depth, queue, req)
                 discovered.append(nav)
+
+                # Refresh CSRF token from the just-loaded page. Some apps
+                # rotate per-request — re-reading is the safe default. No-op
+                # when csrf isn't configured, or when the page didn't expose
+                # the source (we keep the previous token).
+                if req.csrf is not None and nav.error is None:
+                    prev_token = csrf_token
+                    csrf_token = await refresh_from_page(
+                        context, page, req.csrf,
+                        preserve=preserved_headers,
+                        last_token=csrf_token,
+                    )
+                    # One-shot warning if the very first page didn't yield a
+                    # token — helps users diagnose a wrong selector / cookie
+                    # name without flooding logs from every subsequent page.
+                    if prev_token is None and csrf_token is None and len(visited) == 1:
+                        src = req.csrf.meta_selector or req.csrf.cookie_name or "?"
+                        warnings.append(
+                            f"csrf source '{src}' not found on seed page; "
+                            f"subsequent requests will lack {req.csrf.header_name}"
+                        )
 
                 # Emit progress (throttled internally).
                 await reporter.emit(
@@ -419,6 +458,36 @@ def _dedupe_xhr(calls: list[XhrCall]) -> list[XhrCall]:
         seen.add(key)
         out.append(c)
     return out
+
+
+def _headers_from_auth(auth) -> dict[str, str]:  # type: ignore[no-untyped-def]
+    """
+    Re-derive the headers an auth strategy installed on the BrowserContext.
+
+    Used by the CSRF refresh path so we don't blow away bearer tokens / API
+    keys when calling ``set_extra_http_headers`` to inject a CSRF header
+    (Playwright's setter is a replacement, not a merge).
+
+    FormAuth and CookieAuth use cookies, not headers — return empty.
+    HeaderAuth installs the user's headers verbatim.
+    OAuth2Auth installs ``Authorization: Bearer <token>`` after a token grant;
+    we can't re-fetch the token here, so the actual bearer is preserved by
+    the apply_auth call's set_extra_http_headers and we simply leave room for
+    it here. (The CSRF refresh runs AFTER apply_auth, so the bearer will
+    still be the active extra header until the first refresh — at which
+    point we lose it.) For simplicity we mirror the user-supplied OAuth2
+    extra_headers; sites that need both bearer + CSRF should use HeaderAuth
+    with a pre-acquired token instead until we evolve the API.
+    """
+    # Local import — avoids circular import (auth.py also imports from
+    # models, engine.py already imports auth).
+    from models import HeaderAuth, OAuth2Auth
+
+    if isinstance(auth, HeaderAuth):
+        return dict(auth.headers)
+    if isinstance(auth, OAuth2Auth):
+        return dict(auth.extra_headers)
+    return {}
 
 
 # Silence asyncio "Event loop is closed" noise on shutdown — it's harmless

@@ -152,6 +152,49 @@ router.get("/", async (req, res, next) => {
       ]});
     }
 
+    // Tag filter — single value, applied as a server-side predicate
+    // alias (see services/findingTags.ts). Cards on the dashboard +
+    // navigation drilldowns share the same tag vocabulary so card-
+    // count and destination-count agree by construction.
+    //
+    // Implementation: tag.candidateWhere narrows via indexed columns
+    // first; the JSON-evidence portion is evaluated in JS against the
+    // narrowed candidate set. We do that AFTER the main query by
+    // post-filtering page rows; for now the tag filter is in addition
+    // to other filters but doesn't paginate inside the predicate
+    // (acceptable for runtime which has hundreds of findings, not
+    // millions). Two-stage filtering means the result is always a
+    // subset of the cheap candidate set.
+    const tagParam = q["tag"];
+    let tagPredicate: ((f: import("../../services/findingTags.js").Finding & {
+      scanType: string; severity: string; evidence: unknown; aiFpAnalysis: unknown;
+      title: string | null; description: string | null;
+    }) => boolean) | null = null;
+    if (typeof tagParam === "string" && tagParam.length > 0) {
+      const { isKnownTag, tagCandidateWhere, findingMatchesTag } = await import("../../services/findingTags.js");
+      if (isKnownTag(tagParam)) {
+        const tagWhere = tagCandidateWhere(tagParam);
+        // Merge tagWhere into the main where via AND so other filters compose.
+        andClauses.push(tagWhere as Record<string, unknown>);
+        tagPredicate = (f) => findingMatchesTag(f, tagParam);
+      }
+    }
+
+    // MITRE tactic filter — single value, scoped to RUNTIME findings
+    // whose evidence.mitre.tactics[] contains the requested tactic.
+    // Drives the "click a tactic on the dashboard → see those findings"
+    // flow. Single-value for now since clicks are per-bar; multi-select
+    // can be added later by switching to a raw OR-of-array_contains.
+    const mitreTactic = q["mitreTactic"];
+    if (typeof mitreTactic === "string" && mitreTactic.length > 0) {
+      andClauses.push({
+        evidence: {
+          path:           ["mitre", "tactics"],
+          array_contains: mitreTactic,
+        },
+      });
+    }
+
     // AI triage filter — multi-select OR of state predicates.
     //   analysed   → aiAnalysedAt IS NOT NULL
     //   fix_ready  → aiFixSuggestedAt IS NOT NULL
@@ -197,6 +240,34 @@ router.get("/", async (req, res, next) => {
     const orderBy = sortField
       ? [{ [sortField]: sortOrder ?? "desc" } as Record<string, "asc"|"desc">, { firstSeen: "desc" as const }]
       : [{ severity: "asc" as const }, { firstSeen: "desc" as const }];
+
+    // Pagination + tag-predicate interaction:
+    //   When a tag filter is in play we evaluate the JS predicate
+    //   AFTER the DB query and re-page client-side. The cheap
+    //   candidate WHERE we added above already narrows by indexed
+    //   columns (scanType + severity + status), so the JS pass runs
+    //   against a small set. We also recompute total honestly by
+    //   counting the post-filter set rather than the pre-filter set
+    //   so pagination + total stay consistent with what the operator
+    //   sees.
+    if (tagPredicate) {
+      // Fetch all candidates (no skip/take), filter, then page.
+      const candidates = await prisma.finding.findMany({
+        where,
+        orderBy,
+        include: {
+          ticket:     { select: { id: true, status: true, jiraKey: true } },
+          repository: { select: { fullName: true } },
+          container:  { select: { imageRef: true } },
+          domain:     { select: { domain: true } },
+        },
+      });
+      const filtered = candidates.filter((f) => tagPredicate!(f as never));
+      const total    = filtered.length;
+      const data     = filtered.slice(skip, skip + limit);
+      res.json({ data, total, page, limit, totalPages: Math.ceil(total / limit) });
+      return;
+    }
 
     const [data, total] = await Promise.all([
       prisma.finding.findMany({
@@ -271,7 +342,28 @@ router.get("/summary/stats", async (req, res, next) => {
     const scopedWhere: Record<string, unknown> = { orgId: member.orgId };
     if (scanTypeFilter) scopedWhere["scanType"] = { in: scanTypeFilter };
 
-    const [severityCounts, scanTypeCounts, statusCounts, confidenceCounts] = await Promise.all([
+    // Target filter — accepts repoId / containerId / domainId as
+    // comma-separated query strings. Combined with OR semantics so the
+    // dashboard's per-target dropdown can scope every aggregation
+    // (severity / status / confidence) to one or more selected targets
+    // without touching the unscoped scanTypeCounts (which drives the
+    // tab strip's totals and stays stable).
+    const parseTargetParam = (raw: unknown): string[] => {
+      if (raw == null || raw === "") return [];
+      const arr = Array.isArray(raw) ? raw : [raw];
+      return arr.flatMap((x) => (typeof x === "string" ? x.split(",") : []))
+        .map((s) => s.trim()).filter(Boolean);
+    };
+    const repoIds      = parseTargetParam(req.query["repoId"]);
+    const containerIds = parseTargetParam(req.query["containerId"]);
+    const domainIds    = parseTargetParam(req.query["domainId"]);
+    const targetOr: Array<Record<string, unknown>> = [];
+    if (repoIds.length)      targetOr.push({ repositoryId: { in: repoIds } });
+    if (containerIds.length) targetOr.push({ containerId:  { in: containerIds } });
+    if (domainIds.length)    targetOr.push({ domainId:     { in: domainIds } });
+    if (targetOr.length) scopedWhere["OR"] = targetOr;
+
+    const [severityCounts, scanTypeCounts, statusCounts, confidenceCounts, severityByScanType] = await Promise.all([
       prisma.finding.groupBy({
         by: ["severity"],
         where: { ...scopedWhere, status: { notIn: ["FALSE_POSITIVE", "IGNORED"] } },
@@ -293,9 +385,36 @@ router.get("/summary/stats", async (req, res, next) => {
         where: { ...scopedWhere, status: { notIn: ["FALSE_POSITIVE", "IGNORED"] } },
         _count: true,
       }),
+      // Cross-product: drives the dashboard's stacked-column chart that
+      // shows severity composition per scan type ("where are my
+      // CRITICALs concentrated?"). Scoped same as severityCounts so the
+      // visible total matches.
+      prisma.finding.groupBy({
+        by: ["scanType", "severity"],
+        where: { ...scopedWhere, status: { notIn: ["FALSE_POSITIVE", "IGNORED"] } },
+        _count: true,
+      }),
     ]);
 
-    res.json({ severityCounts, scanTypeCounts, statusCounts, confidenceCounts });
+    // Per-tag counts — drives dashboard cards. Uses the same predicate
+    // evaluator as /findings?tag=, so card-count ≡ destination-count
+    // by construction. Two-stage: cheap WHERE narrows by indexed
+    // columns, then JS predicate against the narrowed set.
+    const { ALL_TAGS, tagCandidateWhere, countByTag, TAG_PREDICATE_SELECT } =
+      await import("../../services/findingTags.js");
+    const tagCounts: Record<string, number> = {};
+    await Promise.all(ALL_TAGS.map(async (tag) => {
+      const candidateRows = await prisma.finding.findMany({
+        where:  { orgId: member.orgId, ...tagCandidateWhere(tag) },
+        select: TAG_PREDICATE_SELECT,
+      });
+      tagCounts[tag] = countByTag(candidateRows, tag);
+    }));
+
+    res.json({
+      severityCounts, scanTypeCounts, statusCounts, confidenceCounts, severityByScanType,
+      tagCounts,
+    });
   } catch (err) { next(err); }
 });
 

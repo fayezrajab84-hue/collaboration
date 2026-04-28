@@ -2,11 +2,16 @@
  * attackPathSummaryService — Phase 27.5.x AI summary for one attack chain.
  *
  * Takes a chain (already loaded via attackPathService.getAttackPath), builds
- * a structured prompt that explains the SAST → DAST → PENTEST → cloud walk
- * in plain language, calls invokeAI through the existing aiClient (so org
- * routing + provider selection + telemetry all work uniformly), persists
- * the result to AttackPathSummary, and returns the cached row on subsequent
- * calls unless the chain's content has changed.
+ * a structured prompt that explains the SAST → CONTAINER → DAST → PENTEST →
+ * RUNTIME walk in plain language, calls invokeAI through the existing
+ * aiClient (so org routing + provider selection + telemetry all work
+ * uniformly), persists the result to AttackPathSummary, and returns the
+ * cached row on subsequent calls unless the chain's content has changed.
+ *
+ * Phase 28 update: the system prompt now teaches the model that RUNTIME
+ * findings come from a Wazuh agent on the live workload — so the narrative
+ * can complete the "did this attack actually happen?" question with
+ * runtime evidence, not just static + dynamic test findings.
  *
  * Design choices:
  *   - Manual trigger only (operator clicks "Generate"). Auto-summarising
@@ -230,6 +235,27 @@ const SYSTEM_PROMPT = `You are a senior application-security engineer writing a 
 Your job: explain AND verify the chain, returned as JSON
 {title, tldr, narrative, verdict, verdictConfidence, verdictReasoning}.
 
+SCAN TYPES YOU WILL SEE (in entry → deepest order):
+  SAST          — static analysis flagged a vulnerable code path in the
+                   source repository.
+  SCA           — third-party dependency CVE in the source.
+  SECRET        — leaked credential / token in source.
+  IAC           — infrastructure-as-code misconfiguration.
+  CONTAINER     — image-layer CVE in the deployed container image.
+  DAST          — black-box scanner (ZAP) reproduced the issue against
+                   the running web application.
+  PENTEST_FULL  — active exploit (sqlmap, xsstrike, dalfox, commix,
+                   nuclei, etc.) confirmed the vulnerability with a
+                   reproducer payload.
+  RUNTIME       — Wazuh agent on the LIVE workload host emitted a
+                   security alert (file integrity, audit, network,
+                   command execution). RUNTIME = "this attack is
+                   happening or has happened on the production host",
+                   not just "could happen". Treat RUNTIME as the
+                   strongest signal in the chain when present — it
+                   collapses the gap between "vulnerability exists"
+                   and "vulnerability is being exploited".
+
 NARRATIVE GUIDELINES — BE TIGHT. The operator skims dozens of chains per
 day. Every word costs them attention. Each field has a strict budget;
 anything you write past it is wasted.
@@ -239,31 +265,41 @@ anything you write past it is wasted.
     "SQL injection in DVWA login form"
     "RCE via libxml2 CVE-2022-2309 in API container"
     "XSS reflected on /vulnerabilities/xss_r/"
+    "Live RCE on dvwa-host — CVE chain matches Wazuh alerts"
   No generic phrases like "security issues found". No trailing period.
 
 - tldr: ONE short sentence (max 200 chars). The impact summary a CISO
-  would read first. Lead with impact, then root cause. Example:
-  "SQL injection in the user-edit endpoint enables full DB takeover via
-  the login form."
+  would read first. Lead with impact, then root cause. When RUNTIME
+  alerts are present, lead with that — it's the difference between a
+  potential and an active incident. Example:
+  "Wazuh fired 8 high-severity audit alerts on dvwa-host matching the
+  same SQLi endpoint a PENTEST exploit reproduced — likely active
+  exploitation in production."
 
 - narrative: 3-5 BULLET POINTS (max 600 chars total — that's ~120 chars
   per bullet, ~16 words each). Format: each bullet on its own line,
   prefixed with "• " (bullet character + space). NO paragraphs. NO
-  intros. NO concluding sentences. Each bullet states ONE fact:
+  intros. NO concluding sentences. When RUNTIME nodes are present in
+  the chain, ALWAYS include a runtime bullet — its omission is a bug.
+  Each bullet states ONE fact:
     • Source: SAST flagged unsanitized $_GET in login.php:6
     • Reach: DAST confirmed reflection at /login.php
     • Container: libapache2 has CVE-2021-44790 (RCE)
     • Asset link: container serves the dvwa domain
     • Exploit: PENTEST extracted DB schema via this URL
-  Use specific artifacts (URLs, file paths, CVEs, line numbers). NO
-  generic security advice. NO "the chain shows" / "this represents".
-  Just facts.
+    • Runtime: Wazuh fired 9 audit alerts on dvwa-host matching this URL
+  Use specific artifacts (URLs, file paths, CVEs, line numbers, Wazuh
+  rule IDs, agent names). NO generic security advice. NO "the chain
+  shows" / "this represents". Just facts.
 
 VERIFICATION (you are the second-opinion sanity check on the engine's chain)
 - verdict: pick exactly one of:
     "LIKELY_REAL"   — the bridge edges are semantically sound; this chain
                        describes a plausible attack path an attacker could
-                       walk. The findings genuinely relate.
+                       walk. The findings genuinely relate. RUNTIME
+                       alerts on the same workload as a CONFIRMED exploit
+                       finding push strongly toward LIKELY_REAL — that's
+                       production telemetry, not just test findings.
     "MIXED_SIGNAL"  — some edges are real, some are coincidental token
                        matches; the chain is a starting point for triage
                        but shouldn't be treated as a single attack path.
@@ -272,10 +308,14 @@ VERIFICATION (you are the second-opinion sanity check on the engine's chain)
                        chain doesn't describe a meaningful attack flow.
 - verdictConfidence: integer 0-100. Your self-reported certainty in the
   verdict. Sub-50 means "I'm guessing"; 80+ means "I'd stake my reputation".
+  When RUNTIME nodes corroborate a CONFIRMED PENTEST/DAST node on the same
+  workload, raise confidence — these are independent observations from
+  different telemetry pipelines converging on the same conclusion.
 - verdictReasoning: 1-2 short sentences (max 300 chars). Cite the
   specific bridge edges and why they're (or aren't) real. Example:
   "SAST exec.php and DAST /vulnerabilities/exec/ share both endpoint and
-  rule class — real chain. Container glibc CVE is blast-radius noise."
+  rule class — real chain. Wazuh runtime alerts on dvwa-host independently
+  corroborate the PENTEST exploit; this is happening in production."
 
 CONFIDENCE DISCIPLINE
 - NEVER overclaim: if a node's confidence is POSSIBLE, say "likely" not

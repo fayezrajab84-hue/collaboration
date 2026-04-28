@@ -47,6 +47,12 @@ class CrawlRequest(BaseModel):
     openapi_spec_url: Optional[str] = None
     interact_with_forms: bool = False
 
+    # Optional CSRF token tracking. When set, the crawler will read the token
+    # from the configured source (HTML meta tag or cookie) on each navigation
+    # and re-inject it as an HTTP header on subsequent requests. Required for
+    # SPAs that protect mutating endpoints with X-CSRF-Token / X-XSRF-TOKEN.
+    csrf: Optional["CsrfConfig"] = None
+
     # Phase 5 — live progress callback. When set, the crawler POSTs periodic
     # progress events to ``<progress_callback_url>`` so the API can forward
     # them to the frontend via SSE. Non-fatal on failure.
@@ -129,6 +135,37 @@ AuthConfig = Annotated[
     Union[FormAuth, HeaderAuth, CookieAuth, OAuth2Auth],
     Field(discriminator="type"),
 ]
+
+
+# ── CSRF ───────────────────────────────────────────────────────────────────
+
+class CsrfConfig(BaseModel):
+    """
+    CSRF token tracking config.
+
+    The crawler reads the token from one of two sources after each page load
+    and injects it on subsequent requests as ``header_name``. At least one
+    of ``meta_selector`` or ``cookie_name`` must be set; if both are set,
+    meta-tag is tried first and falls back to cookie.
+
+    Examples:
+      Rails / Laravel SPA:
+        meta_selector='meta[name="csrf-token"]', header_name='X-CSRF-Token'
+      Django / Express csurf:
+        cookie_name='XSRF-TOKEN', header_name='X-XSRF-TOKEN'
+    """
+    # CSS selector for an HTML element whose `content` attribute holds the
+    # token. Common pattern: `meta[name="csrf-token"]`.
+    meta_selector: Optional[str] = None
+
+    # Name of the cookie holding the token (double-submit pattern).
+    cookie_name: Optional[str] = None
+
+    # Header name to inject on subsequent requests. Defaults to the
+    # most-common name; per-app overrides are common (e.g. `X-XSRF-TOKEN`).
+    header_name: str = "X-CSRF-Token"
+
+
 CrawlRequest.model_rebuild()
 
 

@@ -19,9 +19,12 @@ export default function DomainApiSpecPanel({ domainId }: Props) {
     enabled: open,
   });
 
+  // Use the import endpoint so YAML files work and validation runs server-side.
+  // The legacy `saveApiSpec` PUT (pre-parsed JSON) is still wired in api.ts
+  // for programmatic callers.
   const save = useMutation({
-    mutationFn: (data: { filename: string; specJson: Record<string, unknown> }) =>
-      domainsApi.saveApiSpec(domainId, data),
+    mutationFn: ({ fileText, filename }: { fileText: string; filename: string }) =>
+      domainsApi.importApiSpec(domainId, fileText, filename),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["domain-apispec", domainId] }),
   });
 
@@ -33,13 +36,10 @@ export default function DomainApiSpecPanel({ domainId }: Props) {
   const handleFile = (file: File) => {
     const reader = new FileReader();
     reader.onload = (e) => {
-      try {
-        const specJson = JSON.parse(e.target?.result as string);
-        save.mutate({ filename: file.name, specJson });
-      } catch {
-        alert("Invalid JSON — please upload a valid OpenAPI/Swagger JSON file.");
-      }
+      const fileText = String(e.target?.result ?? "");
+      save.mutate({ fileText, filename: file.name });
     };
+    reader.onerror = () => alert("Could not read file.");
     reader.readAsText(file);
   };
 
@@ -104,7 +104,12 @@ export default function DomainApiSpecPanel({ domainId }: Props) {
             </p>
           )}
           {save.isError && (
-            <p className="text-xs text-red-400">{(save.error as Error).message}</p>
+            <p className="text-xs text-red-400">
+              {/* Surface the server's parse/validation error from the JSON
+                  body if present (axios attaches it to err.response.data). */}
+              {((save.error as { response?: { data?: { error?: string } } })?.response?.data?.error)
+                ?? (save.error as Error).message}
+            </p>
           )}
 
           {hasSpec && (

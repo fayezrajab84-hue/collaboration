@@ -537,6 +537,12 @@ services:
       WAZUH_API_PASSWORD: ${WAZUH_API_PASSWORD:-admin}
       WAZUH_INSECURE_TLS: ${WAZUH_INSECURE_TLS:-true}
       WAZUH_POLL_INTERVAL_SECONDS: ${WAZUH_POLL_INTERVAL_SECONDS:-60}
+      # Wazuh 4.x: alerts live in the indexer (port 9200), not behind the
+      # manager API. When unset, ingest falls back to the legacy manager
+      # path which only works on Wazuh ≤ 4.12.
+      WAZUH_INDEXER_URL:      ${WAZUH_INDEXER_URL:-}
+      WAZUH_INDEXER_USER:     ${WAZUH_INDEXER_USER:-}
+      WAZUH_INDEXER_PASSWORD: ${WAZUH_INDEXER_PASSWORD:-}
     networks:
       - internal
       - public     # needs outbound: GitHub API calls

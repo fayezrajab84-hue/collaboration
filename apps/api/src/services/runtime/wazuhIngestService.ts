@@ -254,12 +254,24 @@ async function ingestAlertsForAgent(
       (rep.location ? ` · location: ${rep.location}` : "") +
       ` · ${bucketAlerts.length} occurrence(s) in this hour.`;
 
+    // Phase 28 enrichment — extract threat-hunting attributes from the
+    // representative alert so the Findings UI can render rich columns
+    // (attacker IP, process, user, MITRE, host) without forcing the
+    // operator to dig into rawOutput.alerts[].
+    //
+    // All of these are best-effort: not every Wazuh rule populates them.
+    // The UI handles missing fields gracefully (renders "—").
+    const evidence = extractRuntimeEvidence(rep, bucketAlerts);
+
     // Upsert by unique fingerprint — same key → same Finding row updated.
     const existing = await prisma.finding.findUnique({ where: { fingerprint } });
     if (existing) {
       const previousAlerts = Array.isArray((existing.rawOutput as { alerts?: unknown })?.alerts)
         ? ((existing.rawOutput as { alerts: unknown[] }).alerts)
         : [];
+      // Merge evidence — keep the most-recent attacker context (from `rep`)
+      // but bump occurrence + lastSeen counts.
+      const previousEvidence = (existing.evidence as Record<string, unknown> | null) ?? {};
       await prisma.finding.update({
         where: { id: existing.id },
         data: {
@@ -269,6 +281,14 @@ async function ingestAlertsForAgent(
           rawOutput: {
             ...(existing.rawOutput as object),
             alerts: [...previousAlerts, ...bucketAlerts].slice(-200),
+          },
+          evidence: {
+            ...previousEvidence,
+            ...evidence,
+            // Cumulative occurrence count: sum of prior + this bucket.
+            occurrencesTotal:
+              ((previousEvidence["occurrencesTotal"] as number | undefined) ?? 0) +
+              bucketAlerts.length,
           },
         },
       });
@@ -292,6 +312,10 @@ async function ingestAlertsForAgent(
           fingerprint,
           confidence:  "POSSIBLE",
           rawOutput:   { source: "wazuh", agent_id: rep.agent_id, alerts: bucketAlerts },
+          evidence: {
+            ...evidence,
+            occurrencesTotal: bucketAlerts.length,
+          },
           // MITRE / Wazuh group tags surface as references — useful when
           // operators pivot from a finding into ATT&CK navigator etc.
           references:  [
@@ -307,6 +331,310 @@ async function ingestAlertsForAgent(
   return touched;
 }
 
+// ── Threat-hunting evidence extraction ───────────────────────────────────
+//
+// Pulls structured fields out of a Wazuh alert that map to the standard
+// "what / where / who / how / why-it-matters" forensic dimensions.
+//
+// Shape rules:
+//   - Top-level fields are the FLAT, most-queried attributes — these
+//     are what the Findings table renders as columns and what the
+//     Findings filter chips key off (attackerIp, processId, etc).
+//   - Nested groups (`geo`, `mitre`, `compliance`, `vulnerability`,
+//     `processTree`, `http`, `audit`, `detection`) carry the richer
+//     drill-down structure for the drawer's "Threat Hunt" panel.
+//   - Every field is optional and best-effort. Different Wazuh rule
+//     classes populate different fields:
+//       web-server  → http.*, attackerIp, geo.*
+//       audit       → process.*, processTree.*, audit.*
+//       syscheck    → file*
+//       VD          → vulnerability.*
+//       all rules   → mitre.*, compliance.*, detection.*
+//   - The UI renders "—" for missing fields so partial population is
+//     fine; the goal is "capture everything that's there", not
+//     "synthesize what's missing".
+//
+// Bound the JSON: aggregate fields (attackerIps[]) cap at 10 entries,
+// nested arrays cap at the same. A single Finding row's evidence
+// shouldn't exceed ~5KB even for high-traffic rules.
+function extractRuntimeEvidence(
+  rep:     WazuhAlert,
+  bucket:  WazuhAlert[],
+): Record<string, unknown> {
+  const r = rep as Record<string, unknown>;
+  const data     = (r["data"]     as Record<string, unknown> | undefined) ?? {};
+  const proc     = (data["process"] as Record<string, unknown> | undefined)
+                    ?? (r["process"]    as Record<string, unknown> | undefined)
+                    ?? {};
+  const syscheck = r["syscheck"] as Record<string, unknown> | undefined;
+  const audit    = data["audit"]   as Record<string, unknown> | undefined;
+  const geo      = r["GeoLocation"] as Record<string, unknown> | undefined;
+  const vuln     = r["vulnerability"] as Record<string, unknown> | undefined;
+  const ruleRaw  = (r["rule"] as Record<string, unknown> | undefined) ?? {};
+  const mitreObj = ruleRaw["mitre"] as Record<string, unknown> | undefined;
+  const decoder  = r["decoder"]   as Record<string, unknown> | undefined;
+  const manager  = r["manager"]   as Record<string, unknown> | undefined;
+  const cluster  = r["cluster"]   as Record<string, unknown> | undefined;
+  const predec   = r["predecoder"] as Record<string, unknown> | undefined;
+  const agent    = r["agent"]     as Record<string, unknown> | undefined;
+
+  // Aggregate distinct attacker IPs + countries across the bucket —
+  // operators care when a single rule fires from many IPs (broad scan)
+  // vs one IP (targeted attack). Cap to 10 to keep JSON bounded.
+  //
+  // Wazuh puts srcip in different paths per rule class:
+  //   audit / network rules:       a.srcip       (top-level)
+  //   web-accesslog rules:         a.data.srcip  (nested under data)
+  //   sshd / firewall rules:       a.src_ip      (with underscore)
+  // Read all three, prefer top-level when present.
+  const distinctIps       = new Set<string>();
+  const distinctCountries = new Set<string>();
+  for (const a of bucket) {
+    const ad = a["data"] as Record<string, unknown> | undefined;
+    const ip = (a["src_ip"] as string | undefined)
+              ?? (a["srcip"]  as string | undefined)
+              ?? (ad?.["srcip"] as string | undefined);
+    if (ip) distinctIps.add(ip);
+    const ageo = a["GeoLocation"] as Record<string, unknown> | undefined;
+    const country = ageo?.["country_name"] as string | undefined;
+    if (country) distinctCountries.add(country);
+  }
+
+  // Privilege escalation signal — ruid != euid means a setuid binary
+  // ran. Common in container escapes. Cheap to compute, useful to
+  // surface as a flag in the UI.
+  const ruid = proc["ruid"] as number | string | undefined;
+  const euid = proc["euid"] as number | string | undefined;
+  const privEscalated =
+    ruid !== undefined && euid !== undefined && String(ruid) !== String(euid);
+
+  return {
+    // ── FLAT TOP-LEVEL (most-queried, drives filter chips + columns) ──
+    // Wazuh's per-rule-class field locations vary; read all three so
+    // web-accesslog (data.srcip), audit (top-level srcip), and sshd
+    // (top-level src_ip) all populate the same flat field.
+    attackerIp:      (r["src_ip"] as string | undefined)
+                      ?? (r["srcip"]  as string | undefined)
+                      ?? (data["srcip"] as string | undefined) ?? null,
+    attackerIpCount: distinctIps.size,
+    attackerIps:     [...distinctIps].slice(0, 10),
+    destIp:          (data["dstip"] as string | undefined) ?? null,
+    destPort:        (data["dstport"] as string | undefined) ?? null,
+    srcPort:         (data["srcport"] as string | undefined) ?? null,
+    userAgent:       (data["user_agent"] as string | undefined)
+                      ?? (r["user_agent"] as string | undefined) ?? null,
+
+    processId:       proc["pid"]     ?? null,
+    processName:     proc["name"]    ?? proc["exe"] ?? null,
+    processCommand:  proc["cmdline"] ?? proc["command"] ?? data["command"] ?? null,
+    parentProcessId: proc["parent"]  ?? proc["ppid"]    ?? null,
+    workingDir:      data["cwd"]     ?? null,
+
+    user: (r["dstuser"] as string | undefined)
+            ?? (data["dstuser"] as string | undefined)
+            ?? (data["user"] as string | undefined)
+            ?? (r["srcuser"] as string | undefined) ?? null,
+
+    filePath:      syscheck?.["path"] ?? null,
+    fileHash:      syscheck?.["sha256_after"] ?? syscheck?.["sha1_after"] ?? syscheck?.["md5_after"] ?? null,
+    fileEvent:     syscheck?.["event"] ?? null,
+    fileSizeAfter: syscheck?.["size_after"] ?? null,
+
+    wazuhRuleId:    rep.rule.id,
+    wazuhRuleLevel: rep.rule.level,
+    wazuhAgentName: rep.agent_name,
+    wazuhAgentId:   rep.agent_id,
+    location:       rep.location ?? null,
+    fullLog:        rep.full_log ?? null,
+
+    occurrencesInBucket: bucket.length,
+    firstAlertAt:        bucket[0]?.timestamp ?? null,
+    latestAlertAt:       bucket[bucket.length - 1]?.timestamp ?? null,
+
+    // ── NESTED GROUPS (drill-down for the drawer) ───────────────────
+
+    // Geographic enrichment from Wazuh's MaxMind integration. Country +
+    // city are the high-signal fields; lat/lon enables map widgets.
+    // Cap distinctCountries to 5 — beyond that "this rule fires from
+    // everywhere" is the takeaway.
+    geo: geo ? {
+      country:   geo["country_name"] ?? null,
+      city:      geo["city_name"]    ?? null,
+      region:    geo["region_name"]  ?? null,
+      latitude:  (geo["location"] as Record<string, unknown> | undefined)?.["lat"] ?? null,
+      longitude: (geo["location"] as Record<string, unknown> | undefined)?.["lon"] ?? null,
+      distinctCountries: [...distinctCountries].slice(0, 5),
+    } : null,
+
+    // Full MITRE mapping — IDs, tactics, technique names. The flat
+    // `references` array on Finding gets the IDs alone (for legacy
+    // compatibility); this captures the readable tactic + technique.
+    mitre: (rep.rule.mitre_ids?.length || mitreObj) ? {
+      ids:        rep.rule.mitre_ids ?? (mitreObj?.["id"] as string[] | undefined) ?? [],
+      tactics:    (mitreObj?.["tactic"]    as string[] | undefined) ?? [],
+      techniques: (mitreObj?.["technique"] as string[] | undefined) ?? [],
+    } : null,
+
+    // Compliance framework mappings — each finding can claim coverage
+    // under PCI-DSS / GDPR / HIPAA / NIST / SOC 2 controls. Big for
+    // procurement: "show me all findings tagged PCI-DSS 6.5".
+    compliance: hasComplianceMappings(ruleRaw) ? {
+      pci_dss:     (ruleRaw["pci_dss"]     as string[] | undefined) ?? [],
+      gdpr:        (ruleRaw["gdpr"]        as string[] | undefined) ?? [],
+      hipaa:       (ruleRaw["hipaa"]       as string[] | undefined) ?? [],
+      nist_800_53: (ruleRaw["nist_800_53"] as string[] | undefined) ?? [],
+      tsc:         (ruleRaw["tsc"]         as string[] | undefined) ?? [],
+    } : null,
+
+    // Wazuh's Vulnerability Detector module — when active, reports CVE
+    // findings on the host's installed packages. Overlaps with our
+    // CONTAINER scanner findings (same CVE → bridge edge candidate).
+    vulnerability: vuln ? {
+      cve:            vuln["cve"] ?? null,
+      cvss3Score:     ((vuln["cvss"] as Record<string, unknown> | undefined)?.["cvss3"] as Record<string, unknown> | undefined)?.["base_score"] ?? null,
+      packageName:    (vuln["package"] as Record<string, unknown> | undefined)?.["name"] ?? null,
+      packageVersion: (vuln["package"] as Record<string, unknown> | undefined)?.["version"] ?? null,
+      severity:       vuln["severity"] ?? null,
+      status:         vuln["status"]   ?? null,
+      title:          vuln["title"]    ?? null,
+      published:      vuln["published"] ?? null,
+      updated:        vuln["updated"]  ?? null,
+    } : null,
+
+    // Process tree for audit-rule findings — shows parent → child
+    // lineage and the privilege-escalation signal. The drawer renders
+    // this as a "apache → bash → id" chain.
+    processTree: (proc["pid"] || proc["name"]) ? {
+      pid:           proc["pid"]     ?? null,
+      name:          proc["name"]    ?? proc["exe"] ?? null,
+      executable:    proc["exe"]     ?? null,
+      cmdline:       proc["cmdline"] ?? proc["command"] ?? null,
+      parent:        proc["parent"]  ?? null,
+      parentName:    proc["parent_name"] ?? null,
+      ppid:          proc["ppid"]    ?? null,
+      ruid:          ruid ?? null,
+      euid:          euid ?? null,
+      privEscalated,
+    } : null,
+
+    // HTTP forensics for web-rule findings — full request context.
+    http: (data["url"] || data["user_agent"]) ? {
+      url:        data["url"] ?? null,
+      method:     data["method"] ?? data["protocol"] ?? null,
+      statusCode: data["id"] ?? null,
+      referrer:   data["referrer"] ?? null,
+      userAgent:  data["user_agent"] ?? null,
+      tld:        data["tld"] ?? null,
+    } : null,
+
+    // Audit-rule details — captures the audit subsystem's own fields
+    // (audit type EXECVE/OPEN/CONNECT, audit key, session ID).
+    audit: audit ? {
+      type:    audit["type"]    ?? null,
+      key:     audit["key"]     ?? null,
+      session: audit["session"] ?? null,
+      success: audit["success"] ?? null,
+    } : null,
+
+    // Detection metadata — rule-engine internals. Useful for tuning
+    // ("rule 31151 fires 200x/day; let's review it") and for
+    // multi-cluster deployments where it matters which manager fired.
+    detection: {
+      ruleId:       rep.rule.id,
+      ruleLevel:    rep.rule.level,
+      groups:       rep.rule.groups ?? [],
+      frequency:    ruleRaw["frequency"] ?? null,
+      firedTimes:   ruleRaw["firedtimes"] ?? null,
+      decoder:      decoder?.["name"] ?? null,
+      manager:      manager?.["name"] ?? null,
+      cluster:      cluster?.["name"] ?? null,
+      predecoder:   predec?.["program_name"] ?? null,
+      agentLabels:  (agent?.["labels"] as Record<string, unknown> | undefined) ?? null,
+    },
+  };
+}
+
+/** True when at least one compliance framework array has entries — keeps
+ *  empty `compliance: {}` blocks out of evidence for rules that don't
+ *  carry framework mappings. */
+function hasComplianceMappings(rule: Record<string, unknown>): boolean {
+  for (const key of ["pci_dss", "gdpr", "hipaa", "nist_800_53", "tsc"]) {
+    const v = rule[key];
+    if (Array.isArray(v) && v.length > 0) return true;
+  }
+  return false;
+}
+
+// ── Backfill ────────────────────────────────────────────────────────────
+//
+// One-shot re-extraction across every RUNTIME finding whose `evidence`
+// column is missing/empty. Works because we already preserve the raw
+// Wazuh alerts in `rawOutput.alerts[]` (capped at 200 per finding) —
+// running them back through extractRuntimeEvidence reconstructs the
+// rich threat-hunt fields the original ingest didn't capture.
+//
+// Idempotent: subsequent calls only touch findings whose evidence is
+// still empty. Safe to re-run after deploys.
+
+export interface BackfillResult {
+  considered: number;
+  updated:    number;
+  skipped:    number;
+  errors:     string[];
+}
+
+export async function backfillRuntimeEvidence(): Promise<BackfillResult> {
+  const result: BackfillResult = {
+    considered: 0,
+    updated:    0,
+    skipped:    0,
+    errors:     [],
+  };
+
+  // Load every RUNTIME finding lacking evidence. Prisma's JSON null
+  // semantics are tricky — `equals: null` matches the JSON literal
+  // `null`, not SQL NULL — so use Prisma.AnyNull (or DbNull) to catch
+  // both. Then we additionally filter the {} case in JS.
+  const allRuntime = await prisma.finding.findMany({
+    where: { scanType: "RUNTIME" },
+    select: { id: true, rawOutput: true, evidence: true },
+  });
+  const candidates = allRuntime.filter((f) => {
+    if (f.evidence === null || f.evidence === undefined) return true;
+    if (typeof f.evidence === "object" && Object.keys(f.evidence as object).length === 0) return true;
+    return false;
+  });
+  result.considered = candidates.length;
+
+  for (const f of candidates) {
+    try {
+      const raw = f.rawOutput as { alerts?: unknown[] } | null;
+      const alerts = (raw?.alerts ?? []) as WazuhAlert[];
+      if (alerts.length === 0) {
+        result.skipped++;
+        continue;
+      }
+      const rep = alerts[alerts.length - 1] ?? alerts[0]!;
+      const evidence = extractRuntimeEvidence(rep, alerts);
+      await prisma.finding.update({
+        where: { id: f.id },
+        data: {
+          evidence: {
+            ...evidence,
+            occurrencesTotal: alerts.length,
+          },
+        },
+      });
+      result.updated++;
+    } catch (err) {
+      const msg = (err as Error).message;
+      result.errors.push(`${f.id}: ${msg}`);
+    }
+  }
+
+  return result;
+}
+
 // ── Wazuh REST client ─────────────────────────────────────────────────────
 
 export type AlertsFetcher = (
@@ -315,22 +643,31 @@ export type AlertsFetcher = (
 ) => Promise<WazuhAlert[]>;
 
 /**
- * Production fetcher — calls the Wazuh manager's `/security/user/authenticate`
- * to get a JWT, then `/security/user/me` and the alerts endpoint. We cache
- * the JWT in-process for its TTL.
+ * Production fetcher — Wazuh 4.x architecture:
+ *   - Manager API (port 55000, JWT auth) → agent management, config status
+ *   - **Indexer API (port 9200, basic auth) → alerts** ← what we need here
  *
- * Note: Wazuh's REST API has historically shifted between Wazuh Indexer
- * (OpenSearch-backed) and Wazuh Manager APIs. This implementation targets
- * the Wazuh Manager API 4.x, which most installs use. Operators on the
- * indexer-only path (no Manager API exposed) need the Phase 28.x adapter.
+ * Routing rule: if `WAZUH_INDEXER_URL` is configured, query the indexer
+ * directly (the modern + correct path). Otherwise fall back to the
+ * legacy manager-passthrough endpoint, which works on older Wazuh
+ * deployments where the manager proxied indexer queries — but Wazuh
+ * 4.13+ doesn't expose that route, so the fallback returns an empty
+ * array on modern stacks.
+ *
+ * The two paths return the same OpenSearch hit shape, so the rest of
+ * the ingest pipeline doesn't care which one fired.
  */
 async function defaultAlertsFetcher(wazuhAgentId: string, sinceIso: string): Promise<WazuhAlert[]> {
-  const client = await getWazuhClient();
-  // Wazuh Manager API queries an OpenSearch index for alerts. The manager
-  // exposes `/elasticsearch/wazuh-alerts-*/_search` as a passthrough.
-  // For environments using Wazuh's API "alerts" endpoint, swap in here.
+  const client = config.WAZUH_INDEXER_URL
+    ? await getIndexerClient()
+    : await getWazuhClient();
+
+  const path = config.WAZUH_INDEXER_URL
+    ? `/wazuh-alerts-*/_search`
+    : `/security/events/_search`;
+
   const response = await client.post(
-    `/security/events/_search`,
+    path,
     {
       size: 200,
       query: {
@@ -346,6 +683,31 @@ async function defaultAlertsFetcher(wazuhAgentId: string, sinceIso: string): Pro
   );
   const hits = (response.data?.hits?.hits ?? []) as Array<{ _source: Record<string, unknown> }>;
   return hits.map((hit) => normaliseAlert(hit._source)).filter(Boolean) as WazuhAlert[];
+}
+
+let cachedIndexerClient: AxiosInstance | null = null;
+
+async function getIndexerClient(): Promise<AxiosInstance> {
+  if (cachedIndexerClient) return cachedIndexerClient;
+  if (!config.WAZUH_INDEXER_URL || !config.WAZUH_INDEXER_USER || !config.WAZUH_INDEXER_PASSWORD) {
+    throw new Error(
+      "WAZUH_INDEXER_URL + WAZUH_INDEXER_USER + WAZUH_INDEXER_PASSWORD required when querying alerts via the indexer",
+    );
+  }
+  // OpenSearch / Wazuh indexer uses HTTP Basic Auth on every request —
+  // no JWT, no token refresh.
+  cachedIndexerClient = axios.create({
+    baseURL: config.WAZUH_INDEXER_URL,
+    timeout: 15_000,
+    auth: {
+      username: config.WAZUH_INDEXER_USER,
+      password: config.WAZUH_INDEXER_PASSWORD,
+    },
+    ...(config.WAZUH_INSECURE_TLS
+      ? { httpsAgent: new HttpsAgent({ rejectUnauthorized: false }) }
+      : {}),
+  });
+  return cachedIndexerClient;
 }
 
 let cachedClient: AxiosInstance | null = null;
@@ -425,3 +787,98 @@ function sha256(input: string): string {
 
 // Test-only re-export so unit tests can construct a fake fetcher easily.
 export const _testing = { healthFromHeartbeat, sha256 };
+
+// ── Phase 28 Slice B — operator-facing agent discovery ───────────────────
+//
+// The ingestion sweep (above) only polls agents already enrolled into
+// `WorkloadAgent`. Discovery is the inverse: ask the Wazuh manager which
+// agents *exist*, and surface them so the operator can link each one to a
+// Container in BreachLens.
+//
+// Idempotent: re-running discovery upserts on (orgId, wazuhAgentId) and
+// preserves the operator's `linkedContainerId` choice. Discovery does NOT
+// remove agents that have left the Wazuh manager — that's a destructive
+// op that should be operator-confirmed via DELETE /api/runtime/agents/:id.
+
+export interface DiscoveredAgent {
+  wazuhAgentId:   string;
+  wazuhAgentName: string;
+  status:         "HEALTHY" | "STALE" | "OFFLINE" | "UNKNOWN";
+  agentVersion:   string | null;
+}
+
+export interface DiscoverResult {
+  enabled:    boolean;
+  reason?:    string;
+  discovered: DiscoveredAgent[];
+  upserted:   number;  // rows we touched in WorkloadAgent
+}
+
+/**
+ * Pull the agent list from the Wazuh manager and upsert WorkloadAgent
+ * rows for the given org. Returns the discovered list so the UI can
+ * render "found N agents" feedback.
+ *
+ * Skips agent ID "000" (Wazuh's manager-self entry — never useful as a
+ * runtime monitoring target).
+ */
+export async function discoverWazuhAgents(orgId: string): Promise<DiscoverResult> {
+  if (!config.WAZUH_API_URL) {
+    return {
+      enabled:    false,
+      reason:     "WAZUH_API_URL not configured — runtime discovery disabled",
+      discovered: [],
+      upserted:   0,
+    };
+  }
+
+  const client = await getWazuhClient();
+  // Wazuh's /agents response: { data: { affected_items: [...] } }. Each
+  // item has id, name, status ("active"|"disconnected"|"never_connected"|
+  // "pending"), version, lastKeepAlive, etc.
+  const response = await client.get(`/agents`, {
+    params: { limit: 500 }, // sane upper bound; pagination can come later
+  });
+  const items = (response.data?.data?.affected_items ?? []) as Array<Record<string, unknown>>;
+
+  const discovered: DiscoveredAgent[] = [];
+  for (const item of items) {
+    const wazuhAgentId = String(item["id"] ?? "");
+    if (!wazuhAgentId || wazuhAgentId === "000") continue; // skip manager-self
+    const wazuhAgentName = String(item["name"] ?? wazuhAgentId);
+    const wazuhStatus    = String(item["status"] ?? "").toLowerCase();
+    const status: DiscoveredAgent["status"] =
+      wazuhStatus === "active"       ? "HEALTHY"
+      : wazuhStatus === "pending"    ? "STALE"
+      : wazuhStatus === "disconnected" || wazuhStatus === "never_connected" ? "OFFLINE"
+      : "UNKNOWN";
+    const agentVersion = item["version"] ? String(item["version"]) : null;
+
+    discovered.push({ wazuhAgentId, wazuhAgentName, status, agentVersion });
+
+    await prisma.workloadAgent.upsert({
+      where: { orgId_wazuhAgentId: { orgId, wazuhAgentId } },
+      // On create: stamp every column. On update: keep the operator's
+      // linkedContainerId choice; only refresh status / version / name
+      // (in case the agent was renamed in Wazuh).
+      create: {
+        orgId,
+        wazuhAgentId,
+        wazuhAgentName,
+        status,
+        agentVersion,
+      },
+      update: {
+        wazuhAgentName,
+        status,
+        agentVersion,
+      },
+    });
+  }
+
+  return {
+    enabled:    true,
+    discovered,
+    upserted:   discovered.length,
+  };
+}

@@ -95,20 +95,20 @@ export const SEVERITY_CHART: Record<string, string> = {
  * FIXED / IGNORED).  Each value is a complete Tailwind class string that can
  * be spread onto the badge element.
  */
-// FIXED is the empty-state-reward case — the operator just shipped a
-// remediation, the badge should *feel like a reward*. Per UX pattern #4
-// (`breachlens-ux-patterns.md`), zero-vuln / closed-out states use emerald.
-// Teal was used previously to match the cool palette but read as "in
-// progress" rather than "done well"; emerald reads correctly as success
-// and is the only warm hue we make a deliberate exception for.
+// All status badges live on the brand-indigo / muted-gray axis. Earlier
+// FIXED used emerald to "feel like a reward", but the green outlier
+// fought every other pill on the row (severity / confidence / EXPLOIT
+// all use the brand red/indigo family). FIXED stays on indigo — same
+// palette as ACKNOWLEDGED but slightly brighter to communicate "shipped"
+// vs "in flight".
 //
-// ACKNOWLEDGED stays on brand-indigo (in-flow neutral). FALSE_POSITIVE /
-// IGNORED stay on muted gray — they are dismissed but not celebrated.
+// FALSE_POSITIVE / IGNORED stay on muted gray — dismissed, not
+// celebrated. OPEN is the neutral default.
 export const FINDING_STATUS_BADGE: Record<string, { cls: string; label: string }> = {
   OPEN:           { cls: "bg-gray-800/60     text-gray-300     border border-gray-700/50",     label: "Open"           },
   ACKNOWLEDGED:   { cls: "bg-indigo-950/60   text-indigo-300   border border-indigo-800/50",   label: "Acknowledged"   },
   FALSE_POSITIVE: { cls: "bg-gray-800/40     text-gray-500     border border-gray-700/40",     label: "False Positive" },
-  FIXED:          { cls: "bg-emerald-950/40  text-emerald-400  border border-emerald-800/40",  label: "Fixed"          },
+  FIXED:          { cls: "bg-indigo-900/40   text-indigo-200   border border-indigo-700/60",   label: "Fixed"          },
   IGNORED:        { cls: "bg-gray-800/40     text-gray-500     border border-gray-700/40",     label: "Ignored"        },
 };
 

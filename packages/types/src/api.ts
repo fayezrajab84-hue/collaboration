@@ -220,6 +220,15 @@ export interface FindingFilterParams {
   applicationId?: string | string[];
   scanner?: string;
   search?: string;
+  /** Phase 28 — single MITRE tactic name (e.g. "Initial Access"). Filters
+   *  RUNTIME findings whose evidence.mitre.tactics[] contains this value.
+   *  Driven by clicking a tactic bar on the dashboard. */
+  mitreTactic?: string;
+  /** Phase 28 — server-side tag predicate. Known tags:
+   *    runtime-exploit  → RUNTIME + attack-tagged + landed + ≥MEDIUM
+   *    runtime-attack   → RUNTIME + attack-tagged + NOT landed + ≥MEDIUM
+   *  Single source of truth in services/findingTags.ts. */
+  tag?: string;
   page?: number;
   limit?: number;
 }

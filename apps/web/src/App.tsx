@@ -7,6 +7,7 @@ import DashboardPage from "./pages/DashboardPage";
 import RepositoriesPage from "./pages/RepositoriesPage";
 import ContainersPage from "./pages/ContainersPage";
 import DomainsPage from "./pages/DomainsPage";
+import DomainDetailPage from "./pages/DomainDetailPage";
 import FindingsPage from "./pages/FindingsPage";
 import TicketsPage from "./pages/TicketsPage";
 import ScansPage from "./pages/ScansPage";
@@ -17,6 +18,7 @@ import AdminQueuesPage from "./pages/AdminQueuesPage";
 import CompliancePage from "./pages/CompliancePage";
 import AttackPathsPage from "./pages/AttackPathsPage";
 import ApplicationsPage from "./pages/ApplicationsPage";
+import RuntimePage from "./pages/RuntimePage";
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth();
@@ -61,6 +63,8 @@ function AppRoutes() {
         <Route path="repositories" element={<RepositoriesPage />} />
         <Route path="containers" element={<ContainersPage />} />
         <Route path="domains" element={<DomainsPage />} />
+        <Route path="domains/:id" element={<DomainDetailPage />} />
+        <Route path="runtime" element={<RuntimePage />} />
         <Route path="scans" element={<ScansPage />} />
         <Route path="findings" element={<FindingsPage />} />
         <Route path="tickets" element={<TicketsPage />} />

@@ -57,7 +57,21 @@ Scan-type hints:
 - SCA    : Is the vulnerable package actually called at runtime? Is there a patched version in use?
 - SECRET : Does the value look like a real secret or a placeholder/example/dummy?
 - IAC    : Are there compensating controls that mitigate the flagged misconfiguration?
-- DAST / PENTEST : Is the evidence from an actual HTTP response, or a scanner artefact?`;
+- DAST / PENTEST : Is the evidence from an actual HTTP response, or a scanner artefact?
+- RUNTIME: This is a Wazuh IDS alert from production. Apply the THREE STAGES test:
+    1. Is there an attack pattern? (rule.groups contains attack/exploit, or
+       MITRE tactic in {Initial Access, Execution, Privilege Escalation,
+       Defense Evasion, Lateral Movement, Impact, ...})
+    2. Did the response signal success? (HTTP 2xx/3xx, audit success=yes,
+       file integrity event, post-compromise tactic)
+    3. Is the volume credible? (occurrencesTotal — single hit may be
+       reconnaissance noise; sustained hits = real campaign)
+  The rich evidence below — http.url/method/status, mitre.tactics,
+  attackerIp + attackerIpCount, occurrencesTotal, detection.groups —
+  should DOMINATE your verdict for RUNTIME findings. Do NOT say "no
+  endpoint details provided" if http.url is in the evidence; do NOT say
+  "single occurrence" if occurrencesTotal > 1; do NOT say "no exploitation
+  evidence" if statusCode is 2xx on an attack-tagged rule.`;
 
 function buildPrompt(f: Record<string, unknown>): string {
   const lines = [
@@ -75,9 +89,60 @@ function buildPrompt(f: Record<string, unknown>): string {
   if (f["fixVersion"])    lines.push(`Fix available: ${f["fixVersion"]}`);
   if (f["remediation"])   lines.push(`Remediation hint: ${String(f["remediation"]).slice(0, 200)}`);
 
-  // Surface the most telling piece of evidence
   const evidence = f["evidence"] as Record<string, unknown> | null;
-  if (evidence) {
+
+  // RUNTIME findings carry a structured evidence payload from the Wazuh
+  // ingest service (http.*, mitre.*, attackerIp/attackerIps,
+  // occurrencesTotal, detection.*, etc). The AI was previously fed only
+  // title + description and reached "uncertain" verdicts asking for
+  // "endpoint details" + "occurrence counts" — that data IS there, it
+  // just wasn't surfaced. Inline the threat-hunt fields so the model
+  // can apply the three-stages test the system prompt now teaches.
+  if (f["scanType"] === "RUNTIME" && evidence) {
+    const http       = evidence["http"]       as Record<string, unknown> | null;
+    const mitre      = evidence["mitre"]      as { ids?: string[]; tactics?: string[]; techniques?: string[] } | null;
+    const detection  = evidence["detection"]  as Record<string, unknown> | null;
+    const compliance = evidence["compliance"] as Record<string, string[]> | null;
+
+    if (http?.["url"])        lines.push(`HTTP URL: ${http["url"]}`);
+    if (http?.["method"])     lines.push(`HTTP method: ${http["method"]}`);
+    if (http?.["statusCode"]) lines.push(`HTTP status: ${http["statusCode"]}`);
+    if (http?.["userAgent"])  lines.push(`User-Agent: ${String(http["userAgent"]).slice(0, 200)}`);
+
+    if (evidence["attackerIp"]) lines.push(`Attacker IP: ${evidence["attackerIp"]}`);
+    if (Array.isArray(evidence["attackerIps"]) && (evidence["attackerIps"] as string[]).length > 1) {
+      lines.push(`Distinct attacker IPs: ${(evidence["attackerIps"] as string[]).slice(0, 10).join(", ")}`);
+    }
+
+    if (typeof evidence["occurrencesTotal"] === "number") {
+      lines.push(`Total occurrences: ${evidence["occurrencesTotal"]}`);
+    }
+    if (evidence["firstAlertAt"] || evidence["latestAlertAt"]) {
+      lines.push(`Time window: ${evidence["firstAlertAt"] ?? "?"} → ${evidence["latestAlertAt"] ?? "?"}`);
+    }
+
+    if (mitre?.tactics?.length)    lines.push(`MITRE tactic(s): ${mitre.tactics.join(", ")}`);
+    if (mitre?.techniques?.length) lines.push(`MITRE technique(s): ${mitre.techniques.join(", ")} (${(mitre.ids ?? []).join(", ")})`);
+
+    if (detection?.["groups"] && Array.isArray(detection["groups"])) {
+      lines.push(`Wazuh rule groups: ${(detection["groups"] as string[]).join(", ")}`);
+    }
+    if (detection?.["ruleId"])    lines.push(`Wazuh rule ID: ${detection["ruleId"]}`);
+    if (detection?.["ruleLevel"]) lines.push(`Wazuh rule level (0-15): ${detection["ruleLevel"]}`);
+
+    if (evidence["fileEvent"]) lines.push(`File integrity event: ${evidence["fileEvent"]} on ${evidence["filePath"] ?? "?"}`);
+
+    if (compliance) {
+      const frames: string[] = [];
+      if (compliance.pci_dss?.length)     frames.push(`PCI-DSS:${compliance.pci_dss.join("/")}`);
+      if (compliance.hipaa?.length)       frames.push(`HIPAA:${compliance.hipaa.join("/")}`);
+      if (compliance.nist_800_53?.length) frames.push(`NIST:${compliance.nist_800_53.join("/")}`);
+      if (frames.length) lines.push(`Compliance: ${frames.join(" · ")}`);
+    }
+
+    if (evidence["fullLog"]) lines.push(`Original log: ${String(evidence["fullLog"]).slice(0, 250)}`);
+  } else if (evidence) {
+    // Non-RUNTIME — fallback to the legacy "most telling fragment" surfacing.
     const detail = evidence["detail"] ?? evidence["snippet"] ?? evidence["request"];
     if (detail) lines.push(`Evidence: ${String(detail).slice(0, 200)}`);
   }

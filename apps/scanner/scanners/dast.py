@@ -11,6 +11,7 @@ from .base import BaseScanner
 from .dast_checks import run_all_checks
 from .confirm import is_sqli_candidate, is_xss_candidate, run_confirmations
 from .discovery import run_ffuf, run_nikto
+from .graphql_introspect import detect_and_introspect
 
 # ZAP confidence string → our Confidence enum
 ZAP_CONFIDENCE_MAP: dict[str, Confidence] = {
@@ -567,6 +568,10 @@ class DASTScanner(BaseScanner):
         if auth_payload is not None:
             payload["auth"] = auth_payload
 
+        csrf_payload = self._map_csrf_for_crawler(request)
+        if csrf_payload is not None:
+            payload["csrf"] = csrf_payload
+
         # ZAP's Forced-User Mode (if the scanner set up an auth context earlier)
         # will rewrite session cookies on every request flowing through ZAP. That
         # breaks the crawler's *own* form-login flow: when Playwright POSTs to
@@ -687,6 +692,29 @@ class DASTScanner(BaseScanner):
             print(f"[dast] Auth mapping failed — crawling unauthenticated: {exc}")
             return None
 
+    def _map_csrf_for_crawler(self, request: ScanRequest) -> dict | None:
+        """
+        Translate scanner ``AuthConfig.csrf_*`` fields → crawler CSRF payload.
+
+        Returns None when no CSRF source is configured (the common case),
+        which causes ``_crawler_sidecar`` to omit the ``csrf`` key entirely
+        and the crawler to skip the prime/refresh path.
+        """
+        auth = request.auth_config
+        if not auth:
+            return None
+        if not (auth.csrf_meta_selector or auth.csrf_cookie_name):
+            return None
+
+        body: dict = {}
+        if auth.csrf_meta_selector:
+            body["meta_selector"] = auth.csrf_meta_selector
+        if auth.csrf_cookie_name:
+            body["cookie_name"] = auth.csrf_cookie_name
+        if auth.csrf_header_name:
+            body["header_name"] = auth.csrf_header_name
+        return body
+
     # ── Playwright SPA crawl (legacy in-process fallback) ─────────────────────
 
     def _playwright_crawl(self, target_url: str, request: ScanRequest, workspace: str) -> list[str]:
@@ -806,6 +834,81 @@ class DASTScanner(BaseScanner):
         urls = list(discovered)
         print(f"[dast] Playwright SPA crawl: {len(urls)} in-scope URLs discovered")
         return urls[:MAX_URLS]
+
+    # ── GraphQL endpoint discovery + introspection ────────────────────────────
+
+    def _graphql_discovery(
+        self,
+        target_url: str,
+        request: ScanRequest,
+        workspace: str,
+    ) -> list[str]:
+        """
+        Probe the target for a GraphQL endpoint and run introspection.
+
+        Returns the list of URLs to hand off to ZAP / Nuclei (one entry per
+        discovered endpoint — usually 0 or 1). When introspection succeeds,
+        the full operations dump is written to ``<workspace>/graphql_ops.json``
+        for audit and for any custom Nuclei templates the user wires up that
+        consume per-operation request bodies.
+
+        Failures are non-fatal: we log and return [] so DAST proceeds with
+        its other discovery sources.
+        """
+        import json as _json
+        import os as _os
+
+        try:
+            extra_headers = self.auth_header_dict(request.auth_config, request.session_cookie)
+            result = detect_and_introspect(target_url, extra_headers=extra_headers)
+        except Exception as exc:
+            print(f"[dast] GraphQL discovery error: {exc}")
+            return []
+
+        if not result.endpoint:
+            # No endpoint found at common paths — common case, log quietly.
+            return []
+
+        # Persist the schema dump for downstream visibility (debug + audit).
+        try:
+            ops_path = _os.path.join(workspace, "graphql_ops.json")
+            with open(ops_path, "w") as f:
+                _json.dump(
+                    {
+                        "endpoint": result.endpoint,
+                        "introspection_enabled": result.introspection_enabled,
+                        "detection_path": result.detection_path,
+                        "error": result.error,
+                        "operations": [
+                            {
+                                "name": op.name,
+                                "op_type": op.op_type,
+                                "args": op.args,
+                                "request_body": op.request_body,
+                            }
+                            for op in result.operations
+                        ],
+                    },
+                    f,
+                    indent=2,
+                )
+        except Exception as exc:
+            print(f"[dast] Could not persist GraphQL ops dump: {exc}")
+
+        if result.introspection_enabled:
+            print(
+                f"[dast] GraphQL endpoint {result.endpoint}: introspection enabled, "
+                f"{len(result.operations)} operations extracted"
+            )
+        else:
+            # Endpoint exists but introspection blocked — still seed the URL so
+            # Nuclei's `graphql-detect` / `graphql-blind-injection` templates fire.
+            print(
+                f"[dast] GraphQL endpoint {result.endpoint}: introspection blocked "
+                f"({result.error}); seeded for blind probing"
+            )
+
+        return [result.endpoint]
 
     # ── Nuclei API scan (OpenAPI spec endpoints) ──────────────────────────────
 
@@ -946,9 +1049,21 @@ class DASTScanner(BaseScanner):
         if ffuf_urls:
             print(f"[dast] ffuf surfaced {len(ffuf_urls)} additional paths for ZAP")
 
+        # GraphQL: probe conventional paths and introspect on hit. Adds the
+        # endpoint to api_spec_urls so the Nuclei API scan (which already
+        # carries the `graphql` tag) hits it with schema-aware templates.
+        graphql_urls = self._graphql_discovery(target_url, request, crawl_workspace)
+        if graphql_urls:
+            # Mutate in place — request lives only in this worker, never logged.
+            existing = set(request.api_spec_urls)
+            for u in graphql_urls:
+                if u not in existing:
+                    request.api_spec_urls.append(u)
+        self._report_progress(request, 15, "graphql_discovery_done")
+
         # Merge all discovery sources; de-duplicate preserving order
         seed_urls = list(dict.fromkeys(
-            playwright_urls + katana_urls + ffuf_urls + list(request.api_spec_urls)
+            playwright_urls + katana_urls + ffuf_urls + graphql_urls + list(request.api_spec_urls)
         ))
         if seed_urls:
             # Seed all discovered/spec URLs into ZAP so the active scanner covers them
@@ -974,7 +1089,7 @@ class DASTScanner(BaseScanner):
         else:
             spider_resp = self._zap("/JSON/spider/action/scan/", {"url": target_url, "maxChildren": "10"})
         spider_id = spider_resp.get("scan", "0")
-        self._report_progress(request, 15, "spider_started")
+        self._report_progress(request, 16, "spider_started")
 
         # 2. Wait for spider to complete (max 5 min)
         for _ in range(60):

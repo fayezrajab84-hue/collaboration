@@ -201,6 +201,10 @@ class InteractiveDASTSession:
         alert-normalization logic.
         """
         helper = DASTScanner()  # composition for reused tuning + helpers
+        # Emit progress immediately so the bar moves the moment the worker
+        # dispatches the recorded scan — without this the UI sits at 0% /
+        # "Scanning…" through ZAP policy setup (a few seconds of nothing).
+        helper._report_progress(request, 2, "probing")
         helper._configure_ascan()
         helper._tune_ascan_policy()
 
@@ -221,9 +225,11 @@ class InteractiveDASTSession:
             helper._report_progress(request, 10, "active_scan_started")
         except Exception as exc:
             # ZAP is overloaded — skip the active scan and harvest whatever
-            # passive + previously-captured alerts already exist.
+            # passive + previously-captured alerts already exist. Bump the
+            # bar so the user doesn't think we're stuck while harvest runs.
             print(f"[dast-interactive] could not start active scan ({exc.__class__.__name__}: "
                   f"{exc}) — proceeding to harvest existing alerts")
+            helper._report_progress(request, 88, "active_scan_skipped")
 
         # Poll until done or duration cap. Same loop budget as a normal DAST scan.
         # Individual poll failures are transient — log and continue rather than
@@ -260,6 +266,10 @@ class InteractiveDASTSession:
 
         # Collect alerts scoped to the target — paginated + resilient.
         # See _fetch_alerts_paginated docstring for why this is not a single call.
+        # Emit "collecting" before the fetch (which can take ~7 min on contexts
+        # with 1000+ alerts) so the bar advances past 90% and the user sees
+        # what we're actually doing — same phase label DAST uses.
+        helper._report_progress(request, 92, "collecting")
         alerts = self._fetch_alerts_paginated(target_url)
         print(f"[dast-interactive] harvested {len(alerts)} alerts from ZAP for {target_url}")
 
@@ -325,6 +335,9 @@ class InteractiveDASTSession:
                 confidence=confidence,
                 evidence=evidence,
             ))
+        # Final 100% so the bar visibly completes before the worker finalizes
+        # the ScanJob (worker runs upsert + AI summary + report after this returns).
+        helper._report_progress(request, 100, "done")
         return findings
 
     # ── 4. stop ──────────────────────────────────────────────────────────────

@@ -1,30 +1,54 @@
-import { useEffect, useRef, useState } from "react";
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   Gauge, FolderGit2, Container, Network, Bug,
   Workflow, Settings, LogOut, Radar, BrainCircuit, FileBarChart, Layers,
-  Building2, ChevronsUpDown, Check, BookOpenCheck, Network as NetworkIcon, GitGraph, Boxes,
+  Building2, ChevronsUpDown, Check, BookOpenCheck, GitGraph, Boxes,
+  ChevronDown, ChevronRight, Activity, Package,
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../hooks/useAuth";
 import { authApi } from "../lib/api";
 import { cn } from "../lib/utils";
 
-const NAV_ITEMS = [
-  { to: "/dashboard",    label: "Dashboard",     icon: Gauge },
-  { to: "/applications", label: "Applications",  icon: Boxes },
+// Top-level nav. The "Assets" group is rendered separately below — it gets
+// its own collapsible chevron pattern so the sidebar stays scannable as the
+// asset-type list grows (we picked up Runtime in Phase 28; future slices
+// may add more).
+type LinkItem = { to: string; label: string; icon: typeof Gauge };
+
+// Order mirrors the operator's setup flow: define the Application boundary
+// first, then walk down the deployment stack — Domain (the front door) →
+// Container (what answers requests) → Repository (the source) → Runtime
+// (live monitoring once everything is deployed).
+const ASSET_ITEMS: LinkItem[] = [
+  { to: "/applications", label: "Applications",  icon: Boxes      },
+  { to: "/domains",      label: "Domains",       icon: Network    },
+  { to: "/containers",   label: "Containers",    icon: Container  },
   { to: "/repositories", label: "Repositories",  icon: FolderGit2 },
-  { to: "/containers",   label: "Containers",    icon: Container },
-  { to: "/domains",      label: "Domains",       icon: Network },
-  { to: "/scans",        label: "Scans",         icon: Radar },
-  { to: "/findings",     label: "Findings",      icon: Bug },
-  { to: "/attack-paths", label: "Attack Paths",  icon: GitGraph },
-  { to: "/tickets",      label: "Tickets",       icon: Workflow },
-  { to: "/chat",         label: "AI Chat",       icon: BrainCircuit },
-  { to: "/report",       label: "Security Report", icon: FileBarChart },
-  { to: "/compliance",   label: "Compliance",      icon: BookOpenCheck },
-  { to: "/settings",     label: "Settings",      icon: Settings },
+  { to: "/runtime",      label: "Runtime",       icon: Activity   },
 ];
+
+const NAV_ITEMS_TOP: LinkItem[] = [
+  { to: "/dashboard",    label: "Dashboard",     icon: Gauge      },
+];
+
+const NAV_ITEMS_BOTTOM: LinkItem[] = [
+  { to: "/scans",        label: "Scans",         icon: Radar         },
+  { to: "/findings",     label: "Findings",      icon: Bug           },
+  { to: "/attack-paths", label: "Attack Paths",  icon: GitGraph      },
+  { to: "/tickets",      label: "Tickets",       icon: Workflow      },
+  { to: "/chat",         label: "AI Chat",       icon: BrainCircuit  },
+  { to: "/report",       label: "Security Report", icon: FileBarChart },
+  { to: "/compliance",   label: "Compliance",    icon: BookOpenCheck },
+  { to: "/settings",     label: "Settings",      icon: Settings      },
+];
+
+// Persist the Assets-expander state across navigations. Without this,
+// the group collapses every time the user clicks one of its children
+// because the sidebar component doesn't unmount but the local state
+// often gets reset on hot reloads / login state changes.
+const ASSETS_EXPANDED_KEY = "breachlens.sidebar.assets-expanded";
 
 /**
  * BreachLens brand logo.
@@ -178,15 +202,114 @@ function OrgSwitcher({
   );
 }
 
+function NavLinkRow({ to, label, icon: Icon }: LinkItem) {
+  return (
+    <NavLink
+      to={to}
+      className={({ isActive }) =>
+        cn(
+          "flex items-center gap-3 px-5 py-3 text-[15px] font-medium transition-colors",
+          isActive
+            ? "bg-indigo-900/50 text-indigo-300 border-r-2 border-indigo-500"
+            : "text-gray-400 hover:bg-gray-800 hover:text-gray-100",
+        )
+      }
+    >
+      <Icon className="h-[18px] w-[18px] flex-shrink-0" />
+      {label}
+    </NavLink>
+  );
+}
+
+/**
+ * AssetsGroup — collapsible sidebar section grouping the four asset types
+ * (Applications, Repositories, Containers, Domains, Runtime). Auto-opens
+ * when any child is the current route so the active item is always
+ * visible; otherwise honours the persisted preference.
+ */
+function AssetsGroup() {
+  const location = useLocation();
+  const isAssetActive = useMemo(
+    () => ASSET_ITEMS.some((item) => location.pathname.startsWith(item.to)),
+    [location.pathname],
+  );
+
+  const [open, setOpen] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    const stored = window.localStorage.getItem(ASSETS_EXPANDED_KEY);
+    if (stored === "0") return false;
+    return true;
+  });
+
+  // Auto-open when a child becomes active (e.g. user clicks an attack path
+  // that deep-links into /containers/...). Don't *close* on inactive — we
+  // respect the user's last toggle for the "viewed once, collapsed" case.
+  useEffect(() => {
+    if (isAssetActive) setOpen(true);
+  }, [isAssetActive]);
+
+  function toggle() {
+    setOpen((prev) => {
+      const next = !prev;
+      try { window.localStorage.setItem(ASSETS_EXPANDED_KEY, next ? "1" : "0"); } catch { /* localStorage may be blocked */ }
+      return next;
+    });
+  }
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={toggle}
+        aria-expanded={open}
+        className={cn(
+          "flex w-full items-center gap-3 px-5 py-3 text-[15px] font-medium transition-colors",
+          isAssetActive
+            ? "text-indigo-300"
+            : "text-gray-400 hover:bg-gray-800 hover:text-gray-100",
+        )}
+      >
+        <Package className="h-[18px] w-[18px] flex-shrink-0" />
+        <span className="flex-1 text-left">Assets</span>
+        {open
+          ? <ChevronDown className="h-4 w-4 flex-shrink-0 text-gray-500" />
+          : <ChevronRight className="h-4 w-4 flex-shrink-0 text-gray-500" />
+        }
+      </button>
+      {open && (
+        <div className="bg-gray-950/40">
+          {ASSET_ITEMS.map((item) => (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              className={({ isActive }) =>
+                cn(
+                  "flex items-center gap-3 py-2.5 pl-12 pr-5 text-sm transition-colors",
+                  isActive
+                    ? "bg-indigo-900/50 text-indigo-300 border-r-2 border-indigo-500"
+                    : "text-gray-400 hover:bg-gray-800 hover:text-gray-100",
+                )
+              }
+            >
+              <item.icon className="h-[15px] w-[15px] flex-shrink-0" />
+              {item.label}
+            </NavLink>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Layout() {
   const { user } = useAuth();
   const navigate = useNavigate();
 
   // Show admin-only nav items when any org membership has OWNER/ADMIN role.
   const isAdmin = !!user?.orgs?.some((o) => ADMIN_ROLES.has(o.role));
-  const navItems = isAdmin
-    ? [...NAV_ITEMS, { to: "/admin/queues", label: "Queues", icon: Layers }]
-    : NAV_ITEMS;
+  const bottomItems: LinkItem[] = isAdmin
+    ? [...NAV_ITEMS_BOTTOM, { to: "/admin/queues", label: "Queues", icon: Layers }]
+    : NAV_ITEMS_BOTTOM;
 
   async function handleLogout() {
     await authApi.logout();
@@ -213,23 +336,9 @@ export default function Layout() {
 
         {/* Nav */}
         <nav className="flex-1 overflow-y-auto py-3">
-          {navItems.map(({ to, label, icon: Icon }) => (
-            <NavLink
-              key={to}
-              to={to}
-              className={({ isActive }) =>
-                cn(
-                  "flex items-center gap-3 px-5 py-3 text-[15px] font-medium transition-colors",
-                  isActive
-                    ? "bg-indigo-900/50 text-indigo-300 border-r-2 border-indigo-500"
-                    : "text-gray-400 hover:bg-gray-800 hover:text-gray-100"
-                )
-              }
-            >
-              <Icon className="h-[18px] w-[18px] flex-shrink-0" />
-              {label}
-            </NavLink>
-          ))}
+          {NAV_ITEMS_TOP.map((item) => <NavLinkRow key={item.to} {...item} />)}
+          <AssetsGroup />
+          {bottomItems.map((item) => <NavLinkRow key={item.to} {...item} />)}
         </nav>
 
         {/* Org switcher — single label for solo-org users, dropdown for 2+ */}
