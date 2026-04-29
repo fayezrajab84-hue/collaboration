@@ -80,7 +80,11 @@ import type { WorkloadAgent, AgentStatus, Container } from "@devsecops/types";
 function AgentStatusPill({ status }: { status: AgentStatus }) {
   const styles: Record<AgentStatus, string> = {
     HEALTHY: "bg-emerald-950/50 text-emerald-300 border-emerald-800/50",
-    STALE:   "bg-amber-950/40 text-amber-300 border-amber-800/40",
+    // STALE = "haven't heard from this agent recently". Brand-indigo
+    // matches the rest of the platform's "informational, watch this"
+    // pattern; no amber per the brand-color rule. The status label
+    // itself ("STALE") carries the operational meaning.
+    STALE:   "bg-indigo-950/40 text-indigo-200 border-indigo-800/40",
     OFFLINE: "bg-red-950/40 text-red-300 border-red-800/40",
     UNKNOWN: "bg-gray-800 text-gray-400 border-gray-700",
   };
@@ -91,7 +95,7 @@ function AgentStatusPill({ status }: { status: AgentStatus }) {
       <span
         className={`h-1.5 w-1.5 rounded-full ${
           status === "HEALTHY" ? "bg-emerald-400"
-          : status === "STALE" ? "bg-amber-400"
+          : status === "STALE" ? "bg-indigo-400"
           : status === "OFFLINE" ? "bg-red-400"
           : "bg-gray-500"
         }`}
@@ -564,14 +568,14 @@ function AgentReachabilityDrawer({
         {/* Body */}
         <div className="flex-1 overflow-y-auto p-6">
           {!agent.linkedContainerId ? (
-            <div className="rounded-lg border border-amber-900/40 bg-amber-950/20 p-5">
+            <div className="rounded-lg border border-indigo-900/40 bg-indigo-950/20 p-5">
               <div className="flex items-start gap-3">
-                <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-400" />
+                <Link2Off className="mt-0.5 h-4 w-4 flex-shrink-0 text-indigo-400" />
                 <div>
-                  <h3 className="text-sm font-semibold text-amber-200">
+                  <h3 className="text-sm font-semibold text-indigo-200">
                     No linked container
                   </h3>
-                  <p className="mt-1 text-xs text-amber-300/80">
+                  <p className="mt-1 text-xs text-indigo-300/80">
                     Reachability cross-tier compares <span className="font-mono">CONTAINER</span> {" "}
                     findings (Trivy) against <span className="font-mono">RUNTIME</span> findings
                     (Wazuh) on the same workload. To compute reachability for this agent, link

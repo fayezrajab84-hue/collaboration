@@ -20,7 +20,7 @@
  */
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Key, Plus, Trash2, Copy, Check, AlertTriangle, X, Calendar, Clock } from "lucide-react";
+import { Key, Plus, Trash2, Copy, Check, X, Calendar, Clock } from "lucide-react";
 import { apiTokensApi, type ApiToken, type MintTokenResponse } from "../../lib/api";
 import { useToast } from "../../hooks/useToast";
 import { formatRelative } from "../../lib/utils";
@@ -268,10 +268,10 @@ function MintModal({
         {justMinted ? (
           // ── Plaintext-reveal panel ─────────────────────────────────
           <div className="space-y-4">
-            <div className="rounded-lg border border-amber-900/40 bg-amber-950/20 p-3">
+            <div className="rounded-lg border border-indigo-900/40 bg-indigo-950/20 p-3">
               <div className="flex items-start gap-2">
-                <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-400" />
-                <p className="text-xs text-amber-200">
+                <Key className="mt-0.5 h-4 w-4 flex-shrink-0 text-indigo-400" />
+                <p className="text-xs text-indigo-200">
                   This is the only time you'll see this token. Copy it now and store it
                   somewhere safe (your GitHub secret, password manager, etc.).
                 </p>
