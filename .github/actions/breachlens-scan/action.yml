@@ -52,7 +52,7 @@ inputs:
       Mutually exclusive with container-id and domain-id.
 
       OMIT THIS INPUT for the recommended auto-discovery mode (Phase A7):
-      the Action reads ${{ github.repository }} from the workflow context
+      the Action reads the GITHUB_REPOSITORY env var from the runner
       and BreachLens auto-onboards the repo on first call. Auto-discovery
       requires the API token's owner to have stored GitHub OAuth
       credentials (any user who's logged into BreachLens via GitHub OAuth
@@ -136,7 +136,7 @@ runs:
       shell: bash
       run: |
         # Phase A7 — auto-discovery mode is the default when no
-        # target ID is given. The action then uses ${{ github.repository }}
+        # target ID is given. The action then uses GITHUB_REPOSITORY
         # to onboard the repo automatically. Operators with explicit
         # repo-id / container-id / domain-id still get the legacy mode.
         TARGETS_SET=0
@@ -175,7 +175,7 @@ runs:
         SCAN_TYPES:     ${{ inputs.scan-types }}
       run: |
         # Phase A7 — auto-discovery context. Composite actions can't use
-        # ${{ github.* }} in step env: blocks (the parser rejects it),
+        # the github expression context in step env blocks (parser rejects it),
         # so we read the runner's auto-injected env vars directly.
         # GITHUB_REPOSITORY / GITHUB_SHA / GITHUB_HEAD_REF / GITHUB_REF_NAME
         # are populated on every workflow step. PR number is in the event
