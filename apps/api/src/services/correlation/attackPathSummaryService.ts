@@ -193,7 +193,20 @@ export async function generateSummary(
     evidenceFindingIds: z.array(z.string())
                           .transform((ids) => ids.filter((id) => validFindingIds.has(id)).slice(0, 4))
                           .pipe(z.array(z.string()).min(1).max(4)),
-    technique:          z.string().regex(/^T\d{4}(\.\d{3})?$/).optional(),
+    // Tolerant of model output: trim, validate against the MITRE pattern,
+    // and DROP if invalid rather than rejecting the whole workflow. The
+    // model occasionally returns "T1213.001 (description)" or "T2156" or
+    // free-text — better to lose that one badge than fail the entire
+    // regenerate. The Zod chain returns `undefined` for invalid input,
+    // which `.optional()` accepts.
+    technique:          z.preprocess(
+                          (v) => {
+                            if (typeof v !== "string") return v;
+                            const trimmed = v.trim();
+                            return /^T\d{4}(\.\d{3})?$/.test(trimmed) ? trimmed : undefined;
+                          },
+                          z.string().regex(/^T\d{4}(\.\d{3})?$/).optional(),
+                        ),
   });
   const schema = z.object({
     title:             z.string().min(3).transform((s) => clipText(s, 80)),
