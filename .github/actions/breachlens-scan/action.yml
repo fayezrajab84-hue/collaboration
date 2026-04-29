@@ -173,12 +173,22 @@ runs:
         CONTAINER_ID:   ${{ inputs.container-id }}
         DOMAIN_ID:      ${{ inputs.domain-id }}
         SCAN_TYPES:     ${{ inputs.scan-types }}
-        # Phase A7 — auto-discovery uses these when no target ID is set
-        GH_REPOSITORY:  ${{ github.repository }}
-        GH_SHA:         ${{ github.sha }}
-        GH_REF:         ${{ github.head_ref || github.ref_name }}
-        GH_PR_NUMBER:   ${{ github.event.pull_request.number }}
       run: |
+        # Phase A7 — auto-discovery context. Composite actions can't use
+        # ${{ github.* }} in step env: blocks (the parser rejects it),
+        # so we read the runner's auto-injected env vars directly.
+        # GITHUB_REPOSITORY / GITHUB_SHA / GITHUB_HEAD_REF / GITHUB_REF_NAME
+        # are populated on every workflow step. PR number is in the event
+        # payload at $GITHUB_EVENT_PATH.
+        GH_REPOSITORY="${GITHUB_REPOSITORY:-}"
+        GH_SHA="${GITHUB_SHA:-}"
+        GH_REF="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME:-}}"
+        if [[ -f "${GITHUB_EVENT_PATH:-}" ]]; then
+          GH_PR_NUMBER=$(jq -r '.pull_request.number // empty' "$GITHUB_EVENT_PATH" 2>/dev/null || echo "")
+        else
+          GH_PR_NUMBER=""
+        fi
+
         # Pick auth header based on which input is set. api-token wins.
         if [[ -n "$API_TOKEN" ]]; then
           AUTH_HEADER="Authorization: Bearer $API_TOKEN"
