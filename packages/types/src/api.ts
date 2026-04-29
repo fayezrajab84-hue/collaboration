@@ -411,6 +411,37 @@ export interface AttackPathsListResponse {
 // Cached by content-hash; UI shows the regenerate button when stale.
 export type AttackPathVerdict = "LIKELY_REAL" | "MIXED_SIGNAL" | "LIKELY_NOISE";
 
+/**
+ * Phase 27.5.y — one ordered step in the attack workflow.
+ *
+ * The AI summarisation now produces an explicit step-by-step walk through
+ * the chain in source → image → surface → runtime order, citing the
+ * specific finding IDs that prove each step. Powers the AttackPathWorkflow
+ * UI: a numbered list of moves an attacker could (or did) make, each
+ * grounded in concrete evidence the operator can drill into.
+ *
+ * `phase` matches the AttackPathFlow taxonomy so steps can be color-coded
+ * to align with the block diagram above them.
+ *
+ * `evidenceFindingIds` MUST be a subset of the chain's node IDs — the AI
+ * is constrained to cite findings actually present in the chain, never
+ * invent CVEs or rule names. The UI renders each ID as a clickable chip
+ * that opens FindingDetailDrawer.
+ *
+ * `technique` is an OPTIONAL MITRE ATT&CK technique code (e.g. T1190 -
+ * Exploit Public-Facing Application). The model includes one when the
+ * step maps cleanly to a documented technique; omits it otherwise rather
+ * than guess.
+ */
+export interface WorkflowStep {
+  stepNumber:         number;                                  // 1-based
+  phase:              "source" | "image" | "surface" | "runtime";
+  title:              string;                                  // <= 80 chars
+  description:        string;                                  // <= 240 chars
+  evidenceFindingIds: string[];                                // 1-4 IDs
+  technique?:         string;                                  // optional MITRE T-code
+}
+
 export interface AttackPathSummaryAI {
   groupId:      string;
   title:        string | null; // ~6-word headline (Phase 27.5.x); null on legacy rows
@@ -422,6 +453,10 @@ export interface AttackPathSummaryAI {
   verdict:           AttackPathVerdict | null;
   verdictConfidence: number | null;       // 0-100
   verdictReasoning:  string | null;       // 2-3 sentences citing specific edges
+  /** Phase 27.5.y — ordered attack workflow grounded in finding IDs.
+   *  Null on legacy rows generated before this field existed; will
+   *  populate on next regenerate. UI hides the workflow panel when null. */
+  workflow:          WorkflowStep[] | null;
   providerType: string;       // "ANTHROPIC" | "OPENAI" | "GEMINI" | "OLLAMA"
   model:        string;       // resolved model id used for this generation
   contentHash:  string;       // chain-content fingerprint at gen time

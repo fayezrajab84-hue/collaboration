@@ -13,6 +13,16 @@
  * can complete the "did this attack actually happen?" question with
  * runtime evidence, not just static + dynamic test findings.
  *
+ * Phase 27.5.y update: the AI call now also produces a structured
+ * `workflow` — an ordered list of 2-6 attack steps, each citing the
+ * specific finding IDs that prove it. This powers the AttackPathWorkflow
+ * UI: a step-by-step walk through the kill-chain (source → image →
+ * surface → runtime) grounded in real evidence rather than narrative
+ * prose. The model is forbidden from inventing IDs — the schema's
+ * evidenceFindingIds transform filters out any ID that doesn't exist
+ * in the chain's node set, so hallucinated citations get dropped before
+ * persistence.
+ *
  * Design choices:
  *   - Manual trigger only (operator clicks "Generate"). Auto-summarising
  *     every chain would burn AI budget on chains nobody opens. The button
@@ -28,6 +38,7 @@
  */
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import type { WorkflowStep } from "@devsecops/types";
 import prisma from "../../db.js";
 import { logger } from "../../logger.js";
 import { invokeAI, AIError } from "../aiClient.js";
@@ -49,6 +60,9 @@ export interface AttackPathSummaryResult {
   verdict:           "LIKELY_REAL" | "MIXED_SIGNAL" | "LIKELY_NOISE" | null;
   verdictConfidence: number | null;  // 0-100
   verdictReasoning:  string | null;
+  /** Phase 27.5.y — ordered attack workflow. Null on legacy rows
+   *  generated before this field existed; populates on next regenerate. */
+  workflow:          WorkflowStep[] | null;
   providerType: string;
   model:        string;
   contentHash:  string;
@@ -81,6 +95,7 @@ export async function getCachedSummary(
     verdict:           toVerdict(cached.verdict),
     verdictConfidence: cached.verdictConfidence,
     verdictReasoning:  cached.verdictReasoning,
+    workflow:          parseWorkflow(cached.workflow),
     providerType:      cached.providerType,
     model:             cached.model,
     contentHash:       cached.contentHash,
@@ -115,10 +130,16 @@ export async function generateSummary(
   }
   const hash = computeContentHash(path);
 
-  // Cache hit unless the operator forced a regen
+  // Cache hit unless the operator forced a regen.
+  // Phase 27.5.y: legacy rows missing `workflow` should regenerate even
+  // when their hash still matches — otherwise the workflow panel never
+  // populates without an explicit force=true. Treating null-workflow as
+  // a synthetic miss keeps the operator's "Generate" → workflow visible
+  // experience predictable.
   if (!opts.force) {
     const cached = await prisma.attackPathSummary.findUnique({ where: { correlationGroupId: groupId } });
-    if (cached && cached.contentHash === hash && cached.orgId === orgId) {
+    const workflow = cached ? parseWorkflow(cached.workflow) : null;
+    if (cached && cached.contentHash === hash && cached.orgId === orgId && workflow !== null) {
       return {
         groupId,
         title:             cached.title,
@@ -127,6 +148,7 @@ export async function generateSummary(
         verdict:           toVerdict(cached.verdict),
         verdictConfidence: cached.verdictConfidence,
         verdictReasoning:  cached.verdictReasoning,
+        workflow,
         providerType:      cached.providerType,
         model:             cached.model,
         contentHash:       cached.contentHash,
@@ -139,6 +161,7 @@ export async function generateSummary(
 
   // ── Build the prompt ────────────────────────────────────────────────
   const prompt = buildPrompt(path);
+  const validFindingIds = new Set(path.nodes.map((n) => n.findingId));
 
   // ── Call AI with structured-output schema ───────────────────────────
   // Length contract: enforce MIN to catch empty AI responses, but don't
@@ -151,6 +174,23 @@ export async function generateSummary(
   //   narrative → ~600 chars (3-5 brief bullet lines, not paragraphs)
   //   verdictReasoning → ~300 chars (1-2 sentences)
   // Together a single chain summary fits in one screen of the card.
+  //
+  // Phase 27.5.y — workflow is an ordered list of 3-6 attack steps. The
+  // AI must cite finding IDs that actually exist in the chain (we filter
+  // hallucinated IDs in a transform — never trust the model's set
+  // membership claim against an external set). Total budget: 6 steps × 4
+  // IDs × 30 chars + 6 × ~320 chars text ≈ ~2.7KB raw, well within
+  // structured-output limits.
+  const stepSchema = z.object({
+    stepNumber:         z.number().int().min(1),
+    phase:              z.enum(["source", "image", "surface", "runtime"]),
+    title:              z.string().min(3).transform((s) => clipText(s, 80)),
+    description:        z.string().min(8).transform((s) => clipText(s, 240)),
+    evidenceFindingIds: z.array(z.string())
+                          .transform((ids) => ids.filter((id) => validFindingIds.has(id)).slice(0, 4))
+                          .pipe(z.array(z.string()).min(1).max(4)),
+    technique:          z.string().regex(/^T\d{4}(\.\d{3})?$/).optional(),
+  });
   const schema = z.object({
     title:             z.string().min(3).transform((s) => clipText(s, 80)),
     tldr:              z.string().min(8).transform((s) => clipText(s, 200)),
@@ -158,6 +198,9 @@ export async function generateSummary(
     verdict:           z.enum(["LIKELY_REAL", "MIXED_SIGNAL", "LIKELY_NOISE"]),
     verdictConfidence: z.number().int().min(0).max(100),
     verdictReasoning:  z.string().min(8).transform((s) => clipText(s, 300)),
+    // Phase 27.5.y — 3-6 ordered steps walking the kill-chain.
+    workflow:          z.array(stepSchema).min(2).max(6)
+                          .transform((steps) => steps.map((s, i) => ({ ...s, stepNumber: i + 1 }))),
   });
 
   let result;
@@ -168,7 +211,15 @@ export async function generateSummary(
       system:  SYSTEM_PROMPT,
       messages: [{ role: "user", content: prompt }],
       schema,
-      maxOutputTokens: 800,
+      // Bumped from 800 → 2400: workflow adds ~3-6 step objects (~150
+      // tokens each) on top of title+tldr+narrative+verdict. The DVWA
+      // 81-node chain reproduced "model returned non-JSON: \\\`\\\`\\\`json {..."
+      // truncation at 1400 — the model was emitting valid fenced JSON
+      // but the output was getting cut off mid-string before the
+      // closing fence. 2400 leaves comfortable headroom for the largest
+      // chains we've seen. Cost impact ~$0.01 per regenerate on
+      // claude-sonnet, still under the per-call budget.
+      maxOutputTokens: 2400,
       temperature:     0.2,
       timeoutMs:       60_000,
     });
@@ -182,6 +233,8 @@ export async function generateSummary(
   }
 
   // ── Persist + return ────────────────────────────────────────────────
+  // workflow is JSON in Postgres — Prisma accepts an array directly.
+  const workflowJson = result.data.workflow as unknown as Parameters<typeof prisma.attackPathSummary.upsert>[0]["create"]["workflow"];
   const persisted = await prisma.attackPathSummary.upsert({
     where:  { correlationGroupId: groupId },
     create: {
@@ -193,6 +246,7 @@ export async function generateSummary(
       verdict:           result.data.verdict,
       verdictConfidence: result.data.verdictConfidence,
       verdictReasoning:  result.data.verdictReasoning,
+      workflow:          workflowJson,
       providerType:      result.providerType,
       model:             result.model,
       contentHash:       hash,
@@ -204,6 +258,7 @@ export async function generateSummary(
       verdict:           result.data.verdict,
       verdictConfidence: result.data.verdictConfidence,
       verdictReasoning:  result.data.verdictReasoning,
+      workflow:          workflowJson,
       providerType:      result.providerType,
       model:             result.model,
       contentHash:       hash,
@@ -219,6 +274,7 @@ export async function generateSummary(
     verdict:           toVerdict(persisted.verdict),
     verdictConfidence: persisted.verdictConfidence,
     verdictReasoning:  persisted.verdictReasoning,
+    workflow:          parseWorkflow(persisted.workflow),
     providerType:      persisted.providerType,
     model:             persisted.model,
     contentHash:       persisted.contentHash,
@@ -228,12 +284,35 @@ export async function generateSummary(
   };
 }
 
+/**
+ * Parse a stored workflow JSON column back into a typed array.
+ * Returns null on legacy rows (column never written) or on any shape
+ * that doesn't pass a minimal sanity check. Defensive: if Prisma
+ * returned a string somehow, JSON.parse it; if it returned a non-array,
+ * drop to null. Better to hide the panel than render a broken list.
+ */
+function parseWorkflow(raw: unknown): WorkflowStep[] | null {
+  if (raw == null) return null;
+  let arr: unknown = raw;
+  if (typeof arr === "string") {
+    try { arr = JSON.parse(arr); } catch { return null; }
+  }
+  if (!Array.isArray(arr) || arr.length === 0) return null;
+  // Trust the schema validation that wrote this row — we only check the
+  // top-level shape. Bad data here means somebody wrote past the schema.
+  const isStep = (s: unknown): s is WorkflowStep =>
+    typeof s === "object" && s != null
+    && "stepNumber" in s && "phase" in s && "title" in s
+    && "description" in s && "evidenceFindingIds" in s;
+  return arr.every(isStep) ? (arr as WorkflowStep[]) : null;
+}
+
 // ── Prompt construction ──────────────────────────────────────────────────
 
 const SYSTEM_PROMPT = `You are a senior application-security engineer writing a concise, factual narrative for an attack-path correlation chain produced by a DevSecOps platform.
 
 Your job: explain AND verify the chain, returned as JSON
-{title, tldr, narrative, verdict, verdictConfidence, verdictReasoning}.
+{title, tldr, narrative, verdict, verdictConfidence, verdictReasoning, workflow}.
 
 SCAN TYPES YOU WILL SEE (in entry → deepest order):
   SAST          — static analysis flagged a vulnerable code path in the
@@ -317,6 +396,57 @@ VERIFICATION (you are the second-opinion sanity check on the engine's chain)
   rule class — real chain. Wazuh runtime alerts on dvwa-host independently
   corroborate the PENTEST exploit; this is happening in production."
 
+WORKFLOW (the ordered attack walk-through)
+The workflow is what an attacker would actually DO with this chain, in
+order. Produce 2-6 steps that walk the chain from outer entry point to
+deepest impact, following this canonical kill-chain order:
+
+  source  →  image  →  surface  →  pentest/exploit  →  runtime
+
+Phase mapping (use exactly these phase strings in JSON):
+  "source"  — SAST / IAC / SECRET findings (what's wrong in the code)
+  "image"   — SCA / CONTAINER findings (what's wrong in dependencies/image)
+  "surface" — DAST / PENTEST_FULL findings (what an external scanner saw or
+              actively exploited against the running app)
+  "runtime" — RUNTIME findings (what the live workload host is reporting)
+
+Step contract (per step):
+- stepNumber: 1, 2, 3, ... (you provide them; they will be re-numbered).
+- phase: one of "source" | "image" | "surface" | "runtime".
+- title: 4-10 words. The action a human-readable verb. Examples:
+    "Locate unsanitized $_GET in login.php"
+    "Confirm CVE-2022-2309 in libxml2 layer"
+    "Reproduce SQL injection via /login.php"
+    "Detect post-exploit shell on dvwa-host"
+- description: 1-2 sentences (max 240 chars). What the step DOES, citing
+  the specific evidence (CVE / URL / payload / Wazuh rule). NEVER
+  generic ("the attacker exploits the vulnerability"). Be concrete.
+- evidenceFindingIds: 1-4 finding IDs from the chain that PROVE this
+  step. CRITICAL: these IDs MUST come from the # Nodes section of the
+  user prompt. Do NOT invent IDs. The system filters out unknown IDs
+  and rejects the response if a step ends up with zero valid evidence.
+- technique: OPTIONAL MITRE ATT&CK technique code matching this step
+  (e.g. "T1190" Exploit Public-Facing Application, "T1059.004" Unix
+  Shell, "T1505.003" Web Shell). Include only when the mapping is
+  obvious. Skip the field otherwise — never guess.
+
+Workflow guidelines:
+- Follow the canonical phase order. NEVER reorder backwards (a
+  "runtime" step cannot precede a "surface" step that explains it).
+- Skip phases that have no evidence — a 3-step workflow with only
+  source + surface + runtime is fine if image has nothing relevant.
+- DO NOT produce one step per finding. Group related findings under
+  one step (e.g. "Exploit CONFIRMED via 3 different XSS payloads" cites
+  three finding IDs, one step). Keep total step count to 2-6.
+- A step with a CONFIRMED-confidence evidence finding should make the
+  certainty visible in its description ("PENTEST exploit reproduced
+  with payload <SCRIPT>..."). A step with only POSSIBLE/LIKELY
+  evidence should hedge ("DAST signature suggests reflected XSS
+  reachable, not yet reproduced").
+- The LAST step should describe the impact / what the attacker
+  achieves, grounded in the deepest-evidence node (usually runtime if
+  present, else exploit, else surface).
+
 CONFIDENCE DISCIPLINE
 - NEVER overclaim: if a node's confidence is POSSIBLE, say "likely" not
   "confirmed". Only say "confirmed" or "verified" when at least one node
@@ -344,10 +474,16 @@ function buildPrompt(path: AttackPathSummary): string {
   lines.push(`- External entry reach multiplier: ${path.externalReach}`);
   lines.push(``);
   lines.push(`## Nodes (in entry → deepest order)`);
+  lines.push(`Each node is prefixed with its FINDING ID — when you fill the`);
+  lines.push(`workflow field, you MUST cite these exact IDs in evidenceFindingIds.`);
+  lines.push(``);
   for (const [i, node] of path.nodes.entries()) {
-    lines.push(`${i + 1}. [${node.scanType}] [${node.severity}] [${node.confidence}] ${node.title}`);
+    lines.push(`${i + 1}. id=\`${node.findingId}\` [${node.scanType}] [${node.severity}] [${node.confidence}] ${node.title}`);
     if (node.targetName) lines.push(`   - target: ${node.targetType} \`${node.targetName}\``);
     if (node.filePath)   lines.push(`   - file:   \`${node.filePath}\``);
+    if (node.cveId)      lines.push(`   - cve:    ${node.cveId}`);
+    if (node.packageName) lines.push(`   - pkg:    ${node.packageName}${node.packageVersion ? `@${node.packageVersion}` : ""}`);
+    if (node.ruleId)     lines.push(`   - rule:   ${node.ruleId}`);
     // Pull the most useful 1-2 evidence keys without dumping everything.
     if (node.evidence) {
       const ev = node.evidence as Record<string, unknown>;
@@ -367,7 +503,11 @@ function buildPrompt(path: AttackPathSummary): string {
     if (path.edges.length > 25) lines.push(`- … ${path.edges.length - 25} more bridges omitted`);
   }
   lines.push(``);
-  lines.push(`Now produce the JSON {tldr, narrative}.`);
+  lines.push(`Now produce the JSON {title, tldr, narrative, verdict,`);
+  lines.push(`verdictConfidence, verdictReasoning, workflow}. The workflow`);
+  lines.push(`is an ordered array of 2-6 attack steps (source → image → surface`);
+  lines.push(`→ runtime kill-chain order); each step's evidenceFindingIds MUST`);
+  lines.push(`reference IDs from the Nodes section above.`);
   return lines.join("\n");
 }
 

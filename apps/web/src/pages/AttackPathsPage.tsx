@@ -31,6 +31,7 @@ import SeverityBadge from "../components/SeverityBadge";
 import MultiSelect from "../components/MultiSelect";
 import FindingDetailDrawer from "../components/FindingDetailDrawer";
 import AttackPathFlow, { ProofOnlyToggle, filterToProofChains } from "../components/AttackPathFlow";
+import AttackPathWorkflow from "../components/AttackPathWorkflow";
 import { useToast } from "../hooks/useToast";
 import type { AttackPathSummary, AttackPathNode, AttackPathSummaryAI, Finding } from "@devsecops/types";
 
@@ -89,12 +90,18 @@ function AttackPathDetail({ groupId }: { groupId: string }) {
 function AiSummaryPanel({
   groupId,
   initialSummary,
+  nodes,
 }: {
   groupId:        string;
   initialSummary: AttackPathSummaryAI | null;
+  /** Phase 27.5.y — passed through from PathCard so the workflow panel
+   *  can resolve cited finding IDs to live node data (severity, scanner,
+   *  title) for the evidence chips, without a second API roundtrip. */
+  nodes:          AttackPathNode[];
 }) {
   const qc = useQueryClient();
   const { toast } = useToast();
+  const { openFinding } = useContext(DrawerCtx);
   const [summary, setSummary] = useState<AttackPathSummaryAI | null>(initialSummary);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -194,6 +201,24 @@ function AiSummaryPanel({
           {errorMsg && <p className="mt-2 text-xs text-red-400">{errorMsg}</p>}
         </div>
       </div>
+
+      {/* Phase 27.5.y — ordered attack workflow.
+          Rendered below the AI tldr/narrative when the model produced
+          a workflow (legacy summaries from before this field existed
+          will have workflow=null until the operator clicks Regenerate).
+          Sits at the AiSummaryPanel level rather than a sibling so the
+          regenerate state stays in one place — when the operator hits
+          "Regenerate" above, the workflow re-renders from the same
+          `summary` state setter without a separate query invalidation. */}
+      {summary.workflow && summary.workflow.length > 0 && (
+        <div className="mt-4">
+          <AttackPathWorkflow
+            workflow={summary.workflow}
+            nodes={nodes}
+            onOpenFinding={openFinding}
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -523,7 +548,7 @@ function PathCard({
           {/* Phase 27.5.x — AI summary + verification panel sits under the
               title when expanded. Lazy: the cached summary loads via the
               chain-detail query the first time the card opens. */}
-          <ExpandedSummaryHost groupId={path.groupId} />
+          <ExpandedSummaryHost groupId={path.groupId} nodes={path.nodes} />
           {/* Kill-chain flow diagram — 4-phase block view (Source → Image →
               Surface → Runtime). Compresses the chain's potentially-many
               findings into a single horizontal scan: where evidence exists,
@@ -553,13 +578,21 @@ function PathCard({
  * re-fetch. The list endpoint stays light (no per-chain summary payload);
  * we only pay the detail roundtrip when the operator actually expands.
  */
-function ExpandedSummaryHost({ groupId }: { groupId: string }) {
+function ExpandedSummaryHost({
+  groupId,
+  nodes,
+}: {
+  groupId: string;
+  /** Phase 27.5.y — pass-through to AiSummaryPanel for the workflow's
+   *  evidence-chip lookup. Comes from path.nodes at PathCard level. */
+  nodes:   AttackPathNode[];
+}) {
   const { data, isLoading } = useQuery({
     queryKey: ["attackPath", groupId],
     queryFn:  () => attackPathsApi.get(groupId),
   });
   if (isLoading) return <div className="text-xs text-gray-500">Loading…</div>;
-  return <AiSummaryPanel groupId={groupId} initialSummary={data?.summary ?? null} />;
+  return <AiSummaryPanel groupId={groupId} initialSummary={data?.summary ?? null} nodes={nodes} />;
 }
 
 // ── Group chain nodes by scan type (Phase 27.5.x) ────────────────────────

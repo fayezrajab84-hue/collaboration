@@ -352,6 +352,13 @@ model AttackPathSummary {
   verdict            String?  // "LIKELY_REAL" | "MIXED_SIGNAL" | "LIKELY_NOISE"
   verdictConfidence  Int?     // 0-100, model's self-reported confidence
   verdictReasoning   String?  @db.Text  // 2-3 sentences citing specific edges
+  // Phase 27.5.y — AI-generated ordered attack workflow. Array of step
+  // objects, each citing the finding IDs that prove it. Walks the chain
+  // in source → image → surface → runtime order. JSON because it's only
+  // ever rendered as a unit (never queried). Null on legacy rows until
+  // the operator regenerates.
+  // Shape: WorkflowStep[] (see packages/types/src/api.ts).
+  workflow           Json?
   // Track which provider + model produced this so the UI can surface it
   // ("Generated with Claude Sonnet 4.5") and so a future "regenerate
   // because the model has changed" check is possible.
