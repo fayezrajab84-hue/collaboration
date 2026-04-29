@@ -470,9 +470,12 @@ export default function FindingsPage() {
   const aiFilter     = parseMulti(searchParams.get("ai") ?? "");
   // Phase 29 — CSPM-only filters. cloudService matches Prowler ruleId
   // prefix (defender_*, network_*, etc); complianceFramework matches
-  // evidence.compliance keys (CIS-5.0, PCI-4.0, MITRE-ATTACK, etc).
-  const cloudService     = parseMulti(searchParams.get("cloudService")         ?? "");
-  const cloudFramework   = parseMulti(searchParams.get("complianceFramework")  ?? "");
+  // evidence.compliance keys (CIS-5.0, PCI-4.0, MITRE-ATTACK, etc);
+  // cloudCategory matches evidence.categories tokens (identity-access,
+  // internet-exposed, secrets, etc — Prowler's operator-axis tags).
+  const cloudService    = parseMulti(searchParams.get("cloudService")         ?? "");
+  const cloudFramework  = parseMulti(searchParams.get("complianceFramework")  ?? "");
+  const cloudCategory   = parseMulti(searchParams.get("cloudCategory")         ?? "");
   // Single-value MITRE tactic filter — set via the dashboard's clickable
   // tactic bars. The runtime tab is the only tab where this makes sense
   // (only RUNTIME findings carry mitre.tactics in evidence).
@@ -669,11 +672,12 @@ export default function FindingsPage() {
   const applicationsKey = applications.join(",");
   const cloudServiceKey   = cloudService.join(",");
   const cloudFrameworkKey = cloudFramework.join(",");
+  const cloudCategoryKey  = cloudCategory.join(",");
   const { data, isLoading } = useQuery({
     // Use effectiveScanTypeKey (tab ∩ user) so the cache invalidates correctly
     // when switching Code↔Web — same user-selected types but different tab
     // produces a different effective set, hence a different query.
-    queryKey: ["findings", { severityKey, effectiveScanTypeKey, statusKey, confidenceKey, reachabilityKey, applicationsKey, aiFilterKey, cloudServiceKey, cloudFrameworkKey, search, target, mitreTactic, tag, page, pageSize, sort, sortOrder, includeSuppressed }],
+    queryKey: ["findings", { severityKey, effectiveScanTypeKey, statusKey, confidenceKey, reachabilityKey, applicationsKey, aiFilterKey, cloudServiceKey, cloudFrameworkKey, cloudCategoryKey, search, target, mitreTactic, tag, page, pageSize, sort, sortOrder, includeSuppressed }],
     queryFn: () =>
       findingsApi.list({
         // Multi-select: send comma-joined values — server splits via `multi()`.
@@ -687,10 +691,12 @@ export default function FindingsPage() {
         ...(applicationsKey ? { applicationId: applicationsKey } : {}),
         ...(mitreTactic ? { mitreTactic: mitreTactic as never } : {}),
         ...(tag ? { tag } : {}),
-        // Phase 29 — CSPM service + compliance filters. Empty strings are
-        // omitted so the server doesn't treat "" as a real (no-match) value.
+        // Phase 29 — CSPM service + compliance + category filters. Empty
+        // strings are omitted so the server doesn't treat "" as a real
+        // (no-match) value.
         ...(cloudServiceKey   ? { cloudService:        cloudServiceKey   } : {}),
         ...(cloudFrameworkKey ? { complianceFramework: cloudFrameworkKey } : {}),
+        ...(cloudCategoryKey  ? { cloudCategory:       cloudCategoryKey  } : {}),
         page,
         limit: pageSize,
         ...(aiFilterKey ? { ai: aiFilterKey as never } : {}),
@@ -918,6 +924,25 @@ export default function FindingsPage() {
               value={cloudService}
               onChange={(v) => setMultiFilter("cloudService", v)}
               title="Filter by Azure service category (Prowler's 20-service taxonomy)"
+            />
+            <MultiSelect
+              label="Category"
+              // Categories from Prowler's unmapped.categories — semantic
+              // tags ("internet-exposed", "identity-access", "secrets",
+              // "encryption", "hardening", etc). Derived dynamically from
+              // the loaded findings since the set varies by check.
+              options={(() => {
+                const seen = new Set<string>();
+                for (const f of (data?.data ?? [])) {
+                  const ev = (f.evidence ?? {}) as Record<string, unknown>;
+                  const cats = ev["categories"];
+                  if (Array.isArray(cats)) for (const c of cats) seen.add(String(c));
+                }
+                return [...seen].sort().map((c) => ({ value: c, label: c }));
+              })()}
+              value={cloudCategory}
+              onChange={(v) => setMultiFilter("cloudCategory", v)}
+              title="Filter by Prowler category tag (internet-exposed / identity-access / secrets / encryption / etc)"
             />
             <MultiSelect
               label="Compliance"

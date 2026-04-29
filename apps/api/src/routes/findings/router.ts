@@ -148,6 +148,24 @@ router.get("/", async (req, res, next) => {
       const ids = matchingRows.map((r) => r.id);
       andClauses.push(ids.length ? { id: { in: ids } } : { id: "__no_match__" });
     }
+    // Phase 29 — Categories filter. Prowler tags findings under
+    // unmapped.categories with semantic labels (identity-access,
+    // secrets, internet-exposed, hardening, encryption, etc) that
+    // map well to operator triage workflows ("show me everything
+    // exposed to the internet"). Normalizer stores these on
+    // evidence.categories. Filter via Postgres `?|` jsonb-array
+    // overlap operator — same pattern as compliance.
+    const cloudCategories = multi(q["cloudCategory"]);
+    if (cloudCategories) {
+      const matchingRows = await prisma.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM "Finding"
+        WHERE "orgId" = ${member.orgId}
+          AND "scanType" = 'CLOUD'
+          AND (evidence->'categories') ?| ${cloudCategories}::text[]
+      `;
+      const ids = matchingRows.map((r) => r.id);
+      andClauses.push(ids.length ? { id: { in: ids } } : { id: "__no_match__" });
+    }
 
     // Phase 27.5 — Application filter. Resolves to "any finding whose target
     // asset belongs to one of the given applications." Composes with the

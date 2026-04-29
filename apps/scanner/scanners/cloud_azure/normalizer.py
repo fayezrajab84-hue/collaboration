@@ -1,6 +1,48 @@
 """
 Prowler OCSF → BreachLens NormalizedFinding mapping.
 
+Field source map (post-normalizer-rewrite):
+
+  Field            ← OCSF source                              Why
+  ─────────────────────────────────────────────────────────────────────
+  title            ← derive_title(message, resource, account) FAIL-aware
+                                                              narrative,
+                                                              with resource
+                                                              name + sub
+                                                              stripped (those
+                                                              are columns).
+  description      ← risk_details                              "Why does this
+                                                              matter" — the
+                                                              business
+                                                              impact prose,
+                                                              what an AI
+                                                              analyst should
+                                                              read first.
+                                                              Fallback to
+                                                              finding_info.desc.
+  remediation      ← remediation.desc + unmapped.notes        How to fix +
+                                                              short
+                                                              operational note.
+  references       ← remediation.references                    Prowler hub
+                                                              + Microsoft
+                                                              Learn URLs.
+  evidence.azure.* ← cloud.account/org + resources[0].*       Subscription
+                                                              + tenant +
+                                                              resource
+                                                              identity.
+  evidence.compl.. ← unmapped.compliance                       Framework
+                                                              mappings.
+  evidence.cat..   ← unmapped.categories                       e.g.
+                                                              "internet-
+                                                              exposed".
+  evidence.message ← message                                   Prowler's full
+                                                              FAIL narrative
+                                                              kept verbatim
+                                                              for the AI
+                                                              analyst's
+                                                              context.
+
+
 Prowler 4.x emits findings as OCSF v1.1 `compliance_finding` records when
 invoked with `--output-modes json-ocsf`. This module maps each OCSF
 finding into a `NormalizedFinding` ready for upsert via the API's
@@ -34,6 +76,7 @@ References:
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
 
 from models import (
@@ -90,6 +133,77 @@ def _unmapped_block(item: dict) -> dict:
     Prowler stuffs `notes`, `categories`, and `compliance` here. We
     surface all three on the BreachLens evidence record."""
     return item.get("unmapped") or {}
+
+
+def _derive_title(message: str, resource_name: Optional[str], account_name: Optional[str]) -> str:
+    """Strip resource-name + subscription-name boilerplate from the OCSF
+    `message` so the title reads as a pure issue statement.
+
+    Operator feedback: the title was "VM wazuh-deployemtn in subscription
+    PROD_INFRASTRUCTURE01 does not have JIT access enabled." — but
+    Resource, Resource Type, and Account already have their own columns
+    in the table. The title should focus on the FINDING NATURE, not
+    repeat what's already on the row.
+
+    Examples (input → output):
+
+      "Storage account cvsstrgaccount26042026 from subscription
+       PROD_INFRASTRUCTURE01 has shared key access enabled."
+        → "Storage account has shared key access enabled."
+
+      "VM wazuh-deployemtn in subscription PROD_INFRASTRUCTURE01
+       does not have JIT (Just-in-Time) access enabled."
+        → "VM does not have JIT (Just-in-Time) access enabled."
+
+      "Subscription PROD_INFRASTRUCTURE01 does not have Defender
+       for Servers enabled."
+        → "Subscription does not have Defender for Servers enabled."
+
+    Implementation:
+      1. Remove the resource-name token (e.g. "cvsstrgaccount26042026").
+      2. Remove the "(from|in) subscription <NAME>" clause.
+      3. Collapse double-spaces, capitalise the leading char.
+
+    Returns the original message verbatim if no transformation applied
+    (better than risking a malformed string from a regex miss).
+    """
+    if not message:
+        return ""
+    title = message
+
+    # 1. Drop the resource-name occurrence ("Storage account
+    #    cvsstrgaccount26042026 has..." → "Storage account has...").
+    if resource_name:
+        title = re.sub(
+            r'\s+' + re.escape(resource_name) + r'(?=\s)',
+            '',
+            title,
+        )
+
+    # 2. Drop "(from|in) subscription <NAME>" — both prepositions show up
+    #    across Prowler's check phrasings ("from subscription X" for
+    #    storage / sql / cosmosdb, "in subscription X" for vm / aks).
+    if account_name:
+        title = re.sub(
+            r'\s+(?:from|in)\s+subscription\s+' + re.escape(account_name) + r'\b',
+            '',
+            title,
+            flags=re.IGNORECASE,
+        )
+    # Generic fallback when account_name isn't available — strips the
+    # whole clause regardless of subscription value.
+    title = re.sub(
+        r'\s+(?:from|in)\s+subscription\s+\S+',
+        '',
+        title,
+        flags=re.IGNORECASE,
+    )
+
+    # 3. Cleanup
+    title = re.sub(r'\s+', ' ', title).strip()
+    if title and title[0].islower():
+        title = title[0].upper() + title[1:]
+    return title
 
 
 def _check_id(item: dict) -> str:
@@ -205,33 +319,36 @@ def normalize_prowler_findings(
         cloud_region  = cloud.get("region")           # subscription region
         provider_name = cloud.get("provider")         # "azure"
 
-        # Title / description
-        #
-        # CRITICAL: use OCSF `message` for the title, NOT
-        # finding_info.title. Prowler stores the CHECK CRITERION (the
-        # desired state, e.g. "Virtual Machine has Just-in-Time access
-        # enabled") in finding_info.title. For a FAIL the criterion is
-        # INVERTED — the resource doesn't meet it. Using the criterion
-        # verbatim produced UI rows that read positive ("X is enabled")
-        # but actually meant the opposite. This bug confused the AI
-        # analyst, the operator, and downstream summarisation.
-        #
-        # OCSF `message` is the per-instance narrative — already
-        # FAIL-aware, includes the resource name, reads as a real
-        # finding. Fall back to the old title shape only if message is
-        # missing (very old Prowler versions).
+        # Title — derive from the FAIL-aware `message`, with the
+        # resource name + subscription clause stripped (those are
+        # already shown in the Resource and Account columns). Operator
+        # feedback: "subscription name and storage account name … is
+        # not required. Focus on the finding."
         finding_info = item.get("finding_info") or {}
         message      = (item.get("message") or "").strip()
         if message:
-            title = message
+            title = _derive_title(message, resource_name, account_name)
         else:
-            title_raw = finding_info.get("title") or item.get("title") or "Cloud misconfiguration"
-            title     = f"{title_raw} — {resource_name}"
-        # Description: the check's broader explanation (what the rule is
-        # about, why it matters). The instance-specific narrative now
-        # lives in the title via `message`, freeing the description to
-        # carry the rule's general intent. Falls back to finding_info.
-        description = finding_info.get("desc") or item.get("desc") or ""
+            # Fallback for older Prowler versions: use finding_info.title
+            # raw. Operator's other UI cues (severity badge, OPEN status)
+            # signal that the title's a FAIL.
+            title = finding_info.get("title") or item.get("title") or "Cloud misconfiguration"
+
+        # Description — Prowler ships TWO description-like fields:
+        #   risk_details      — explains WHY the misconfig matters
+        #                       (business impact prose: "Allowing Shared
+        #                       Key undermines confidentiality… A leaked
+        #                       key grants broad read/write/delete…").
+        #                       This is what an operator (and the AI
+        #                       analyst) wants to read first.
+        #   finding_info.desc — describes the CHECK CRITERION ("Storage
+        #                       accounts are evaluated for whether
+        #                       Shared Key authorization is disabled…").
+        #                       Useful as fallback but doesn't explain
+        #                       impact.
+        # Use risk_details when present, fall through to finding_info.desc.
+        risk_details = (item.get("risk_details") or "").strip()
+        description  = risk_details or finding_info.get("desc") or item.get("desc") or ""
 
         # Severity
         severity_raw = item.get("severity") or finding_info.get("severity")
@@ -286,13 +403,20 @@ def normalize_prowler_findings(
                 "provider":         provider_name,
             },
             # Categories from Prowler's unmapped.categories — semantic
-            # tags like "internet-exposed" that operators search by.
+            # tags like "internet-exposed" / "identity-access" / "secrets"
+            # that operators filter by AND that the AI analyst can use
+            # for context.
             "categories": prowler_categories,
             # Prowler's quick remediation hint (one-liner). The full
             # markdown remediation is on Finding.remediation; this is
             # the shorter operational note ("Enable Defender for X in
             # Azure Portal" etc).
             "prowlerNotes": prowler_notes,
+            # Keep the full FAIL narrative verbatim. The Title was
+            # derived from this (with resource + sub stripped) — the
+            # AI analyst gets the unstripped version here for richer
+            # context when re-analysing.
+            "message":      message or None,
             "compliance":   _compliance_frameworks(item),
         }
         # Sanitise: drop None values from nested azure dict + top-level
@@ -300,8 +424,10 @@ def normalize_prowler_findings(
         evidence["azure"] = {k: v for k, v in evidence["azure"].items() if v is not None}
         if not evidence["categories"]:
             evidence.pop("categories")
-        if evidence["prowlerNotes"] is None:
+        if evidence["prowlerNotes"] is None or evidence["prowlerNotes"] == "":
             evidence.pop("prowlerNotes")
+        if evidence["message"] is None:
+            evidence.pop("message")
 
         # Combine Prowler's remediation markdown with its short
         # operational note when both exist. The note often calls out

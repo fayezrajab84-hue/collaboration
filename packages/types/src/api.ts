@@ -226,6 +226,12 @@ export interface FindingFilterParams {
    *  "MITRE-ATTACK"). Server checks evidence.compliance for the
    *  presence of any listed framework. */
   complianceFramework?: string | string[];
+  /** Phase 29 — CSPM category filter. Comma-separated category tokens
+   *  Prowler attaches to findings under unmapped.categories (e.g.
+   *  "internet-exposed", "identity-access", "secrets", "encryption",
+   *  "hardening"). Server checks evidence.categories for any listed
+   *  token via the jsonb `?|` overlap operator. */
+  cloudCategory?: string | string[];
   /** Phase 27.5 — filter findings to one or more applications. Resolves to
    *  "any finding whose target asset is in this application." Comma-separated
    *  string for the URL form, or string[] in JSON. */
