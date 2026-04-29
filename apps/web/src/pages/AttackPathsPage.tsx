@@ -30,7 +30,12 @@ import { attackPathsApi, applicationsApi, findingsApi } from "../lib/api";
 import SeverityBadge from "../components/SeverityBadge";
 import MultiSelect from "../components/MultiSelect";
 import FindingDetailDrawer from "../components/FindingDetailDrawer";
-import AttackPathFlow, { ProofOnlyToggle, filterToProofChains } from "../components/AttackPathFlow";
+// Kill-chain block diagram (default export AttackPathFlow) was removed —
+// the AI-narrated AttackPathWorkflow below covers the same phase taxonomy
+// with richer step-by-step evidence. The two named exports here are
+// standalone helpers that power the page-level "proof-of-exploit only"
+// filter; they don't depend on the component itself.
+import { ProofOnlyToggle, filterToProofChains } from "../components/AttackPathFlow";
 import AttackPathWorkflow from "../components/AttackPathWorkflow";
 import { useToast } from "../hooks/useToast";
 import type { AttackPathSummary, AttackPathNode, AttackPathSummaryAI, Finding } from "@devsecops/types";
@@ -549,17 +554,12 @@ function PathCard({
               title when expanded. Lazy: the cached summary loads via the
               chain-detail query the first time the card opens. */}
           <ExpandedSummaryHost groupId={path.groupId} nodes={path.nodes} />
-          {/* Kill-chain flow diagram — 4-phase block view (Source → Image →
-              Surface → Runtime). Compresses the chain's potentially-many
-              findings into a single horizontal scan: where evidence exists,
-              where bridges connect tiers, where Proof-of-Exploit lands.
-              Sits ABOVE the per-scan-type drill-down so operators get the
-              picture before the detail. */}
-          <AttackPathFlow
-            nodes={path.nodes}
-            edges={path.edges}
-            groupId={path.groupId}
-          />
+          {/* The kill-chain block diagram (AttackPathFlow) used to live
+              here. Removed because the AttackPathWorkflow rendered inside
+              AiSummaryPanel above already shows the same phase taxonomy
+              (Source → Image → Surface → Runtime) with richer detail —
+              AI-narrated steps, evidence chips, MITRE techniques. Showing
+              both was visual noise. */}
           <ScanTypeGroups
             nodes={path.nodes}
             isGroupOpen={isGroupOpen}
