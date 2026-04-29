@@ -19,6 +19,7 @@ import SyntaxHighlight from "./SyntaxHighlight";
 import { formatDate } from "../lib/utils";
 import { hasActiveAttack, wasExploitSuccessful } from "../lib/findings";
 import { SEVERITY_BADGE } from "../lib/colors";
+import { renderInlineMarkdown } from "../lib/inlineMarkdown";
 
 // Severity badge class-name map used by SCA, Secret, SAST, and DAST subissues.
 // Declared at module top so every helper below can reference it without
@@ -1791,9 +1792,10 @@ function CodeAnalysisModal({ finding, snippet, githubUrl, repoInfo, locationOver
             <p className="text-xs text-gray-500">First seen {formatDate(finding.firstSeen)}</p>
           </div>
 
-          {/* Description */}
+          {/* Description — renderInlineMarkdown handles **bold** /
+              `code` from CSPM source data; no-op for plain text. */}
           <div className="rounded-lg bg-gray-800/50 p-3">
-            <p className="text-xs text-gray-300 leading-relaxed">{finding.description as string}</p>
+            <p className="text-xs text-gray-300 leading-relaxed">{renderInlineMarkdown(finding.description as string)}</p>
           </div>
 
           {/* AI Autotriage Summary */}
@@ -3161,13 +3163,16 @@ export default function FindingDetailDrawer({ finding, onClose }: Props) {
             </p>
           )}
 
-          {/* Description */}
+          {/* Description — renderInlineMarkdown handles the **bold** /
+              `code` markers Prowler ships in CSPM `risk_details`. For
+              every other scan type the helper is a no-op (the input is
+              plain text), so it's safe to apply universally. */}
           <div className="rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-2">
             <div className="mb-1 flex items-center gap-1.5">
               <Info className="h-3 w-3 text-gray-500" />
               <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">Description</span>
             </div>
-            <p className="text-xs text-gray-300 leading-relaxed">{finding.description}</p>
+            <p className="text-xs text-gray-300 leading-relaxed">{renderInlineMarkdown(finding.description)}</p>
           </div>
 
           {/* Code Evidence — SAST / IAC / SECRET: always show when filePath is known */}
@@ -3381,14 +3386,16 @@ export default function FindingDetailDrawer({ finding, onClose }: Props) {
             </div>
           )}
 
-          {/* Remediation */}
+          {/* Remediation — same rationale as Description above:
+              renderInlineMarkdown lifts **bold**, `code`, and \n\n
+              paragraph breaks from Prowler's remediation prose. */}
           {finding.remediation && (
             <div className="rounded-lg border border-gray-800 bg-gray-900/50 px-3 py-2">
               <div className="mb-1 flex items-center gap-1.5">
                 <Wrench className="h-3 w-3 text-gray-500" />
                 <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">Remediation</span>
               </div>
-              <p className="text-xs text-gray-300 leading-relaxed">{finding.remediation}</p>
+              <p className="text-xs text-gray-300 leading-relaxed">{renderInlineMarkdown(finding.remediation)}</p>
             </div>
           )}
 
