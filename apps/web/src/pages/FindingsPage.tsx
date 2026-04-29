@@ -53,12 +53,16 @@ const TAG_OPTIONS: TagOption[] = [
   { value: "confirmed-exploit",     label: "Confirmed exploits",    group: "Cross-tier", hint: "Scanner reproduced (any tier)" },
   { value: "ai-suppressed",         label: "AI-suppressed",         group: "Cross-tier", hint: "AI flagged as LIKELY_FP" },
 ];
-const TAG_OPTIONS_BY_TAB: Record<"code" | "web" | "runtime", TagOption[]> = {
+const TAG_OPTIONS_BY_TAB: Record<"code" | "web" | "runtime" | "cloud", TagOption[]> = {
   // Runtime predicates only return matches when scanType=RUNTIME, so
   // showing them on Code/Web would be empty rows. Hide.
   code:    TAG_OPTIONS.filter((t) => t.group !== "Runtime"),
   web:     TAG_OPTIONS.filter((t) => t.group !== "Runtime"),
   runtime: TAG_OPTIONS,
+  // Cloud (Phase 29): same Runtime-exclusion as Code/Web — Prowler
+  // findings don't carry runtime evidence shapes. Confirmed-exploit /
+  // AI-suppressed cross-tier tags are still relevant.
+  cloud:   TAG_OPTIONS.filter((t) => t.group !== "Runtime"),
 };
 
 const SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"];
@@ -499,7 +503,7 @@ export default function FindingsPage() {
   // Switching tabs also clears the scanType chip filter — selections from one
   // tab (e.g. "SAST" picked while in Code) wouldn't intersect with the other
   // tab's allowed set anyway, so leaving them stale would just be confusing.
-  const setTab = (t: "code" | "web" | "runtime" | "groups") => {
+  const setTab = (t: "code" | "web" | "runtime" | "cloud" | "groups") => {
     setSearchParams((prev) => {
       if (t === "code") prev.delete("tab"); else prev.set("tab", t);
       prev.delete("scanType");

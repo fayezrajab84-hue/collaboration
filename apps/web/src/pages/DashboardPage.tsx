@@ -1264,7 +1264,7 @@ export default function DashboardPage() {
           // exploits/findings list since the API doesn't yet aggregate
           // this field.
           const frameworkSet = new Set<string>();
-          for (const f of (exploits ?? [])) {
+          for (const f of (filteredExploits ?? [])) {
             const ev = (f.evidence ?? {}) as Record<string, unknown>;
             const compliance = (ev["compliance"] ?? {}) as Record<string, unknown>;
             for (const fw of Object.keys(compliance)) frameworkSet.add(fw);
