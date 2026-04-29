@@ -9,12 +9,14 @@
 #      (Settings → Repositories → Add).
 #   2. Note the BreachLens Repository ID from the resource detail URL —
 #      it's the cuid after /repositories/ (e.g. cmoh50000abc1234).
-#   3. Mint a long-lived BreachLens session cookie:
-#        - Log into BreachLens in a browser
-#        - DevTools → Application → Cookies → copy the connect.sid value
+#   3. Mint a BreachLens API token:
+#        - Open BreachLens in a browser
+#        - Settings → API Tokens → Generate token
+#        - Pick name + scopes (need scans:trigger, scans:read,
+#          findings:read for a full CI workflow)
+#        - Copy the plaintext token (shown ONCE)
 #        - Add to your GitHub repo: Settings → Secrets → Actions →
-#          New repository secret → BREACHLENS_SESSION
-#      (Phase A4 will replace this with a proper API token mint flow.)
+#          New repository secret → BREACHLENS_API_TOKEN
 #   4. Add your BreachLens API URL as a GitHub variable:
 #        Settings → Secrets and variables → Variables → New variable →
 #        BREACHLENS_API_URL = https://breachlens.example.com
@@ -47,9 +49,9 @@ jobs:
         #   uses: fayezrajab84-hue/breachlens@v1
         # (publishing to GitHub Marketplace is a Phase A5 task)
         with:
-          api-url:        ${{ vars.BREACHLENS_API_URL }}
-          session-cookie: ${{ secrets.BREACHLENS_SESSION }}
-          repo-id:        cmoh50000abc1234       # ← replace with YOUR BreachLens repo ID
+          api-url:   ${{ vars.BREACHLENS_API_URL }}
+          api-token: ${{ secrets.BREACHLENS_API_TOKEN }}
+          repo-id:   cmoh50000abc1234       # ← replace with YOUR BreachLens repo ID
 
           # Recommended: HIGH gate. Allows MEDIUM-and-below noise without
           # blocking the build. Bump to MEDIUM in long-running maintenance

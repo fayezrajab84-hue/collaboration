@@ -228,6 +228,7 @@ model User {
   organizations OrganizationMember[]
   tickets       Ticket[]
   recordings    RecordingSession[]
+  apiTokens     ApiToken[]
 }
 
 model Organization {
@@ -256,6 +257,69 @@ model Organization {
   invitations     Invitation[]
   ssoConfig       SsoConfig?
   sboms           Sbom[]
+  apiTokens       ApiToken[]
+}
+
+// ── Phase A4 — API tokens for CI integration + automation ─────────────────
+//
+// Long-lived bearer tokens for non-interactive callers (CI pipelines,
+// scripts, the breachlens CLI). Replaces the awkward "extract a session
+// cookie from your browser DevTools" pattern that Phase A1-A3's
+// GitHub Action shipped with.
+//
+// Security model:
+//   - Plaintext token format: `blt_<32 random base64url chars>` (52 chars
+//     total). Returned ONCE on creation; never stored in plaintext.
+//   - Storage: SHA-256 hash of the plaintext, plus a display-only
+//     prefix (first 12 chars including the `blt_` brand) so the UI can
+//     render an identifying chip without revealing the secret.
+//   - Scope-gated: each token carries a string[] of capabilities
+//     (e.g. ["scans:trigger", "scans:read", "findings:read"]). The
+//     middleware that authenticates a request enforces the scope check
+//     against the route's required capability.
+//   - Org-scoped: a token authenticates as the (user, org) pair that
+//     created it; cannot escalate to a different org even if the owner
+//     is a member of multiple orgs.
+//   - Revocation: setting `revokedAt` blocks future uses without
+//     deleting the row (preserves audit trail). Hard-delete is also
+//     supported via DELETE /api/auth/tokens/:id.
+//   - Expiry: optional `expiresAt`; rows past their expiry auto-fail
+//     auth without needing a sweeper job. Operators can also choose
+//     "never expires" (null) for long-lived CI tokens.
+//   - Audit: `lastUsedAt` updates on every authenticated request the
+//     token gates, so operators can see "this token hasn't been used
+//     in 3 months — safe to revoke?" in the Settings UI.
+model ApiToken {
+  id           String    @id @default(cuid())
+  orgId        String
+  createdById  String
+  // Operator-given label — "GitHub Actions for myrepo", "Local debug",
+  // "Jenkins prod pipeline". Required so the Settings UI has something
+  // identifying to render.
+  name         String
+  // SHA-256(plaintext) — the only thing we persist. Unique so a hash
+  // collision can never silently authenticate as the wrong token.
+  tokenHash    String    @unique
+  // First 12 chars of the plaintext (e.g. "blt_aB3xK9qLmN") for UI
+  // display. Long enough to be useful for "is this the token in my
+  // CI secret?" disambiguation; short enough to not expose the secret.
+  prefix       String
+  // String[] of capabilities. Today's vocabulary:
+  //   "scans:trigger" — POST /api/{repos|containers|domains}/:id/scan
+  //   "scans:read"    — GET  /api/scans/:id  + /api/scans/:id/export.sarif
+  //   "findings:read" — GET  /api/findings   + /api/findings/:id
+  // Future scopes (when needed): "tickets:write", "integrations:read", etc.
+  scopes       String[]
+  lastUsedAt   DateTime?
+  expiresAt    DateTime?
+  revokedAt    DateTime?
+  createdAt    DateTime  @default(now())
+
+  org          Organization @relation(fields: [orgId],       references: [id], onDelete: Cascade)
+  createdBy    User         @relation(fields: [createdById], references: [id])
+
+  @@index([orgId, revokedAt])
+  @@index([tokenHash])
 }
 
 // ── Phase 27.5.x — AI summary cache for a correlated chain ────────────────

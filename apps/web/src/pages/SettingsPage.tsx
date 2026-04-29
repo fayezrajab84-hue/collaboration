@@ -11,6 +11,7 @@ import AuditLogTab from "../components/settings/AuditLogTab";
 import SuppressionsTab from "../components/settings/SuppressionsTab";
 import TeamTab from "../components/settings/TeamTab";
 import SSOTab from "../components/settings/SSOTab";
+import ApiTokensTab from "../components/settings/ApiTokensTab";
 
 type Tab =
   | "github"
@@ -22,7 +23,8 @@ type Tab =
   | "slack"
   | "teams"
   | "audit"
-  | "suppressions";
+  | "suppressions"
+  | "tokens";
 
 function SaveButton({ isPending, saved }: { isPending: boolean; saved: boolean }) {
   return (
@@ -396,6 +398,7 @@ const TABS: { id: Tab; label: string; minRole?: Role }[] = [
   { id: "slack",        label: "Slack" },
   { id: "teams",        label: "Microsoft Teams" },
   { id: "audit",        label: "Audit Log",      minRole: "ADMIN" },
+  { id: "tokens",       label: "API Tokens",     minRole: "ADMIN" },
 ];
 
 export default function SettingsPage() {
@@ -438,6 +441,7 @@ export default function SettingsPage() {
     slack:        !!slackData,
     teams:        !!teamsData,
     audit:        false,  // No "connected" dot — read-only view
+    tokens:       false,  // Optional dot if any non-revoked tokens exist (TODO)
   };
 
   return (
@@ -490,6 +494,7 @@ export default function SettingsPage() {
           {activeTab === "slack"        && <SlackTab />}
           {activeTab === "teams"        && <TeamsTab />}
           {activeTab === "audit"        && <AuditLogTab />}
+          {activeTab === "tokens"       && <ApiTokensTab />}
         </div>
       </div>
     </div>

@@ -775,6 +775,43 @@ export const ssoApi = {
             apiClient.post<SsoTestResult>("/sso/test", { issuerUrl }).then((r) => r.data),
 };
 
+// ── API Tokens (Phase A4) ─────────────────────────────────────────────────
+
+export interface ApiToken {
+  id:         string;
+  name:       string;
+  prefix:     string;
+  scopes:     string[];
+  createdAt:  string;
+  lastUsedAt: string | null;
+  expiresAt:  string | null;
+  revokedAt:  string | null;
+  createdBy:  { id: string; username: string };
+}
+
+export interface MintTokenRequest {
+  name:      string;
+  scopes:    string[];
+  expiresAt: string | null; // ISO string or null for never
+}
+
+export interface MintTokenResponse {
+  id:      string;
+  token:   string;  // plaintext — shown ONCE
+  prefix:  string;
+  message: string;
+}
+
+export const apiTokensApi = {
+  list: () =>
+    apiClient.get<{ tokens: ApiToken[]; allScopes: string[] }>("/auth/tokens")
+      .then((r) => r.data),
+  mint: (req: MintTokenRequest) =>
+    apiClient.post<MintTokenResponse>("/auth/tokens", req).then((r) => r.data),
+  revoke: (id: string, hard = false) =>
+    apiClient.delete(`/auth/tokens/${id}${hard ? "?hard=1" : ""}`).then((r) => r.data),
+};
+
 // ── Admin (queues) ────────────────────────────────────────────────────────
 
 export interface QueueCounts {

@@ -22,15 +22,28 @@ inputs:
       {api-url}/api/scans/{scan-id} for completion.
     required: true
 
+  api-token:
+    description: |
+      A BreachLens API token (format: blt_<32 chars>). Phase A4 auth flow:
+        1. Settings → API Tokens → Generate token
+        2. Pick name + scopes (need scans:trigger, scans:read, findings:read
+           for a full CI workflow)
+        3. Copy the plaintext token (shown ONCE)
+        4. Store as a GitHub secret: BREACHLENS_API_TOKEN
+      The token authenticates as the user who minted it, scoped to that
+      user's active org. Sent as `Authorization: Bearer blt_...`.
+    required: false
+    default: ''
+
   session-cookie:
     description: |
-      A long-lived BreachLens session cookie. Until proper API tokens
-      land in Phase A4, the Action authenticates via session cookie:
-        1. Log into BreachLens in a browser
-        2. DevTools → Application → Cookies → copy the `connect.sid` value
-        3. Store as a GitHub secret: BREACHLENS_SESSION
-      Yes, this is awkward — an API-token mint workflow ships in Phase A4.
-    required: true
+      DEPRECATED — use api-token instead. Pre-A4 auth flow via
+      browser session cookie. Kept here for backwards compatibility
+      with workflows pinned to v0.x of this Action; will be removed
+      after one minor-version cycle. If both api-token and
+      session-cookie are set, api-token wins.
+    required: false
+    default: ''
 
   repo-id:
     description: |
@@ -124,6 +137,14 @@ runs:
           echo "::error::Must specify exactly one of repo-id, container-id, or domain-id."
           exit 1
         fi
+        # Exactly one auth method must be set. api-token preferred; session-cookie deprecated.
+        if [[ -z "${{ inputs.api-token }}" && -z "${{ inputs.session-cookie }}" ]]; then
+          echo "::error::Must provide either api-token (preferred) or session-cookie (deprecated)."
+          exit 1
+        fi
+        if [[ -n "${{ inputs.session-cookie }}" && -z "${{ inputs.api-token }}" ]]; then
+          echo "::warning::Using deprecated session-cookie auth. Mint a proper API token under Settings → API Tokens for a forward-compatible workflow."
+        fi
         # Severity gate must be one of the allowed values.
         case "${{ inputs.severity-gate }}" in
           CRITICAL|HIGH|MEDIUM|LOW|INFO|none) ;;
@@ -136,12 +157,20 @@ runs:
       shell: bash
       env:
         API_URL:        ${{ inputs.api-url }}
+        API_TOKEN:      ${{ inputs.api-token }}
         SESSION:        ${{ inputs.session-cookie }}
         REPO_ID:        ${{ inputs.repo-id }}
         CONTAINER_ID:   ${{ inputs.container-id }}
         DOMAIN_ID:      ${{ inputs.domain-id }}
         SCAN_TYPES:     ${{ inputs.scan-types }}
       run: |
+        # Pick auth header based on which input is set. api-token wins.
+        if [[ -n "$API_TOKEN" ]]; then
+          AUTH_HEADER="Authorization: Bearer $API_TOKEN"
+        else
+          AUTH_HEADER="Cookie: connect.sid=$SESSION"
+        fi
+
         # Pick the right endpoint based on which target is set.
         if [[ -n "$REPO_ID" ]];      then ENDPOINT="$API_URL/api/repos/$REPO_ID/scan";
         elif [[ -n "$CONTAINER_ID" ]]; then ENDPOINT="$API_URL/api/containers/$CONTAINER_ID/scan";
@@ -158,7 +187,7 @@ runs:
 
         echo "POST $ENDPOINT"
         RESPONSE=$(curl -fsS -X POST "$ENDPOINT" \
-          -H "Cookie: connect.sid=$SESSION" \
+          -H "$AUTH_HEADER" \
           -H "Content-Type: application/json" \
           -d "$BODY")
         echo "$RESPONSE"
@@ -176,11 +205,17 @@ runs:
       shell: bash
       env:
         API_URL:           ${{ inputs.api-url }}
+        API_TOKEN:         ${{ inputs.api-token }}
         SESSION:           ${{ inputs.session-cookie }}
         SCAN_ID:           ${{ steps.trigger.outputs.scan-id }}
         POLL_INTERVAL:     ${{ inputs.poll-interval-seconds }}
         TIMEOUT_MIN:       ${{ inputs.timeout-minutes }}
       run: |
+        if [[ -n "$API_TOKEN" ]]; then
+          AUTH_HEADER="Authorization: Bearer $API_TOKEN"
+        else
+          AUTH_HEADER="Cookie: connect.sid=$SESSION"
+        fi
         DEADLINE=$(( $(date +%s) + (TIMEOUT_MIN * 60) ))
         STATUS=PENDING
         while [[ "$STATUS" != "COMPLETED" && "$STATUS" != "FAILED" ]]; do
@@ -190,7 +225,7 @@ runs:
           fi
           sleep "$POLL_INTERVAL"
           STATUS=$(curl -fsS "$API_URL/api/scans/$SCAN_ID" \
-            -H "Cookie: connect.sid=$SESSION" | jq -r '.status // "UNKNOWN"')
+            -H "$AUTH_HEADER" | jq -r '.status // "UNKNOWN"')
           echo "[poll] scan $SCAN_ID status: $STATUS"
         done
         echo "status=$STATUS" >> "$GITHUB_OUTPUT"
@@ -204,13 +239,19 @@ runs:
       id: fetch-sarif
       shell: bash
       env:
-        API_URL:  ${{ inputs.api-url }}
-        SESSION:  ${{ inputs.session-cookie }}
-        SCAN_ID:  ${{ steps.trigger.outputs.scan-id }}
+        API_URL:    ${{ inputs.api-url }}
+        API_TOKEN:  ${{ inputs.api-token }}
+        SESSION:    ${{ inputs.session-cookie }}
+        SCAN_ID:    ${{ steps.trigger.outputs.scan-id }}
       run: |
+        if [[ -n "$API_TOKEN" ]]; then
+          AUTH_HEADER="Authorization: Bearer $API_TOKEN"
+        else
+          AUTH_HEADER="Cookie: connect.sid=$SESSION"
+        fi
         SARIF_PATH="breachlens-${SCAN_ID}.sarif"
         curl -fsS "$API_URL/api/scans/$SCAN_ID/export.sarif" \
-          -H "Cookie: connect.sid=$SESSION" \
+          -H "$AUTH_HEADER" \
           -o "$SARIF_PATH"
         echo "path=$SARIF_PATH" >> "$GITHUB_OUTPUT"
         BYTES=$(wc -c < "$SARIF_PATH")

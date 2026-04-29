@@ -36,6 +36,19 @@ export async function getActiveMembership(req: Request) {
   const user = req.user as { id: string } | undefined;
   if (!user?.id) return null;
 
+  // Phase A4 — Bearer-token auth pins the active org to the token's
+  // own orgId (tokens are minted scoped to one org and cannot escalate
+  // to siblings even if the creator is a member of multiple). Session
+  // activeOrgId is ignored when a token is in play — automation must
+  // be deterministic; "which org does my CI scan target?" cannot
+  // depend on whatever the operator last clicked in the sidebar.
+  const tokenOrgId = req.apiToken?.orgId;
+  if (tokenOrgId) {
+    return prisma.organizationMember.findUnique({
+      where: { userId_orgId: { userId: user.id, orgId: tokenOrgId } },
+    });
+  }
+
   const sessionOrgId = req.session.activeOrgId;
   if (sessionOrgId) {
     const m = await prisma.organizationMember.findUnique({

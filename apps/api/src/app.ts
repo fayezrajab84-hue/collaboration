@@ -34,6 +34,7 @@ import complianceRouter from "./routes/compliance/router.js";
 import attackPathsRouter from "./routes/attackPaths/router.js";
 import applicationsRouter from "./routes/applications/router.js";
 import runtimeRouter from "./routes/runtime/router.js";
+import apiTokensRouter from "./routes/apiTokens/router.js";
 
 import "./auth/passport.js"; // side-effect: registers passport strategies
 
@@ -138,6 +139,7 @@ app.use("/api/compliance", apiLimiter, complianceRouter);
 app.use("/api/attack-paths", apiLimiter, attackPathsRouter);
 app.use("/api/applications", apiLimiter, applicationsRouter);
 app.use("/api/runtime", apiLimiter, runtimeRouter);
+app.use("/api/auth/tokens", apiLimiter, apiTokensRouter);
 
 // ── Error handler (must be last) ──────────────────────────────────────────
 app.use(errorHandler);
