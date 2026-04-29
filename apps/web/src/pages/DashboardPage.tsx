@@ -377,16 +377,23 @@ function CloudCspmWidget({
     .sort((a, b) => b[1] - a[1])
     .slice(0, 7);
 
-  // Top failing checks — ruleId with most occurrences. Severity surfaces
-  // alongside so the operator sees urgency without a click.
-  const checkCounts = new Map<string, { count: number; severity: string }>();
+  // Top failing checks — group by ruleId, display the human-readable
+  // TITLE from one of the findings in the group (e.g. "Storage account
+  // has shared key access enabled.") rather than the raw Prowler ruleId
+  // ("storage_account_key_access_disabled"). Operator feedback: the
+  // ruleId alone reads as technical jargon. We keep the ruleId as a
+  // small monospace subtitle for click-through search compatibility.
+  const checkCounts = new Map<string, { count: number; severity: string; title: string }>();
   for (const f of findings) {
     const id = f.ruleId ?? "unknown";
-    const cur = checkCounts.get(id) ?? { count: 0, severity: f.severity };
+    const cur = checkCounts.get(id) ?? { count: 0, severity: f.severity, title: f.title || id };
     cur.count++;
     // Keep the highest-severity instance (CRITICAL > HIGH > MEDIUM > LOW > INFO)
     const sevRank: Record<string, number> = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1, INFO: 0 };
     if ((sevRank[f.severity] ?? 0) > (sevRank[cur.severity] ?? 0)) cur.severity = f.severity;
+    // Prefer a title from a higher-severity instance (and fall back to
+    // the first non-empty title we see).
+    if (!cur.title || cur.title === id) cur.title = f.title || cur.title;
     checkCounts.set(id, cur);
   }
   const topChecks = [...checkCounts.entries()]
@@ -506,15 +513,26 @@ function CloudCspmWidget({
           Top failing checks
         </div>
         <div className="space-y-1.5">
-          {topChecks.map(([ruleId, { count, severity }]) => (
+          {topChecks.map(([ruleId, { count, severity, title }]) => (
             <button
               key={ruleId}
               onClick={() => navigate(`/findings?tab=cloud&search=${encodeURIComponent(ruleId)}`)}
-              className="flex w-full items-center justify-between gap-2 rounded border border-gray-800 bg-gray-900/40 px-3 py-1.5 text-left transition-colors hover:border-gray-700 hover:bg-gray-900/60"
+              className="flex w-full items-center justify-between gap-3 rounded border border-gray-800 bg-gray-900/40 px-3 py-1.5 text-left transition-colors hover:border-gray-700 hover:bg-gray-900/60"
+              title={`${title}\n\n${ruleId}`}
             >
               <span className="flex items-center gap-2 min-w-0">
                 <SeverityBadge severity={severity} />
-                <span className="truncate font-mono text-[11px] text-gray-200" title={ruleId}>{ruleId}</span>
+                <span className="min-w-0 flex-1">
+                  {/* Lead line: human-readable title (operator-facing). */}
+                  <span className="block truncate text-xs text-gray-100">{title}</span>
+                  {/* Subline: Prowler ruleId in monospace (technical
+                      reference + matches what the search filter
+                      receives on click). Only shows when title differs
+                      from ruleId so we don't double-print. */}
+                  {title !== ruleId && (
+                    <span className="block truncate font-mono text-[10px] text-gray-500">{ruleId}</span>
+                  )}
+                </span>
               </span>
               <span className="tabular-nums rounded bg-gray-800 px-1.5 py-0.5 text-[10px] font-semibold text-gray-300">
                 {count}
