@@ -310,6 +310,226 @@ function CodeCategoriesWidget({
 //             the highest-signal subset; the EXPLOIT badge then renders for
 //             the ones that actually qualify (the predicate evaluates
 //             evidence client-side per row).
+// ── CSPM (Cloud) widget ─────────────────────────────────────────────────
+//
+// Phase 29 — replaces the Exploits widget for the Cloud tab. Three sub-
+// panels stacked in the 2-column grid slot:
+//
+//   1. Top Affected Services  — group findings by Prowler service prefix
+//                                (defender / monitor / network / storage /
+//                                vm / iam / etc). Bar chart sorted by count.
+//                                Operators triage CSPM by service first
+//                                ("fix Defender") before drilling into
+//                                individual checks.
+//
+//   2. Compliance Coverage    — top frameworks by % of findings tagged.
+//                                Each finding maps to ~12 frameworks; this
+//                                view shows where audit prep most needs
+//                                to start ("CIS Azure 5.0 has 80% of our
+//                                misconfigs flagged").
+//
+//   3. Top Failing Checks     — most-recurring ruleId with severity chip
+//                                and count. Surfaces concrete patterns
+//                                like "network_flow_log_captured_sent
+//                                fails on 4 watchers" — the actionable
+//                                remediation queue.
+//
+// Empty state when no cloud findings exist — points to the Cloud
+// Accounts page so the operator can configure + scan.
+
+function CloudCspmWidget({
+  findings,
+  isLoading,
+}: {
+  findings:  Finding[];
+  isLoading: boolean;
+}) {
+  const navigate = useNavigate();
+
+  // ── Aggregations (memo-free; the widget renders rarely + the
+  //    findings list is bounded at ~100 by the parent query) ─────────────
+  const total = findings.length;
+
+  // Service grouping — Prowler check IDs follow `{service}_{rest_of_check}`.
+  // Take the first underscore-delimited token as the service prefix.
+  const serviceCounts = new Map<string, number>();
+  for (const f of findings) {
+    const svc = (f.ruleId ?? "").split("_")[0] || "other";
+    serviceCounts.set(svc, (serviceCounts.get(svc) ?? 0) + 1);
+  }
+  const topServices = [...serviceCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 6);
+  const maxServiceCount = topServices[0]?.[1] ?? 1;
+
+  // Compliance framework hit counts — extract distinct framework keys
+  // from each finding's evidence.compliance map and tally how many
+  // findings hit each.
+  const fwCounts = new Map<string, number>();
+  for (const f of findings) {
+    const ev = (f.evidence ?? {}) as Record<string, unknown>;
+    const compliance = (ev["compliance"] ?? {}) as Record<string, unknown>;
+    for (const fw of Object.keys(compliance)) {
+      fwCounts.set(fw, (fwCounts.get(fw) ?? 0) + 1);
+    }
+  }
+  const topFrameworks = [...fwCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 7);
+
+  // Top failing checks — ruleId with most occurrences. Severity surfaces
+  // alongside so the operator sees urgency without a click.
+  const checkCounts = new Map<string, { count: number; severity: string }>();
+  for (const f of findings) {
+    const id = f.ruleId ?? "unknown";
+    const cur = checkCounts.get(id) ?? { count: 0, severity: f.severity };
+    cur.count++;
+    // Keep the highest-severity instance (CRITICAL > HIGH > MEDIUM > LOW > INFO)
+    const sevRank: Record<string, number> = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1, INFO: 0 };
+    if ((sevRank[f.severity] ?? 0) > (sevRank[cur.severity] ?? 0)) cur.severity = f.severity;
+    checkCounts.set(id, cur);
+  }
+  const topChecks = [...checkCounts.entries()]
+    .sort((a, b) => b[1].count - a[1].count)
+    .slice(0, 5);
+
+  // ── Empty state ────────────────────────────────────────────────────
+  if (!isLoading && total === 0) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center text-center">
+        <CloudIcon className="mx-auto mb-3 h-10 w-10 text-gray-700" />
+        <h3 className="text-sm font-semibold text-white">No cloud findings yet</h3>
+        <p className="mt-1 max-w-md text-xs text-gray-500">
+          Add a cloud account and trigger a CSPM scan. Prowler will evaluate
+          ~250 Azure (or AWS/GCP) misconfiguration checks against your subscription.
+        </p>
+        <button
+          onClick={() => navigate("/cloud-accounts")}
+          className="mt-4 inline-flex items-center gap-1.5 rounded bg-indigo-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-600"
+        >
+          <Plus className="h-4 w-4" /> Configure cloud account
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="mb-4 flex items-center justify-between">
+        <h2 className="flex items-center gap-1.5 text-sm font-semibold text-white">
+          <CloudIcon className="h-3.5 w-3.5 text-indigo-400" />
+          Cloud Misconfigurations
+        </h2>
+        <span className="text-[10px] uppercase tracking-wider text-gray-500">
+          {total} open {total === 1 ? "finding" : "findings"}
+        </span>
+      </div>
+
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+        {/* Top Affected Services */}
+        <div>
+          <div className="mb-2 text-[10px] uppercase tracking-wider text-gray-500">
+            Top affected services
+          </div>
+          <div className="space-y-1.5">
+            {topServices.map(([svc, count]) => {
+              const pct = Math.round((count / maxServiceCount) * 100);
+              return (
+                <button
+                  key={svc}
+                  onClick={() => navigate(`/findings?tab=cloud&search=${encodeURIComponent(svc)}`)}
+                  className="block w-full text-left"
+                  title={`Filter findings to '${svc}' service`}
+                >
+                  <div className="mb-0.5 flex items-center justify-between text-[11px]">
+                    <span className="font-mono text-gray-300">{svc}</span>
+                    <span className="tabular-nums font-semibold text-gray-200">{count}</span>
+                  </div>
+                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-800">
+                    <div
+                      className="h-full rounded-full bg-indigo-500/70"
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                </button>
+              );
+            })}
+            {topServices.length === 0 && (
+              <div className="text-xs text-gray-500">—</div>
+            )}
+          </div>
+        </div>
+
+        {/* Compliance Coverage */}
+        <div>
+          <div className="mb-2 text-[10px] uppercase tracking-wider text-gray-500">
+            Compliance coverage · {fwCounts.size} frameworks mapped
+          </div>
+          <div className="space-y-1.5">
+            {topFrameworks.map(([fw, count]) => {
+              const pct = Math.round((count / Math.max(total, 1)) * 100);
+              const label = fw.replace(/-\d.*$/, "");
+              return (
+                <div key={fw}>
+                  <div className="mb-0.5 flex items-center justify-between text-[11px]">
+                    <span
+                      className="truncate font-medium text-gray-300"
+                      title={`${fw}: ${count} of ${total} findings tagged`}
+                    >
+                      {label}
+                    </span>
+                    <span className="tabular-nums text-gray-500">
+                      {pct}%
+                      <span className="ml-1 text-gray-600">·</span>
+                      <span className="ml-1 tabular-nums text-gray-300">{count}</span>
+                    </span>
+                  </div>
+                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-800">
+                    <div
+                      className="h-full rounded-full bg-rose-500/60"
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+            {topFrameworks.length === 0 && (
+              <div className="text-xs text-gray-500">No compliance mappings</div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Top Failing Checks — full width below the two columns */}
+      <div className="mt-5 border-t border-gray-800 pt-4">
+        <div className="mb-2 text-[10px] uppercase tracking-wider text-gray-500">
+          Top failing checks
+        </div>
+        <div className="space-y-1.5">
+          {topChecks.map(([ruleId, { count, severity }]) => (
+            <button
+              key={ruleId}
+              onClick={() => navigate(`/findings?tab=cloud&search=${encodeURIComponent(ruleId)}`)}
+              className="flex w-full items-center justify-between gap-2 rounded border border-gray-800 bg-gray-900/40 px-3 py-1.5 text-left transition-colors hover:border-gray-700 hover:bg-gray-900/60"
+            >
+              <span className="flex items-center gap-2 min-w-0">
+                <SeverityBadge severity={severity} />
+                <span className="truncate font-mono text-[11px] text-gray-200" title={ruleId}>{ruleId}</span>
+              </span>
+              <span className="tabular-nums rounded bg-gray-800 px-1.5 py-0.5 text-[10px] font-semibold text-gray-300">
+                {count}
+              </span>
+            </button>
+          ))}
+          {topChecks.length === 0 && (
+            <div className="text-xs text-gray-500">—</div>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
 function ExploitsWidget({
   tab, runtimeDash, exploits, isLoading,
 }: {
@@ -703,12 +923,19 @@ export default function DashboardPage() {
     queryFn: () => findingsApi.list(
       tab === "runtime"
         ? { scanType: "RUNTIME" as never, limit: 100, ...targetParams }
-        : {
-            scanType: (tab === "web" ? "DAST,PENTEST_FULL" : "SAST,SCA,SECRET,IAC,CONTAINER") as never,
-            confidence: "CONFIRMED" as never,
-            limit: 100,
-            ...targetParams,
-          },
+      // Phase 29 — Cloud tab fetches CLOUD-scoped findings (no
+      // confidence filter; Prowler checks are deterministic, every
+      // FAIL is a misconfig, not a probabilistic exploit). Bumped
+      // limit to 250 to cover the full Prowler check set without
+      // truncation in the dashboard's CSPM widget.
+        : tab === "cloud"
+          ? { scanType: "CLOUD" as never, limit: 250, ...targetParams }
+          : {
+              scanType: (tab === "web" ? "DAST,PENTEST_FULL" : "SAST,SCA,SECRET,IAC,CONTAINER") as never,
+              confidence: "CONFIRMED" as never,
+              limit: 100,
+              ...targetParams,
+            },
     ),
     refetchInterval: 60_000,
   });
@@ -720,6 +947,10 @@ export default function DashboardPage() {
   // surface). This stops "LOW · EXPLOIT" rows that read as
   // contradictory.
   const filteredExploits = (exploitsQuery.data?.data ?? []).filter((f) => {
+    // Phase 29 — Cloud tab: NO predicate filter. Every FAIL Prowler
+    // returned is a real misconfig; the CloudCspmWidget aggregates
+    // services / frameworks / checks across the full set.
+    if (tab === "cloud") return true;
     if (tab !== "runtime") return wasExploitSuccessful(f);
     if (!hasActiveAttack(f)) return false;
     return f.severity === "CRITICAL" || f.severity === "HIGH" || f.severity === "MEDIUM";
@@ -1131,6 +1362,17 @@ export default function DashboardPage() {
               scanTypeCounts={stats?.scanTypeCounts}
               severityByScanType={stats?.severityByScanType}
             />
+          ) : tab === "cloud" ? (
+            // Phase 29 — CSPM-specific widget with Top Services +
+            // Compliance Coverage + Top Failing Checks. Replaces the
+            // generic ExploitsWidget for cloud tab because Prowler
+            // findings are misconfigurations, not exploits — the
+            // operator's triage axes are service / framework /
+            // recurring check, not "did the scanner reproduce it".
+            <CloudCspmWidget
+              findings={filteredExploits}
+              isLoading={exploitsQuery.isLoading}
+            />
           ) : (
             <ExploitsWidget
               tab={tab}
@@ -1148,7 +1390,12 @@ export default function DashboardPage() {
         <div className="rounded-lg border border-gray-800 bg-gray-900 p-5">
           <div className="mb-4 flex items-center justify-between">
             <h2 className="text-sm font-semibold text-white">
-              Recent {tab === "web" ? "Web " : ""}Scans
+              Recent {
+                tab === "web"     ? "Web "
+                : tab === "runtime" ? "Runtime "
+                : tab === "cloud"   ? "Cloud "
+                :                    ""
+              }Scans
             </h2>
             <Link to="/scans" className="flex items-center gap-1 text-xs text-indigo-400 hover:text-indigo-300">
               View all <ArrowRight className="h-3 w-3" />
