@@ -55,16 +55,16 @@
     animation: wfArrowPoePulse 2.4s ease-in-out infinite;
   }
   @keyframes wfArrowPoePulse {
-    /* Stroke widths track the base arrow weight (4.5px main stroke). */
-    0%, 100% { stroke-width: 4.5; opacity: 0.95; }
-    50%      { stroke-width: 6.0; opacity: 1.00; }
+    /* Stroke widths track the base arrow weight (2.75px main stroke). */
+    0%, 100% { stroke-width: 2.75; opacity: 0.95; }
+    50%      { stroke-width: 3.75; opacity: 1.00; }
   }
   /* Respect users who prefer reduced motion — drop the pulse entirely
      and just show the arrow at its mid-pulse stroke width. */
   @media (prefers-reduced-motion: reduce) {
     .wf-arrow-poe {
       animation: none;
-      stroke-width: 5.2;
+      stroke-width: 3.25;
     }
   }
 }

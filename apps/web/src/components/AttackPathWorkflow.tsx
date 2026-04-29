@@ -40,42 +40,54 @@ import type { AttackPathNode, WorkflowStep } from "@devsecops/types";
 
 type Phase = WorkflowStep["phase"];
 
+// ── Brand-aligned palette ───────────────────────────────────────────────
+// Per `breachlens-brand-colors.md`: brand-indigo across the board; drop
+// teal/amber/rose for new UI. We were using rose-500 for runtime — fixed.
+//
+// New story: source/image/surface use varying indigo shades (the "lab"
+// tiers — code, image, scanned surface). Runtime is the ONE red callout
+// (the "production / live attack" tier). The dramatic colour transition
+// happens at the surface→runtime arrow: that's where the chain shifts
+// from "we tested it" to "production observed it". Severity-red chips
+// inside cards now operate on a different axis from the card's phase
+// accent — no more visual collision.
 const PHASE_DEF: Record<Phase, {
   label:        string;
   Icon:         typeof Code2;
-  /** Arrow gradient stop colour. Keep in sync with AttackPathFlow. */
+  /** Arrow gradient stop colour. Keep aligned with the accent shade. */
   stopColor:    string;
-  /** Tailwind class for the 4-px left border accent + phase text. */
+  /** Tailwind class for the 4-px left border accent. */
   accentBorder: string;
+  /** Phase text colour for the header chip. */
   accentText:   string;
 }> = {
   source: {
     label:        "Source",
     Icon:         Code2,
-    stopColor:    "#818cf8",        // indigo-400 (slightly brighter for arrow visibility)
-    accentBorder: "border-l-indigo-500",
+    stopColor:    "#4f46e5",        // indigo-600
+    accentBorder: "border-l-indigo-600",
     accentText:   "text-indigo-300",
   },
   image: {
     label:        "Image",
     Icon:         Box,
-    stopColor:    "#a5b4fc",        // indigo-300
-    accentBorder: "border-l-indigo-400",
+    stopColor:    "#6366f1",        // indigo-500
+    accentBorder: "border-l-indigo-500",
     accentText:   "text-indigo-300",
   },
   surface: {
     label:        "Surface",
     Icon:         Globe,
-    stopColor:    "#f87171",        // red-400
-    accentBorder: "border-l-red-500",
-    accentText:   "text-red-300",
+    stopColor:    "#818cf8",        // indigo-400
+    accentBorder: "border-l-indigo-400",
+    accentText:   "text-indigo-200",
   },
   runtime: {
     label:        "Runtime",
     Icon:         Activity,
-    stopColor:    "#fb7185",        // rose-400 (warmer, hints at "live")
-    accentBorder: "border-l-rose-500",
-    accentText:   "text-rose-300",
+    stopColor:    "#ef4444",        // red-500 — sole red callout in the workflow
+    accentBorder: "border-l-red-500",
+    accentText:   "text-red-300",
   },
 };
 
@@ -102,15 +114,45 @@ export default function AttackPathWorkflow({
 }) {
   const nodeById = useMemo(() => new Map(nodes.map((n) => [n.findingId, n])), [nodes]);
 
-  // Pre-compute "step has CONFIRMED evidence" so arrows entering a PoE
-  // step can pulse without each arrow re-walking the evidence list.
+  // Pre-compute PoE state per step. Three states (none / direct / linked)
+  // capture the operator-facing distinction that "the step's own evidence
+  // is CONFIRMED" is stronger proof than "the step corroborates a
+  // CONFIRMED exploit elsewhere in the chain". Both deserve a flame
+  // badge — the chain IS proven — but they earn different weight in
+  // the UI (filled vs outlined chip + different tooltip).
+  //
+  // Why widen: the original rule (direct only) left RUNTIME steps
+  // without a flame even when an upstream PENTEST CONFIRMED exploit +
+  // Wazuh LIKELY runtime alert together prove live exploitation. Two
+  // independent telemetry streams converging on the same conclusion
+  // IS proof, even if neither qualifies alone. Narrowed to the
+  // PENTEST/DAST→RUNTIME pattern only — SAST/CONTAINER CONFIRMED
+  // upstream does NOT propagate, because static-analysis CONFIRMED
+  // means "vulnerability exists" not "it's being exploited".
+  //
   // Hooks must run in the same order on every render — keep above any
   // early return.
-  const stepHasPoE = useMemo(() => {
-    return workflow.map((step) =>
-      step.evidenceFindingIds.some((id) => nodeById.get(id)?.confidence === "CONFIRMED"),
+  const stepPoE = useMemo<("none" | "direct" | "linked")[]>(() => {
+    const chainHasExploitProof = nodes.some(
+      (n) =>
+        n.confidence === "CONFIRMED" &&
+        (n.scanType === "PENTEST_FULL" || n.scanType === "DAST"),
     );
-  }, [workflow, nodeById]);
+    return workflow.map((step) => {
+      const directPoE = step.evidenceFindingIds.some(
+        (id) => nodeById.get(id)?.confidence === "CONFIRMED",
+      );
+      if (directPoE) return "direct";
+      if (
+        step.phase === "runtime" &&
+        chainHasExploitProof &&
+        step.evidenceFindingIds.length > 0
+      ) {
+        return "linked";
+      }
+      return "none";
+    });
+  }, [workflow, nodeById, nodes]);
 
   if (workflow.length === 0) return null;
 
@@ -126,28 +168,33 @@ export default function AttackPathWorkflow({
         </span>
       </div>
 
-      <FlowCanvas workflow={workflow} stepHasPoE={stepHasPoE} nodeById={nodeById} onOpenFinding={onOpenFinding} />
+      <FlowCanvas workflow={workflow} stepPoE={stepPoE} nodeById={nodeById} onOpenFinding={onOpenFinding} />
     </div>
   );
 }
 
 // ── Flow canvas — measured layout, SVG arrows ────────────────────────────
 
+type PoEStatus = "none" | "direct" | "linked";
+
 interface ArrowGeom {
   from:    number;
   to:      number;
   d:       string;
+  /** Whether the destination step has PoE — drives the pulse animation.
+   *  Both "direct" and "linked" pulse; the visual distinction lives in
+   *  the chip on the card, not the arrow. */
   toIsPoE: boolean;
 }
 
 function FlowCanvas({
   workflow,
-  stepHasPoE,
+  stepPoE,
   nodeById,
   onOpenFinding,
 }: {
   workflow:      WorkflowStep[];
-  stepHasPoE:    boolean[];
+  stepPoE:       PoEStatus[];
   nodeById:      Map<string, AttackPathNode>;
   onOpenFinding: (findingId: string) => void;
 }) {
@@ -193,7 +240,15 @@ function FlowCanvas({
         // even when both endpoints are at the same height.
         const midX = (x1 + x2) / 2;
         const d = `M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`;
-        next.push({ from: i, to: i + 1, d, toIsPoE: stepHasPoE[i + 1] ?? false });
+        next.push({
+          from: i,
+          to: i + 1,
+          d,
+          // Pulse for both direct + linked PoE. Both convey "this
+          // chain has confirmed proof"; the chip on the card carries
+          // the direct-vs-linked nuance.
+          toIsPoE: (stepPoE[i + 1] ?? "none") !== "none",
+        });
       }
       setArrows(next);
       setDims({ w: track.scrollWidth, h: track.scrollHeight });
@@ -206,7 +261,7 @@ function FlowCanvas({
       if (el) ro.observe(el);
     }
     return () => ro.disconnect();
-  }, [workflow.length, stepHasPoE]);
+  }, [workflow.length, stepPoE]);
 
   // Tick to run the entrance animation. Forces a re-render after first
   // paint with `animateIn = true` so the stroke-dasharray transition
@@ -234,7 +289,7 @@ function FlowCanvas({
           <StepCard
             key={step.stepNumber}
             step={step}
-            hasPoE={stepHasPoE[i] ?? false}
+            poe={stepPoE[i] ?? "none"}
             innerRef={(el) => { stepRefs.current[i] = el; }}
             nodeById={nodeById}
             onOpenFinding={onOpenFinding}
@@ -269,14 +324,14 @@ function FlowCanvas({
               <marker
                 key={`m-${a.to}`}
                 id={`wf-arrow-${a.to}`}
-                viewBox="0 0 14 14"
-                refX="11"
-                refY="7"
-                markerWidth="9"
-                markerHeight="9"
+                viewBox="0 0 12 12"
+                refX="10"
+                refY="6"
+                markerWidth="6"
+                markerHeight="6"
                 orient="auto"
               >
-                <path d="M 0 0 L 14 7 L 0 14 L 4 7 z" fill={PHASE_DEF[workflow[a.to]!.phase].stopColor} />
+                <path d="M 0 0 L 12 6 L 0 12 L 3 6 z" fill={PHASE_DEF[workflow[a.to]!.phase].stopColor} />
               </marker>
             ))}
           </defs>
@@ -310,24 +365,24 @@ function ArrowPath({
   return (
     <g>
       {/* Glow underlay — same path, wider, low opacity. Adds depth
-          without colour-shifting the gradient. Bumped 9 → 14 with a
-          stronger 0.30 opacity after operator feedback that arrows
-          read as "too quiet" between cards. */}
+          without colour-shifting the gradient. Calibrated to operator
+          feedback: 14px was "too huge", 9px was "too quiet". 10px @
+          0.28 hits the readable middle. */}
       <path
         d={d}
         stroke={`url(#wf-grad-${fromIdx})`}
-        strokeWidth={14}
+        strokeWidth={10}
         strokeLinecap="round"
         fill="none"
-        opacity={0.30}
+        opacity={0.28}
       />
       {/* Main stroke. PoE-target arrows pulse via CSS-keyframe class.
-          Bumped 3 → 4.5 to give the arrows real visual weight; below
-          ~4 they disappear against the card-dominant layout. */}
+          2.75px is the sweet spot — beefy enough that the gradient
+          reads, restrained enough that it doesn't compete with cards. */}
       <path
         d={d}
         stroke={`url(#wf-grad-${fromIdx})`}
-        strokeWidth={4.5}
+        strokeWidth={2.75}
         strokeLinecap="round"
         fill="none"
         markerEnd={`url(#wf-arrow-${toIdx})`}
@@ -348,13 +403,13 @@ function ArrowPath({
 
 function StepCard({
   step,
-  hasPoE,
+  poe,
   innerRef,
   nodeById,
   onOpenFinding,
 }: {
   step:          WorkflowStep;
-  hasPoE:        boolean;
+  poe:           PoEStatus;
   innerRef:      (el: HTMLDivElement | null) => void;
   nodeById:      Map<string, AttackPathNode>;
   onOpenFinding: (findingId: string) => void;
@@ -390,13 +445,27 @@ function StepCard({
               {step.technique}
             </span>
           )}
-          {hasPoE && (
+          {poe !== "none" && (
             <span
-              className="flex items-center gap-1 rounded border border-red-600/60 bg-red-950/60 px-1.5 py-0.5 text-[9px] font-bold text-red-200"
-              title="This step is backed by a CONFIRMED Proof-of-Exploit finding"
+              className={
+                poe === "direct"
+                  // Filled red — this step's own evidence is CONFIRMED.
+                  ? "flex items-center gap-1 rounded border border-red-600/60 bg-red-950/60 px-1.5 py-0.5 text-[9px] font-bold text-red-200"
+                  // Outlined red — this step corroborates a CONFIRMED
+                  // exploit elsewhere in the chain (e.g. RUNTIME alerts
+                  // matching a CONFIRMED PENTEST exploit). Same alarm
+                  // colour, lighter visual weight to signal "linked
+                  // proof, not own proof".
+                  : "flex items-center gap-1 rounded border border-red-600/70 bg-transparent px-1.5 py-0.5 text-[9px] font-bold text-red-300"
+              }
+              title={
+                poe === "direct"
+                  ? "Backed by a CONFIRMED Proof-of-Exploit finding in this step"
+                  : "Corroborates a CONFIRMED PENTEST/DAST exploit elsewhere in this chain"
+              }
             >
               <Flame className="h-2.5 w-2.5" />
-              POE
+              {poe === "direct" ? "POE" : "POE↗"}
             </span>
           )}
           <span className="rounded-full bg-gray-800 px-1.5 py-0.5 text-[10px] font-semibold text-gray-300">

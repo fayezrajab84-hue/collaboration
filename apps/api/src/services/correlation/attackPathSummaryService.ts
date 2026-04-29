@@ -189,7 +189,7 @@ export async function generateSummary(
     // card. 60 chars × 13px font fits a single tight line; longer titles
     // get clipped at the last sentence/word boundary by clipText.
     title:              z.string().min(3).transform((s) => clipText(s, 60)),
-    description:        z.string().min(8).transform((s) => clipText(s, 240)),
+    description:        z.string().min(8).transform((s) => clipText(s, 180)),
     evidenceFindingIds: z.array(z.string())
                           .transform((ids) => ids.filter((id) => validFindingIds.has(id)).slice(0, 4))
                           .pipe(z.array(z.string()).min(1).max(4)),
@@ -424,17 +424,59 @@ Step contract (per step):
     "Confirm CVE-2022-2309 in libxml2 layer"
     "Reproduce SQL injection via /login.php"
     "Detect post-exploit shell"
-- description: 1-2 sentences (max 240 chars). What the step DOES, citing
+- description: 1-2 sentences (MAX 180 CHARS). What the step DOES, citing
   the specific evidence (CVE / URL / payload / Wazuh rule). NEVER
   generic ("the attacker exploits the vulnerability"). Be concrete.
+  Drop preamble like "The attacker..." / "Attackers can..." — start
+  with the verb-phrase directly ("Reproduces SQL injection at...",
+  "Detects file-integrity violation on...").
 - evidenceFindingIds: 1-4 finding IDs from the chain that PROVE this
   step. CRITICAL: these IDs MUST come from the # Nodes section of the
   user prompt. Do NOT invent IDs. The system filters out unknown IDs
   and rejects the response if a step ends up with zero valid evidence.
-- technique: OPTIONAL MITRE ATT&CK technique code matching this step
-  (e.g. "T1190" Exploit Public-Facing Application, "T1059.004" Unix
-  Shell, "T1505.003" Web Shell). Include only when the mapping is
-  obvious. Skip the field otherwise — never guess.
+- technique: OPTIONAL MITRE ATT&CK technique. PHASE-APPROPRIATE
+  TECHNIQUES — pick from these or OMIT the field. Do NOT guess.
+  Earlier regenerations produced T1498 (Network DoS) for an OpenSSL
+  CVE in a container layer — that's wrong. The list below is the
+  authoritative one; if NONE fit, leave the field blank.
+
+    SOURCE phase (SAST / IAC / SECRET):
+      T1059          Command and Scripting Interpreter
+                       — when SAST flags command injection / unsafe exec
+      T1552          Unsecured Credentials in Files
+                       — when SECRET finds a leaked token / password
+      T1078          Valid Accounts
+                       — when leaked credentials map to a real account
+      omit if the SAST finding is just code-quality without a clear TTP
+
+    IMAGE phase (SCA / CONTAINER):
+      T1190          Exploit Public-Facing Application
+                       — CVE in a publicly-served library
+      T1525          Implant Internal Image
+                       — vulnerable / outdated base image
+      T1505          Server Software Component
+                       — vulnerable framework / web server module
+      omit for general SCA findings without a known exploit path
+
+    SURFACE phase (DAST / PENTEST_FULL):
+      T1190          Exploit Public-Facing Application (most common)
+      T1059          Command and Scripting Interpreter (RCE / cmd-i)
+      T1212          Exploitation for Credential Access (auth bypass)
+      T1187          Forced Authentication
+      omit for unverified scanner alerts
+
+    RUNTIME phase (Wazuh):
+      T1059.004      Unix Shell — shell command alerts
+      T1548          Abuse Elevation Control — sudo / privesc
+      T1098          Account Manipulation — user/account changes
+      T1565          Data Manipulation — FIM on critical files
+                       (e.g. /etc/passwd, /etc/shadow rule 550/553)
+      T1078          Valid Accounts — successful auth from new source
+      omit for generic process / network alerts
+
+  Skip the technique field entirely when none of the phase-appropriate
+  techniques fit. Better to omit than misclassify — the operator
+  trusts the badge to mean what it says.
 
 Workflow guidelines:
 - Follow the canonical phase order. NEVER reorder backwards (a
