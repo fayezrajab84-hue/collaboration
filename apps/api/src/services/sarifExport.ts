@@ -166,14 +166,23 @@ function buildLocations(f: Finding): SarifLocation[] {
   //    don't break the relative-path expectation.
   if (f.filePath) {
     const cleanPath = f.filePath.replace(/^\/+/, "");
+    // SARIF spec + GitHub validator require startLine >= 1. Some
+    // scanner outputs use 0 to mean "file-level finding, no specific
+    // line" (e.g. SCA findings on a package as a whole, IaC findings
+    // on a config file's overall posture). When lineStart is < 1 we
+    // skip the region entirely — the operator still gets the file
+    // path in Code Scanning, just without an inline annotation.
+    // endLine must be >= startLine when present.
+    const validStart = f.lineStart != null && f.lineStart >= 1;
+    const validEnd   = validStart && f.lineEnd != null && f.lineEnd >= f.lineStart!;
     return [{
       physicalLocation: {
         artifactLocation: { uri: cleanPath },
-        ...(f.lineStart != null
+        ...(validStart
           ? {
               region: {
-                startLine: f.lineStart,
-                ...(f.lineEnd != null ? { endLine: f.lineEnd } : {}),
+                startLine: f.lineStart!,
+                ...(validEnd ? { endLine: f.lineEnd! } : {}),
                 ...(f.codeSnippet ? { snippet: { text: f.codeSnippet } } : {}),
               },
             }
