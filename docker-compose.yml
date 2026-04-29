@@ -587,3 +587,55 @@ services:
       start_period: 10s
     mem_limit: 2g
     cpus: '2.0'
+
+  # ── Cloudflare Tunnel — public reachability for CI/CD ─────────────────────
+  #
+  # Phase A6 — exposes the BreachLens UI + API on a public hostname so
+  # GitHub Actions runners (and any other external caller) can reach the
+  # local deployment without opening firewall ports. Routes through the
+  # web service (nginx) which already proxies /api → api:3000 and serves
+  # the SPA from /, so a single tunnel hostname carries both surfaces.
+  #
+  # Opt-in via the `tunnel` profile — operators who don't need public
+  # access never start the cloudflared container. Drop the profile flag
+  # once you've validated the tunnel and want it always running.
+  #
+  # Setup (full runbook: docs/runbooks/cloudflare-tunnel.md):
+  #   1. Create a tunnel in the Cloudflare Zero Trust dashboard
+  #   2. Copy the connector token Cloudflare generates
+  #   3. Set CLOUDFLARE_TUNNEL_TOKEN in .env
+  #   4. Configure the tunnel's public hostname → Service: HTTP, URL: web:80
+  #   5. Run: docker compose --profile tunnel up -d cloudflared
+  #
+  # Cloudflare manages the DNS record automatically — you don't add an A
+  # record manually. The connector announces itself to Cloudflare's edge
+  # over a persistent outbound HTTPS connection (no inbound ports).
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    profiles:
+      - tunnel
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --metrics 0.0.0.0:8080 run
+    environment:
+      # Connector token from the Cloudflare Zero Trust dashboard — looks
+      # like `eyJh...` (long base64). Pin in .env, never commit. Without
+      # it the container exits immediately with a clear error.
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?CLOUDFLARE_TUNNEL_TOKEN required — see docs/runbooks/cloudflare-tunnel.md}
+    networks:
+      - internal     # reaches web service over the internal network
+      - public       # outbound to the Cloudflare edge
+    depends_on:
+      web:
+        condition: service_healthy
+    healthcheck:
+      # Cloudflared exposes a /ready endpoint when --metrics is set;
+      # returns 200 once the connector has registered with Cloudflare's
+      # edge. A returning 503 means "not connected yet" — useful for
+      # the operator to debug DNS / token misconfigurations.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/ready | grep -q '\"status\":200' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    mem_limit: 128m
+    cpus: '0.5'
