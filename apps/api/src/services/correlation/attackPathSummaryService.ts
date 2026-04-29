@@ -184,7 +184,11 @@ export async function generateSummary(
   const stepSchema = z.object({
     stepNumber:         z.number().int().min(1),
     phase:              z.enum(["source", "image", "surface", "runtime"]),
-    title:              z.string().min(3).transform((s) => clipText(s, 80)),
+    // Phase 27.5.y refinement: tightened from 80 → 60 chars after operator
+    // feedback that titles were wrapping awkwardly inside the 18rem step
+    // card. 60 chars × 13px font fits a single tight line; longer titles
+    // get clipped at the last sentence/word boundary by clipText.
+    title:              z.string().min(3).transform((s) => clipText(s, 60)),
     description:        z.string().min(8).transform((s) => clipText(s, 240)),
     evidenceFindingIds: z.array(z.string())
                           .transform((ids) => ids.filter((id) => validFindingIds.has(id)).slice(0, 4))
@@ -413,11 +417,13 @@ Phase mapping (use exactly these phase strings in JSON):
 Step contract (per step):
 - stepNumber: 1, 2, 3, ... (you provide them; they will be re-numbered).
 - phase: one of "source" | "image" | "surface" | "runtime".
-- title: 4-10 words. The action a human-readable verb. Examples:
+- title: 4-8 words, MAX 60 CHARS. The action — a human-readable verb.
+  Lead with the verb, drop filler words like "in source" / "on host" /
+  "in container" — those are redundant with the phase chip. Examples:
     "Locate unsanitized $_GET in login.php"
     "Confirm CVE-2022-2309 in libxml2 layer"
     "Reproduce SQL injection via /login.php"
-    "Detect post-exploit shell on dvwa-host"
+    "Detect post-exploit shell"
 - description: 1-2 sentences (max 240 chars). What the step DOES, citing
   the specific evidence (CVE / URL / payload / Wazuh rule). NEVER
   generic ("the attacker exploits the vulnerability"). Be concrete.

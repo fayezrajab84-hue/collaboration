@@ -269,14 +269,14 @@ function FlowCanvas({
               <marker
                 key={`m-${a.to}`}
                 id={`wf-arrow-${a.to}`}
-                viewBox="0 0 12 12"
-                refX="10"
-                refY="6"
-                markerWidth="7"
-                markerHeight="7"
+                viewBox="0 0 14 14"
+                refX="11"
+                refY="7"
+                markerWidth="9"
+                markerHeight="9"
                 orient="auto"
               >
-                <path d="M 0 0 L 12 6 L 0 12 L 3 6 z" fill={PHASE_DEF[workflow[a.to]!.phase].stopColor} />
+                <path d="M 0 0 L 14 7 L 0 14 L 4 7 z" fill={PHASE_DEF[workflow[a.to]!.phase].stopColor} />
               </marker>
             ))}
           </defs>
@@ -310,20 +310,24 @@ function ArrowPath({
   return (
     <g>
       {/* Glow underlay — same path, wider, low opacity. Adds depth
-          without colour-shifting the gradient. */}
+          without colour-shifting the gradient. Bumped 9 → 14 with a
+          stronger 0.30 opacity after operator feedback that arrows
+          read as "too quiet" between cards. */}
       <path
         d={d}
         stroke={`url(#wf-grad-${fromIdx})`}
-        strokeWidth={9}
+        strokeWidth={14}
         strokeLinecap="round"
         fill="none"
-        opacity={0.22}
+        opacity={0.30}
       />
-      {/* Main stroke. PoE-target arrows pulse via CSS-keyframe class. */}
+      {/* Main stroke. PoE-target arrows pulse via CSS-keyframe class.
+          Bumped 3 → 4.5 to give the arrows real visual weight; below
+          ~4 they disappear against the card-dominant layout. */}
       <path
         d={d}
         stroke={`url(#wf-grad-${fromIdx})`}
-        strokeWidth={3}
+        strokeWidth={4.5}
         strokeLinecap="round"
         fill="none"
         markerEnd={`url(#wf-arrow-${toIdx})`}
@@ -434,7 +438,21 @@ function EvidenceChip({
   onClick: () => void;
 }) {
   const sevClass = SEV_CHIP[node.severity] ?? SEV_CHIP["INFO"]!;
-  const label = node.title.length > 40 ? `${node.title.slice(0, 38)}…` : node.title;
+  // Smart label: lead with packageName@version for package-based findings.
+  // Reason: Trivy-style titles ("openssl 3.5.5-1 — 7 vulns") collapse across
+  // binary packages that share the same source version — DVWA has
+  // libssl3t64 + openssl + openssl-provider-legacy all titled identically,
+  // and the differentiator lives in `packageName`, not the title. Leading
+  // with packageName makes those chips visually distinct without bumping
+  // the truncation budget. Falls back to truncated title for SAST/PENTEST/
+  // DAST/RUNTIME findings (no packageName).
+  const label = (() => {
+    if (node.packageName) {
+      const v = node.packageVersion ? `@${node.packageVersion}` : "";
+      return `${node.packageName}${v}`;
+    }
+    return node.title.length > 56 ? `${node.title.slice(0, 54)}…` : node.title;
+  })();
 
   return (
     <button

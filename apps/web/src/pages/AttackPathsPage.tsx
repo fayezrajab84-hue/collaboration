@@ -488,6 +488,13 @@ function PathCard({
   const isGroupOpen = (scanType: string) => groupOpen[scanType] === true;
   const toggleGroup = (scanType: string) =>
     setGroupOpen((prev) => ({ ...prev, [scanType]: !prev[scanType] }));
+
+  // Phase 27.5.y — the per-scan-type drill-down (Web — DAST / Web — Pentest /
+  // Container CVEs / Runtime / SAST) duplicates information already covered
+  // by the AI workflow's evidence chips, so it's collapsed by default. The
+  // operator clicks "Show all findings (N)" when they need the exhaustive
+  // list rather than the proof-bearing curated view.
+  const [showAllFindings, setShowAllFindings] = useState(false);
   const Icon = path.hasConfirmed ? AlertTriangle : Network;
   const iconClass = path.hasConfirmed ? "text-red-400" : "text-indigo-400";
   const isToggleable = !forceExpanded;
@@ -558,13 +565,37 @@ function PathCard({
               here. Removed because the AttackPathWorkflow rendered inside
               AiSummaryPanel above already shows the same phase taxonomy
               (Source → Image → Surface → Runtime) with richer detail —
-              AI-narrated steps, evidence chips, MITRE techniques. Showing
-              both was visual noise. */}
-          <ScanTypeGroups
-            nodes={path.nodes}
-            isGroupOpen={isGroupOpen}
-            toggleGroup={toggleGroup}
-          />
+              AI-narrated steps, evidence chips, MITRE techniques.
+
+              Phase 27.5.y: the per-scan-type drill-down beneath is now
+              collapsed behind a single toggle. The workflow above already
+              cites specific findings via clickable chips, so the
+              exhaustive group list is opt-in rather than always-on noise. */}
+          <button
+            type="button"
+            onClick={() => setShowAllFindings((v) => !v)}
+            className="flex w-full items-center gap-2 rounded-md border border-gray-800 bg-gray-900/40 px-3 py-2 text-left text-xs text-gray-400 transition-colors hover:border-gray-700 hover:bg-gray-900/60 hover:text-gray-200"
+          >
+            {showAllFindings
+              ? <ChevronDown className="h-3.5 w-3.5" />
+              : <ChevronRight className="h-3.5 w-3.5" />}
+            <span className="font-medium uppercase tracking-wider text-[10px]">
+              {showAllFindings ? "Hide" : "Show"} all findings
+            </span>
+            <span className="ml-1 rounded bg-gray-800 px-1.5 py-0.5 text-[10px] font-semibold text-gray-300">
+              {path.nodes.length}
+            </span>
+            <span className="ml-auto text-[10px] text-gray-500">
+              grouped by scan type
+            </span>
+          </button>
+          {showAllFindings && (
+            <ScanTypeGroups
+              nodes={path.nodes}
+              isGroupOpen={isGroupOpen}
+              toggleGroup={toggleGroup}
+            />
+          )}
         </div>
       )}
     </div>
