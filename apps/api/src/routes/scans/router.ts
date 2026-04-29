@@ -56,6 +56,107 @@ router.post("/:id/crawler-progress", async (req, res) => {
 
 router.use(requireAuth);
 
+// ── Phase A7 — repo-id-less scan trigger from CI workflow context ─────────
+//
+// POST /api/scans/from-github
+//   Body: { githubFullName, commitSha?, branch?, prNumber?, scanTypes? }
+//
+// The "Snyk-shape" workflow: the CI runner has the GitHub repo full
+// name in `${{ github.repository }}` and doesn't need to know about
+// BreachLens-side repo IDs. The Action just sends the GitHub context;
+// BreachLens auto-discovers the Repository row (creating it on first
+// call) and triggers a scan.
+//
+// Auto-discovery rules:
+//   1. Look up Repository by (orgId, fullName). Fast path for re-scans.
+//   2. If absent, fetch metadata from GitHub (verifies the calling
+//      user has access AND gives us the numeric githubId we need).
+//   3. Create the Repository row + return.
+//
+// Auth model:
+//   - Requires Bearer token with scope `scans:trigger` (enforced by
+//     requireScope below). Sessions also work — useful for the UI but
+//     CI uses Bearer.
+//   - The token's creator must have stored GitHub OAuth credentials
+//     (any user who's logged into BreachLens via GitHub OAuth at
+//     least once has them). For private-repo discovery, that user
+//     must have access to the target repo.
+router.post("/from-github", async (req, res, next) => {
+  try {
+    const { z } = await import("zod");
+    const body = z.object({
+      githubFullName: z.string().regex(/^[\w.-]+\/[\w.-]+$/, "Must be 'owner/repo' format"),
+      commitSha:      z.string().min(1).optional(),
+      branch:         z.string().min(1).optional(),
+      prNumber:       z.number().int().nonnegative().optional(),
+      scanTypes:      z.array(z.string()).min(1).optional(),
+    }).parse(req.body);
+
+    const user = req.user as { id: string };
+    const member = await getActiveMembership(req);
+    if (!member) { res.status(403).json({ error: "No active org for this token" }); return; }
+
+    // Scope check for Bearer-authed requests (sessions bypass).
+    if ((req as { apiToken?: { scopes: string[] } }).apiToken) {
+      const tok = (req as { apiToken: { scopes: string[] } }).apiToken;
+      if (!tok.scopes.includes("scans:trigger")) {
+        res.status(403).json({
+          error: "API token missing required scope",
+          required: "scans:trigger",
+          granted:  tok.scopes,
+        });
+        return;
+      }
+    }
+
+    const { findOrCreateRepository } = await import("../../services/repoAutoDiscoveryService.js");
+    const discovered = await findOrCreateRepository({
+      orgId:          member.orgId,
+      userId:         user.id,
+      githubFullName: body.githubFullName,
+    });
+
+    const dbUser = await prisma.user.findUnique({
+      where:  { id: user.id },
+      select: { accessToken: true },
+    });
+    if (!dbUser?.accessToken) {
+      res.status(400).json({
+        error: "Token owner has no stored GitHub OAuth credentials",
+        detail: "Operator must log into BreachLens via GitHub OAuth before minting an API token for CI.",
+      });
+      return;
+    }
+
+    const defaultScanTypes: ScanType[] = ["SAST", "SCA", "SECRET", "IAC"];
+    const scanTypes = (body.scanTypes as ScanType[] | undefined) ?? defaultScanTypes;
+
+    const { triggerScan } = await import("../../services/scanService.js");
+    const result = await triggerScan({
+      orgId:             member.orgId,
+      targetType:        "REPOSITORY",
+      targetId:          discovered.repository.id,
+      scanTypes,
+      repoUrl:           `https://github.com/${discovered.repository.fullName}`,
+      branch:            body.branch ?? discovered.repository.defaultBranch,
+      encryptedGitToken: dbUser.accessToken,
+      // CI context — surfaces in /scans UI as "PR #N" / "commit abc" tags
+      triggerType:       body.prNumber != null ? "PULL_REQUEST" : "PUSH",
+      commitSha:         body.commitSha,
+      prNumber:          body.prNumber,
+    });
+
+    res.status(202).json({
+      ...result,
+      repository: {
+        id:           discovered.repository.id,
+        fullName:     discovered.repository.fullName,
+        newlyCreated: discovered.newlyCreated,
+      },
+    });
+  } catch (err) { next(err); }
+});
+
 // List scan jobs
 router.get("/", async (req, res, next) => {
   try {

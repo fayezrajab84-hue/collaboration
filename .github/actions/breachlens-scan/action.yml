@@ -47,9 +47,16 @@ inputs:
 
   repo-id:
     description: |
-      The BreachLens Repository ID to scan. Find it in the URL when you
-      open the repo on /repositories — it's the cuid after the slash.
+      Legacy explicit mode — the BreachLens Repository ID to scan.
+      Find it in the URL when you open the repo on /repositories.
       Mutually exclusive with container-id and domain-id.
+
+      OMIT THIS INPUT for the recommended auto-discovery mode (Phase A7):
+      the Action reads ${{ github.repository }} from the workflow context
+      and BreachLens auto-onboards the repo on first call. Auto-discovery
+      requires the API token's owner to have stored GitHub OAuth
+      credentials (any user who's logged into BreachLens via GitHub OAuth
+      at least once has them).
     required: false
     default: ''
 
@@ -128,13 +135,16 @@ runs:
     - name: Validate inputs
       shell: bash
       run: |
-        # Exactly one of repo-id, container-id, domain-id must be set.
+        # Phase A7 — auto-discovery mode is the default when no
+        # target ID is given. The action then uses ${{ github.repository }}
+        # to onboard the repo automatically. Operators with explicit
+        # repo-id / container-id / domain-id still get the legacy mode.
         TARGETS_SET=0
         [[ -n "${{ inputs.repo-id }}"      ]] && TARGETS_SET=$((TARGETS_SET + 1))
         [[ -n "${{ inputs.container-id }}" ]] && TARGETS_SET=$((TARGETS_SET + 1))
         [[ -n "${{ inputs.domain-id }}"    ]] && TARGETS_SET=$((TARGETS_SET + 1))
-        if [[ $TARGETS_SET -ne 1 ]]; then
-          echo "::error::Must specify exactly one of repo-id, container-id, or domain-id."
+        if [[ $TARGETS_SET -gt 1 ]]; then
+          echo "::error::Set at most one of repo-id, container-id, or domain-id (or none for auto-discovery)."
           exit 1
         fi
         # Exactly one auth method must be set. api-token preferred; session-cookie deprecated.
@@ -163,6 +173,11 @@ runs:
         CONTAINER_ID:   ${{ inputs.container-id }}
         DOMAIN_ID:      ${{ inputs.domain-id }}
         SCAN_TYPES:     ${{ inputs.scan-types }}
+        # Phase A7 — auto-discovery uses these when no target ID is set
+        GH_REPOSITORY:  ${{ github.repository }}
+        GH_SHA:         ${{ github.sha }}
+        GH_REF:         ${{ github.head_ref || github.ref_name }}
+        GH_PR_NUMBER:   ${{ github.event.pull_request.number }}
       run: |
         # Pick auth header based on which input is set. api-token wins.
         if [[ -n "$API_TOKEN" ]]; then
@@ -171,21 +186,59 @@ runs:
           AUTH_HEADER="Cookie: connect.sid=$SESSION"
         fi
 
-        # Pick the right endpoint based on which target is set.
-        if [[ -n "$REPO_ID" ]];      then ENDPOINT="$API_URL/api/repos/$REPO_ID/scan";
-        elif [[ -n "$CONTAINER_ID" ]]; then ENDPOINT="$API_URL/api/containers/$CONTAINER_ID/scan";
-        else                              ENDPOINT="$API_URL/api/domains/$DOMAIN_ID/scan";
-        fi
-
-        # Build request body. scan-types is comma-separated; the API
-        # expects JSON array.
-        if [[ -n "$SCAN_TYPES" ]]; then
-          BODY=$(jq -nc --arg types "$SCAN_TYPES" '{ scanTypes: ($types | split(",")) }')
+        # ── Endpoint + body selection ─────────────────────────────────
+        # Three modes:
+        #   1. Auto-discovery (no target ID set) — Phase A7 default.
+        #      POSTs to /api/scans/from-github with GitHub context.
+        #      BreachLens auto-onboards the repo on first call.
+        #   2. Explicit target ID — legacy mode for operators who
+        #      manually registered the resource in BreachLens UI.
+        #   3. Container / Domain — same as before, no auto-discovery.
+        if [[ -n "$REPO_ID" ]]; then
+          ENDPOINT="$API_URL/api/repos/$REPO_ID/scan"
+          if [[ -n "$SCAN_TYPES" ]]; then
+            BODY=$(jq -nc --arg types "$SCAN_TYPES" '{ scanTypes: ($types | split(",")) }')
+          else
+            BODY='{}'
+          fi
+        elif [[ -n "$CONTAINER_ID" ]]; then
+          ENDPOINT="$API_URL/api/containers/$CONTAINER_ID/scan"
+          if [[ -n "$SCAN_TYPES" ]]; then
+            BODY=$(jq -nc --arg types "$SCAN_TYPES" '{ scanTypes: ($types | split(",")) }')
+          else
+            BODY='{}'
+          fi
+        elif [[ -n "$DOMAIN_ID" ]]; then
+          ENDPOINT="$API_URL/api/domains/$DOMAIN_ID/scan"
+          if [[ -n "$SCAN_TYPES" ]]; then
+            BODY=$(jq -nc --arg types "$SCAN_TYPES" '{ scanTypes: ($types | split(",")) }')
+          else
+            BODY='{}'
+          fi
         else
-          BODY='{}'
+          # Auto-discovery — the new default.
+          if [[ -z "$GH_REPOSITORY" ]]; then
+            echo "::error::Auto-discovery requires the workflow to be running in a GitHub repo context."
+            exit 1
+          fi
+          ENDPOINT="$API_URL/api/scans/from-github"
+          # Build the JSON body with optional fields that pass through
+          # to BreachLens for triggerType + commit + PR linkage.
+          BODY=$(jq -nc \
+            --arg full      "$GH_REPOSITORY" \
+            --arg sha       "$GH_SHA" \
+            --arg branch    "$GH_REF" \
+            --arg pr        "$GH_PR_NUMBER" \
+            --arg types     "$SCAN_TYPES" \
+            '{ githubFullName: $full }
+             + (if $sha    != "" then { commitSha: $sha }              else {} end)
+             + (if $branch != "" then { branch:    $branch }           else {} end)
+             + (if $pr     != "" then { prNumber:  ($pr | tonumber) }  else {} end)
+             + (if $types  != "" then { scanTypes: ($types | split(",")) } else {} end)')
         fi
 
         echo "POST $ENDPOINT"
+        echo "Body: $BODY"
         RESPONSE=$(curl -fsS -X POST "$ENDPOINT" \
           -H "$AUTH_HEADER" \
           -H "Content-Type: application/json" \
@@ -198,6 +251,13 @@ runs:
           exit 1
         fi
         echo "scan-id=$SCAN_ID" >> "$GITHUB_OUTPUT"
+
+        # Surface auto-onboarding info when applicable
+        REPO_NEW=$(echo "$RESPONSE" | jq -r '.repository.newlyCreated // empty')
+        REPO_NAME=$(echo "$RESPONSE" | jq -r '.repository.fullName // empty')
+        if [[ "$REPO_NEW" == "true" ]]; then
+          echo "✓ Auto-onboarded repository $REPO_NAME"
+        fi
         echo "✓ Triggered scan $SCAN_ID"
 
     - name: Poll for completion

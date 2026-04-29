@@ -51,7 +51,11 @@ jobs:
         with:
           api-url:   ${{ vars.BREACHLENS_API_URL }}
           api-token: ${{ secrets.BREACHLENS_API_TOKEN }}
-          repo-id:   cmoh50000abc1234       # ← replace with YOUR BreachLens repo ID
+          # No repo-id! Phase A7 auto-discovers the repo from
+          # ${{ github.repository }} and onboards it on first run.
+          # (Set repo-id explicitly if you've already manually added
+          # the repo in BreachLens UI and want to scan that specific
+          # entry.)
 
           # Recommended: HIGH gate. Allows MEDIUM-and-below noise without
           # blocking the build. Bump to MEDIUM in long-running maintenance

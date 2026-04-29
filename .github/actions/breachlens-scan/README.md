@@ -34,9 +34,12 @@ jobs:
         with:
           api-url:       ${{ vars.BREACHLENS_API_URL }}
           api-token:     ${{ secrets.BREACHLENS_API_TOKEN }}
-          repo-id:       cmoh50000abc1234       # ← your BreachLens repo ID
-          severity-gate: HIGH                   # fail build if HIGH+ findings
+          severity-gate: HIGH    # fail build if HIGH+ findings
+          # No repo-id needed! Phase A7 auto-discovers the repo from
+          # ${{ github.repository }} and onboards it on first run.
 ```
+
+That's the entire workflow — drop it in any GitHub repo, set two secrets, push. **No "Add Repository" step in BreachLens UI required**: the first time the Action fires, BreachLens auto-onboards the repo using the API token owner's GitHub OAuth credentials.
 
 That single step:
 
@@ -49,13 +52,9 @@ That single step:
 
 ---
 
-## Setup — three minutes
+## Setup — two minutes
 
-### 1. Connect your repo to BreachLens
-
-Open your BreachLens deployment → **Repositories** → **Add Repository** → paste your GitHub URL. Note the BreachLens **Repository ID** from the resource detail URL (the cuid after `/repositories/`, e.g. `cmoh50000abc1234`).
-
-### 2. Mint an API token
+### 1. Mint an API token
 
 BreachLens → **Settings** → **API Tokens** → **Generate token**.
 
@@ -69,7 +68,7 @@ Choose:
 
 The plaintext token is shown **once**. Copy it immediately.
 
-### 3. Add to GitHub Secrets
+### 2. Add to GitHub Secrets
 
 In your repo's **Settings** → **Secrets and variables** → **Actions**:
 
@@ -78,9 +77,9 @@ In your repo's **Settings** → **Secrets and variables** → **Actions**:
 | Repository secret | `BREACHLENS_API_TOKEN` | `blt_…` (paste the plaintext) |
 | Repository variable | `BREACHLENS_API_URL` | `https://your-breachlens.example.com` |
 
-### 4. Drop the workflow in
+### 3. Drop the workflow in
 
-Copy the [Quickstart](#quickstart) workflow into `.github/workflows/security.yml`, replace `cmoh50000abc1234` with your repo ID, push the workflow file. The next push or PR runs the scan automatically.
+Copy the [Quickstart](#quickstart) workflow into `.github/workflows/security.yml`, push. The next push or PR auto-runs the scan — BreachLens onboards the repo on first call.
 
 ---
 
