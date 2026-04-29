@@ -1237,9 +1237,20 @@ export default function FindingsPage() {
                     />
                   </td>
                   <td className="px-4 py-3"><SeverityBadge severity={f.severity} /></td>
-                  <td className="px-4 py-3 max-w-sm">
+                  {/* Title cell — wider on Cloud tab. CSPM titles are
+                      full sentences ("VM xyz in subscription abc does
+                      not have JIT access enabled.") which the original
+                      max-w-sm chopped mid-phrase. Expanded to max-w-2xl
+                      on Cloud since the row's other columns (Resource /
+                      Resource Type / Account) are short. The hover
+                      tooltip via `title={f.title}` shows the full
+                      string on any tab regardless of width. */}
+                  <td className={`px-4 py-3 ${tab === "cloud" ? "max-w-2xl" : "max-w-sm"}`}>
                     <div className="flex items-center gap-2 min-w-0">
-                      <p className={`truncate font-medium ${isSuppressed ? "text-gray-400 line-through decoration-amber-600/50" : "text-gray-200"}`}>{f.title}</p>
+                      <p
+                        title={f.title}
+                        className={`truncate font-medium ${isSuppressed ? "text-gray-400 line-through decoration-amber-600/50" : "text-gray-200"}`}
+                      >{f.title}</p>
                       {isSuppressed && (
                         <span className="shrink-0 inline-flex items-center gap-1 rounded-full border border-amber-800/60 bg-amber-900/30 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300" title="Suppressed — accepted risk">
                           <EyeOff className="h-2.5 w-2.5" /> Suppressed
