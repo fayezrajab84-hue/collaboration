@@ -42,6 +42,10 @@ services:
     environment:
       VITE_API_URL: ""
       API_URL: "http://api:3000"
+      # Phase A6 — when fronting Vite via Cloudflare Tunnel, the public
+      # hostname has to pass Vite's host-header check. Comma-separated.
+      # Defaults cover localhost-only dev; override in .env when tunneling.
+      VITE_ALLOWED_HOSTS: "${VITE_ALLOWED_HOSTS:-localhost,127.0.0.1,web}"
     volumes:
       - ./apps/web:/app/apps/web
       - ./apps/api/package.json:/app/apps/api/package.json:ro
