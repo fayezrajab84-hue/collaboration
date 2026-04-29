@@ -303,7 +303,13 @@ runs:
         esac
 
     - name: Upload SARIF to GitHub Code Scanning
-      if: ${{ inputs.upload-sarif == 'true' }}
+      # `always()` so this step runs even when the severity gate above
+      # exits non-zero. Without it, gated builds (the common case —
+      # findings exist + gate fires) skip the upload entirely, and
+      # Code Scanning never gets configured on the repo. The build
+      # still ends red because the gate step already failed; the upload
+      # just makes the findings visible in the Security tab regardless.
+      if: ${{ always() && inputs.upload-sarif == 'true' && steps.fetch-sarif.outputs.path != '' }}
       uses: github/codeql-action/upload-sarif@v3
       with:
         sarif_file: ${{ steps.fetch-sarif.outputs.path }}
