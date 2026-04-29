@@ -3,47 +3,34 @@
  *
  * Renders the AI's ordered workflow as a HORIZONTAL flow chart: each step
  * is a card laid out left-to-right, connected to the next by a curved
- * bezier arrow with phase-transition gradient stops + arrowhead. This is
- * the visual the user asked for: "graph + evidence... blocks with flow".
+ * bezier arrow. Visual goal: "graph + evidence... blocks with flow".
  *
- * Why horizontal:
- *   - reads as a kill-chain timeline (entry on the left, deepest impact
- *     on the right) which mirrors how attackers actually walk a target
- *   - 3-6 cards laid horizontally fit a typical wide chain card without
- *     wrapping; on narrow viewports the container scrolls horizontally
- *   - arrows-between-cards is more "diagram"-like than a numbered list
- *     with a single vertical connector
+ * Visual rebuild (post-feedback "looks ugly"):
+ *   - Killed the saturated phase-colored top strip — too much heavy
+ *     colour competing with severity-tinted evidence chips below it.
+ *     Replaced with a muted card header (text-only phase + step number)
+ *     and a 4px LEFT BORDER ACCENT in the phase colour. The accent
+ *     colour-tags the card without flooding it.
+ *   - Cards now stretch to equal height (flex items-stretch + flex-col
+ *     body + mt-auto on chips block) so chips line up across cards.
+ *   - Description text is smaller (text-[11px]) and tightly leading-snug
+ *     so a 240-char step description fits 4-5 lines without overflowing.
+ *   - Container has real left/right padding so the leftmost card
+ *     doesn't clip against the edge on first render.
+ *   - Arrows are beefier (stroke-3) with a stronger glow underlay so
+ *     they read as "flow" rather than thin connectors.
  *
  * Geometry — measured, not approximated:
- *   - Each step card has a `ref` so we can read its real `offsetLeft` /
- *     `offsetWidth` after layout. Arrow paths anchor on those measured
- *     positions, so they always land exactly on the right edge of card
- *     N and the left edge of card N+1.
- *   - A ResizeObserver re-measures when the chain card's container
- *     changes width (e.g. operator drags the browser window) so arrows
- *     don't drift out of sync with the cards.
- *   - The SVG canvas spans the full row and has `overflow: visible` so
- *     arrows can poke a few pixels outside their bounding box without
- *     being clipped.
+ *   - Each step card has a `ref`. useLayoutEffect reads each card's
+ *     real `getBoundingClientRect()` after layout. Arrow paths anchor
+ *     on the right edge of card N → left edge of card N+1.
+ *   - ResizeObserver re-measures whenever any card OR the container
+ *     resizes (chip lazy-load, browser resize, sidebar toggle).
  *
- * Visual polish:
- *   - Phase colours mirror AttackPathFlow (source/image=indigo,
- *     surface/runtime=red) so the operator's eye carries from one
- *     component to the next.
- *   - Each step card has a phase-coloured top strip + step-number badge
- *     in the corner.
- *   - Arrows use a per-arrow linearGradient (source-phase → dest-phase
- *     stops) so the colour transition is visible mid-arrow.
- *   - Arrows ENTERING a step backed by a CONFIRMED Proof-of-Exploit
- *     finding pulse subtly via a CSS animation — operator's eye lands
- *     on proof-bearing transitions first.
- *   - On mount, arrows draw themselves left-to-right via stroke-
- *     dasharray animation. Reinforces the kill-chain reading order.
- *
- * Why not import a graph library: pnpm install of reactflow hit the
- * Windows file-lock issue documented in CLAUDE.md (workspace symlink
- * EACCES). Hand-rolled SVG with curved bezier + gradient stops is
- * plenty for a 3-6-step linear flow and ships zero new bundle weight.
+ * Why no graph library: pnpm install of reactflow hits the Windows
+ * file-lock issue documented in CLAUDE.md (workspace symlink EACCES).
+ * Hand-rolled SVG with measured bezier + gradient stops ships zero
+ * new bundle weight.
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Code2, Box, Globe, Activity, ShieldAlert, Flame } from "lucide-react";
@@ -58,56 +45,46 @@ const PHASE_DEF: Record<Phase, {
   Icon:         typeof Code2;
   /** Arrow gradient stop colour. Keep in sync with AttackPathFlow. */
   stopColor:    string;
-  /** Header strip background — picks up the phase tone strongly so the
-   *  operator can phase-tag a card at-a-glance even with the strip
-   *  collapsed off-screen. */
-  stripClass:   string;
-  /** Step-number badge inside the strip. */
-  badgeClass:   string;
-  /** Card body background — phase-tinted but mostly neutral so the
-   *  evidence chips inside don't clash with the colour palette. */
-  bodyClass:    string;
+  /** Tailwind class for the 4-px left border accent + phase text. */
+  accentBorder: string;
+  accentText:   string;
 }> = {
   source: {
-    label:      "Source",
-    Icon:       Code2,
-    stopColor:  "#6366f1",        // indigo-500
-    stripClass: "bg-indigo-900/50 border-indigo-600/60",
-    badgeClass: "bg-indigo-700 text-white",
-    bodyClass:  "bg-indigo-950/15 border-indigo-900/40",
+    label:        "Source",
+    Icon:         Code2,
+    stopColor:    "#818cf8",        // indigo-400 (slightly brighter for arrow visibility)
+    accentBorder: "border-l-indigo-500",
+    accentText:   "text-indigo-300",
   },
   image: {
-    label:      "Image",
-    Icon:       Box,
-    stopColor:  "#818cf8",        // indigo-400
-    stripClass: "bg-indigo-800/50 border-indigo-500/60",
-    badgeClass: "bg-indigo-600 text-white",
-    bodyClass:  "bg-indigo-950/10 border-indigo-900/30",
+    label:        "Image",
+    Icon:         Box,
+    stopColor:    "#a5b4fc",        // indigo-300
+    accentBorder: "border-l-indigo-400",
+    accentText:   "text-indigo-300",
   },
   surface: {
-    label:      "Surface",
-    Icon:       Globe,
-    stopColor:  "#dc2626",        // red-600
-    stripClass: "bg-red-900/50 border-red-600/60",
-    badgeClass: "bg-red-700 text-white",
-    bodyClass:  "bg-red-950/15 border-red-900/40",
+    label:        "Surface",
+    Icon:         Globe,
+    stopColor:    "#f87171",        // red-400
+    accentBorder: "border-l-red-500",
+    accentText:   "text-red-300",
   },
   runtime: {
-    label:      "Runtime",
-    Icon:       Activity,
-    stopColor:  "#f87171",        // red-400 (lighter — runtime is "live")
-    stripClass: "bg-red-800/55 border-red-500/60",
-    badgeClass: "bg-red-600 text-white",
-    bodyClass:  "bg-red-950/20 border-red-900/40",
+    label:        "Runtime",
+    Icon:         Activity,
+    stopColor:    "#fb7185",        // rose-400 (warmer, hints at "live")
+    accentBorder: "border-l-rose-500",
+    accentText:   "text-rose-300",
   },
 };
 
 const SEV_CHIP: Record<string, string> = {
-  CRITICAL: "border-red-700/70   bg-red-950/40 text-red-300",
-  HIGH:     "border-red-700/50   bg-red-950/30 text-red-300/90",
-  MEDIUM:   "border-indigo-700/50 bg-indigo-950/40 text-indigo-200",
-  LOW:      "border-gray-700     bg-gray-900/40 text-gray-300",
-  INFO:     "border-gray-800     bg-gray-900/30 text-gray-400",
+  CRITICAL: "border-red-700/50    bg-red-950/30   text-red-300",
+  HIGH:     "border-red-700/40    bg-red-950/20   text-red-300/90",
+  MEDIUM:   "border-indigo-700/40 bg-indigo-950/30 text-indigo-200",
+  LOW:      "border-gray-700      bg-gray-900/40 text-gray-300",
+  INFO:     "border-gray-800      bg-gray-900/30 text-gray-400",
 };
 
 // ── Component ────────────────────────────────────────────────────────────
@@ -123,14 +100,12 @@ export default function AttackPathWorkflow({
    *  this component stays presentational + shareable across pages. */
   onOpenFinding: (findingId: string) => void;
 }) {
-  // Index nodes by ID for evidence-chip lookup (O(steps × evidence) walks
-  // vs O(n) per chip).
   const nodeById = useMemo(() => new Map(nodes.map((n) => [n.findingId, n])), [nodes]);
 
   // Pre-compute "step has CONFIRMED evidence" so arrows entering a PoE
   // step can pulse without each arrow re-walking the evidence list.
-  // NOTE: keep this above any early return — hooks must run in the
-  // same order on every render.
+  // Hooks must run in the same order on every render — keep above any
+  // early return.
   const stepHasPoE = useMemo(() => {
     return workflow.map((step) =>
       step.evidenceFindingIds.some((id) => nodeById.get(id)?.confidence === "CONFIRMED"),
@@ -159,14 +134,9 @@ export default function AttackPathWorkflow({
 // ── Flow canvas — measured layout, SVG arrows ────────────────────────────
 
 interface ArrowGeom {
-  /** Leaving step index (0-based) */
   from:    number;
-  /** Entering step index */
   to:      number;
-  /** SVG `d` path (cubic bezier, screen-space px) */
   d:       string;
-  /** True when the destination step has CONFIRMED evidence — drives
-   *  the pulse animation. */
   toIsPoE: boolean;
 }
 
@@ -182,6 +152,7 @@ function FlowCanvas({
   onOpenFinding: (findingId: string) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const trackRef     = useRef<HTMLDivElement | null>(null);
   const stepRefs     = useRef<Array<HTMLDivElement | null>>([]);
   const [arrows, setArrows] = useState<ArrowGeom[]>([]);
   const [dims, setDims]     = useState<{ w: number; h: number }>({ w: 0, h: 0 });
@@ -190,24 +161,21 @@ function FlowCanvas({
   //   - layout settles after first render
   //   - container width changes (e.g. window resize, sidebar toggle)
   //   - step count changes (rare — workflow regen)
-  // Arrows are anchored on each card's RIGHT-MIDDLE → next card's
-  // LEFT-MIDDLE so they always look "between cards" regardless of
-  // card height differences.
+  // Coordinates are relative to the TRACK div (which holds both the cards
+  // and the SVG arrow layer), NOT the outer scroll container. This way
+  // the SVG and cards stay aligned regardless of horizontal scroll.
   useLayoutEffect(() => {
     const measure = () => {
-      const container = containerRef.current;
-      if (!container) return;
-      const cBox = container.getBoundingClientRect();
-      const setW = container.scrollWidth;
+      const track = trackRef.current;
+      if (!track) return;
+      const tBox = track.getBoundingClientRect();
       const positions = stepRefs.current.map((el) => {
         if (!el) return null;
         const r = el.getBoundingClientRect();
         return {
-          left:   r.left   - cBox.left,
-          right:  r.right  - cBox.left,
-          top:    r.top    - cBox.top,
-          bottom: r.bottom - cBox.top,
-          midY:   r.top    - cBox.top + r.height / 2,
+          left:   r.left   - tBox.left,
+          right:  r.right  - tBox.left,
+          midY:   r.top    - tBox.top + r.height / 2,
         };
       });
 
@@ -216,32 +184,24 @@ function FlowCanvas({
         const a = positions[i];
         const b = positions[i + 1];
         if (!a || !b) continue;
-        // Anchor: right-middle of A → left-middle of B. Curve via
-        // cubic bezier with control points pulled to the midpoint X
-        // and a slight vertical wiggle so the arrow looks "drawn"
-        // rather than a straight horizontal line.
         const x1 = a.right;
         const y1 = a.midY;
         const x2 = b.left;
         const y2 = b.midY;
+        // Horizontal cubic bezier: control points pulled to the
+        // midpoint X with the same Y as their endpoints. Looks "flowy"
+        // even when both endpoints are at the same height.
         const midX = (x1 + x2) / 2;
-        const c1x = midX;
-        const c1y = y1;
-        const c2x = midX;
-        const c2y = y2;
-        const d = `M ${x1} ${y1} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${x2} ${y2}`;
+        const d = `M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`;
         next.push({ from: i, to: i + 1, d, toIsPoE: stepHasPoE[i + 1] ?? false });
       }
       setArrows(next);
-      setDims({ w: setW, h: container.scrollHeight });
+      setDims({ w: track.scrollWidth, h: track.scrollHeight });
     };
 
     measure();
-    // Re-measure on any container resize.
     const ro = new ResizeObserver(measure);
-    if (containerRef.current) ro.observe(containerRef.current);
-    // Cards' children (chips) load async — observe each card too so
-    // the arrows snap when content reflows.
+    if (trackRef.current) ro.observe(trackRef.current);
     for (const el of stepRefs.current) {
       if (el) ro.observe(el);
     }
@@ -260,13 +220,16 @@ function FlowCanvas({
   return (
     <div
       ref={containerRef}
-      // overflow-x-auto: horizontal scroll on narrow viewports rather
-      // than wrapping (wrapping breaks the kill-chain reading order).
-      // pb-1 gives the scrollbar breathing room so it doesn't crowd
-      // the bottom edge of the cards.
-      className="relative overflow-x-auto pb-1"
+      // Horizontal scroll container. p-1 around the track gives the
+      // cards a small breathing-room margin from the rounded panel
+      // edge so the leftmost card never clips against the border.
+      className="relative -mx-1 overflow-x-auto pb-2"
     >
-      <div className="relative flex items-stretch gap-12 px-1" style={{ minWidth: "fit-content" }}>
+      <div
+        ref={trackRef}
+        className="relative flex items-stretch gap-10 px-2 pb-1"
+        style={{ minWidth: "fit-content" }}
+      >
         {workflow.map((step, i) => (
           <StepCard
             key={step.stepNumber}
@@ -278,9 +241,8 @@ function FlowCanvas({
           />
         ))}
 
-        {/* Arrow layer — sits absolute over the row. Its bounding box
-            matches the row's content width + height so SVG coordinates
-            stay in pixel-space with the measured anchor points. */}
+        {/* Arrow layer — covers the track. overflow visible so arrowheads
+            can poke a few pixels past the bbox without clipping. */}
         <svg
           className="pointer-events-none absolute inset-0"
           width={dims.w}
@@ -298,7 +260,7 @@ function FlowCanvas({
                   id={`wf-grad-${a.from}`}
                   x1="0%" y1="0%" x2="100%" y2="0%"
                 >
-                  <stop offset="0%"   stopColor={PHASE_DEF[fromPhase].stopColor} stopOpacity="0.85" />
+                  <stop offset="0%"   stopColor={PHASE_DEF[fromPhase].stopColor} stopOpacity="0.95" />
                   <stop offset="100%" stopColor={PHASE_DEF[toPhase].stopColor}   stopOpacity="1.0"  />
                 </linearGradient>
               );
@@ -307,14 +269,14 @@ function FlowCanvas({
               <marker
                 key={`m-${a.to}`}
                 id={`wf-arrow-${a.to}`}
-                viewBox="0 0 10 10"
-                refX="9"
-                refY="5"
-                markerWidth="6"
-                markerHeight="6"
+                viewBox="0 0 12 12"
+                refX="10"
+                refY="6"
+                markerWidth="7"
+                markerHeight="7"
                 orient="auto"
               >
-                <path d="M 0 0 L 10 5 L 0 10 z" fill={PHASE_DEF[workflow[a.to]!.phase].stopColor} />
+                <path d="M 0 0 L 12 6 L 0 12 L 3 6 z" fill={PHASE_DEF[workflow[a.to]!.phase].stopColor} />
               </marker>
             ))}
           </defs>
@@ -345,27 +307,23 @@ function ArrowPath({
   toIsPoE:   boolean;
   animateIn: boolean;
 }) {
-  // pathLength normalizes the dash math regardless of actual length so
-  // the entrance animation duration is consistent across short + long
-  // bezier curves. We feed a fake pathLength of 100 and dash from 0 →
-  // 100 — equivalent to drawing the whole stroke over the transition.
   return (
     <g>
-      {/* Soft glow underlay — same path, wider stroke, low opacity.
-          Adds depth without colour-shifting the gradient. */}
+      {/* Glow underlay — same path, wider, low opacity. Adds depth
+          without colour-shifting the gradient. */}
       <path
         d={d}
         stroke={`url(#wf-grad-${fromIdx})`}
-        strokeWidth={6}
+        strokeWidth={9}
         strokeLinecap="round"
         fill="none"
-        opacity={0.18}
+        opacity={0.22}
       />
       {/* Main stroke. PoE-target arrows pulse via CSS-keyframe class. */}
       <path
         d={d}
         stroke={`url(#wf-grad-${fromIdx})`}
-        strokeWidth={2.25}
+        strokeWidth={3}
         strokeLinecap="round"
         fill="none"
         markerEnd={`url(#wf-arrow-${toIdx})`}
@@ -405,19 +363,18 @@ function StepCard({
       ref={innerRef}
       // Fixed width keeps the row geometry predictable for the SVG
       // arrow math; flex-shrink-0 prevents the row from compressing
-      // cards under tight layouts.
-      className={`relative w-72 shrink-0 rounded-lg border ${def.bodyClass} shadow-sm shadow-black/30`}
+      // cards under tight layouts. flex-col + items-stretch on the
+      // parent makes all cards equal height; mt-auto on the chip
+      // block pushes evidence to the bottom across heights.
+      className={`relative flex w-72 shrink-0 flex-col rounded-lg border border-gray-800 border-l-4 bg-gray-900/60 ${def.accentBorder} shadow-sm shadow-black/40`}
     >
-      {/* Phase strip + step number badge */}
-      <div className={`flex items-center justify-between rounded-t-lg border-b px-3 py-1.5 ${def.stripClass}`}>
-        <div className="flex items-center gap-2">
-          <span className={`flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold ${def.badgeClass}`}>
-            {step.stepNumber}
-          </span>
-          <span className="flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-white">
-            <PhaseIcon className="h-3 w-3" />
-            {def.label}
-          </span>
+      {/* Header row: phase + step number + technique + PoE flame.
+          Single-line, low chrome — phase colour comes from the LEFT
+          BORDER and the icon/text, not a heavy filled strip. */}
+      <div className="flex items-center justify-between border-b border-gray-800/70 px-3 py-2">
+        <div className={`flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide ${def.accentText}`}>
+          <PhaseIcon className="h-3.5 w-3.5" />
+          {def.label}
         </div>
         <div className="flex items-center gap-1.5">
           {step.technique && (
@@ -431,24 +388,32 @@ function StepCard({
           )}
           {hasPoE && (
             <span
-              className="flex items-center gap-1 rounded border border-red-600/70 bg-red-950/80 px-1.5 py-0.5 text-[9px] font-bold text-red-200"
+              className="flex items-center gap-1 rounded border border-red-600/60 bg-red-950/60 px-1.5 py-0.5 text-[9px] font-bold text-red-200"
               title="This step is backed by a CONFIRMED Proof-of-Exploit finding"
             >
               <Flame className="h-2.5 w-2.5" />
               POE
             </span>
           )}
+          <span className="rounded-full bg-gray-800 px-1.5 py-0.5 text-[10px] font-semibold text-gray-300">
+            {step.stepNumber}
+          </span>
         </div>
       </div>
 
       {/* Title + description */}
-      <div className="px-3 pt-2">
-        <div className="mb-1 text-sm font-semibold leading-snug text-gray-100">{step.title}</div>
-        <div className="text-xs leading-relaxed text-gray-400">{step.description}</div>
+      <div className="px-3 pt-3">
+        <div className="mb-1.5 text-[13px] font-semibold leading-snug text-gray-100">
+          {step.title}
+        </div>
+        <div className="text-[11px] leading-snug text-gray-400">
+          {step.description}
+        </div>
       </div>
 
-      {/* Evidence chips */}
-      <div className="flex flex-wrap gap-1.5 px-3 pb-3 pt-2">
+      {/* Evidence chips. mt-auto pushes them to the card bottom so a
+          row of mismatched-height cards still has chips aligned. */}
+      <div className="mt-auto flex flex-wrap gap-1.5 px-3 pb-3 pt-3">
         {step.evidenceFindingIds.map((id) => {
           const node = nodeById.get(id);
           if (!node) return null;
@@ -469,13 +434,13 @@ function EvidenceChip({
   onClick: () => void;
 }) {
   const sevClass = SEV_CHIP[node.severity] ?? SEV_CHIP["INFO"]!;
-  const label = node.title.length > 48 ? `${node.title.slice(0, 46)}…` : node.title;
+  const label = node.title.length > 40 ? `${node.title.slice(0, 38)}…` : node.title;
 
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`inline-flex max-w-full items-center gap-1.5 rounded border px-2 py-1 text-[11px] transition-all hover:brightness-125 hover:shadow ${sevClass}`}
+      className={`inline-flex max-w-full items-center gap-1.5 rounded border px-1.5 py-1 text-[10px] transition-all hover:brightness-125 hover:shadow ${sevClass}`}
       title={`Open ${node.scanType} finding: ${node.title}`}
     >
       <span className="font-mono text-[9px] uppercase opacity-70">
