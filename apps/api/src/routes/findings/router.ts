@@ -201,10 +201,17 @@ router.get("/", async (req, res, next) => {
     }
 
     if (q["search"]) {
+      // Phase 29 — ruleId added to the search OR so dashboard widgets
+      // (e.g. Top Failing Checks) can navigate via
+      // /findings?tab=cloud&search=<ruleId> and land on the matching
+      // rows. Prowler check ids ("storage_account_key_access_disabled")
+      // don't appear in title/description by default, so without this
+      // the search returned zero results and the click went nowhere.
       andClauses.push({ OR: [
         { title:       { contains: q["search"] as string, mode: "insensitive" } },
         { description: { contains: q["search"] as string, mode: "insensitive" } },
         { cveId:       { contains: q["search"] as string, mode: "insensitive" } },
+        { ruleId:      { contains: q["search"] as string, mode: "insensitive" } },
       ]});
     }
 
@@ -651,10 +658,17 @@ router.get("/export.csv", async (req, res, next) => {
     else if (targetOr.length > 1)  andClauses.push({ OR: targetOr });
 
     if (q["search"]) {
+      // Phase 29 — ruleId added to the search OR so dashboard widgets
+      // (e.g. Top Failing Checks) can navigate via
+      // /findings?tab=cloud&search=<ruleId> and land on the matching
+      // rows. Prowler check ids ("storage_account_key_access_disabled")
+      // don't appear in title/description by default, so without this
+      // the search returned zero results and the click went nowhere.
       andClauses.push({ OR: [
         { title:       { contains: q["search"] as string, mode: "insensitive" } },
         { description: { contains: q["search"] as string, mode: "insensitive" } },
         { cveId:       { contains: q["search"] as string, mode: "insensitive" } },
+        { ruleId:      { contains: q["search"] as string, mode: "insensitive" } },
       ]});
     }
 
