@@ -9,7 +9,25 @@ BreachLens correlates SAST + SCA + Secrets + IaC + Container + DAST + Pentest + 
 
 ---
 
-## Quickstart
+## Choose your integration pattern
+
+BreachLens scans **server-side** — the GitHub runner just tells your BreachLens deployment to start a scan; your code is cloned + analysed on your BreachLens server, not on the runner. That gives you two valid workflow shapes:
+
+| Pattern | When to use | Example |
+|---|---|---|
+| **A. Composite action** | Multiple consumer teams, Marketplace listing, branded one-line `uses:` | `uses: fayezrajab84-hue/...@v1` |
+| **B. Bash-only workflow** | Your own team's repos, fewer moving parts, immune to action-parser quirks | inline `curl` calls — see below |
+| **C. GitHub App** *(planned, Phase A8)* | Zero-config — install App once at org level, every repo auto-scans on push/PR | (none yet) |
+
+**Pattern B is recommended for repos under your direct control** — it's ~30 lines of bash with no external action download. You can always switch to Pattern A later for external customers.
+
+Both patterns hit the same `/api/scans/from-github` endpoint, get the same SARIF, fail the same severity gates. The choice is purely about packaging.
+
+---
+
+## Pattern A — Composite action (current default)
+
+One-line `uses:`. Drop into any repo, set two secrets, push.
 
 ```yaml
 name: Security scan
@@ -43,12 +61,118 @@ That's the entire workflow — drop it in any GitHub repo, set two secrets, push
 
 That single step:
 
-1. POSTs `/api/repos/{repo-id}/scan` to your BreachLens deployment
+1. POSTs `/api/scans/from-github` to your BreachLens deployment
 2. Polls until the scan completes (45-min default timeout)
 3. Downloads SARIF 2.1.0 results
 4. Renders a step summary table (Critical / High / Medium counts)
 5. Fails the build if findings at the gated severity exist
 6. Uploads SARIF to GitHub Code Scanning so findings appear in the **Security tab** + on **PR diffs**
+
+---
+
+## Pattern B — Bash-only workflow (recommended for repos you control)
+
+Same end-to-end flow, no external action dependency. **GitHub doesn't download anything from the BreachLens repo** — the workflow is fully self-contained:
+
+```yaml
+name: Security scan
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  security-events: write   # SARIF upload to Code Scanning
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger BreachLens scan + wait + apply gate
+        env:
+          API_URL:       ${{ vars.BREACHLENS_API_URL }}
+          API_TOKEN:     ${{ secrets.BREACHLENS_API_TOKEN }}
+          SEVERITY_GATE: HIGH
+        run: |
+          set -euo pipefail
+          PR=$(jq -r '.pull_request.number // empty' "$GITHUB_EVENT_PATH" 2>/dev/null || echo "")
+
+          # 1. Trigger scan via auto-discovery — no repo-id needed
+          BODY=$(jq -nc \
+            --arg full   "$GITHUB_REPOSITORY" \
+            --arg sha    "$GITHUB_SHA" \
+            --arg branch "${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}" \
+            --arg pr     "$PR" \
+            '{githubFullName:$full, commitSha:$sha, branch:$branch}
+             + (if $pr != "" then {prNumber:($pr|tonumber)} else {} end)')
+          SCAN_ID=$(curl -fsS -X POST "$API_URL/api/scans/from-github" \
+            -H "Authorization: Bearer $API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$BODY" | jq -r '.scanJobId')
+          echo "Triggered scan: $SCAN_ID"
+
+          # 2. Poll for completion (~5–15 min)
+          STATUS=PENDING
+          DEADLINE=$(( $(date +%s) + 45*60 ))
+          while [[ "$STATUS" != "COMPLETED" && "$STATUS" != "FAILED" ]]; do
+            (( $(date +%s) > DEADLINE )) && { echo "::error::scan timeout"; exit 1; }
+            sleep 15
+            STATUS=$(curl -fsS "$API_URL/api/scans/$SCAN_ID" \
+              -H "Authorization: Bearer $API_TOKEN" | jq -r '.status')
+            echo "[poll] $STATUS"
+          done
+          [[ "$STATUS" == "FAILED" ]] && { echo "::error::scan FAILED"; exit 1; }
+
+          # 3. Fetch SARIF
+          curl -fsS "$API_URL/api/scans/$SCAN_ID/export.sarif" \
+            -H "Authorization: Bearer $API_TOKEN" -o breachlens.sarif
+
+          # 4. Severity counts + gate
+          C=$(jq '[.runs[].results[] | select(.properties.severity=="CRITICAL")] | length' breachlens.sarif)
+          H=$(jq '[.runs[].results[] | select(.properties.severity=="HIGH")] | length' breachlens.sarif)
+          M=$(jq '[.runs[].results[] | select(.properties.severity=="MEDIUM")] | length' breachlens.sarif)
+          {
+            echo "## BreachLens scan results"
+            echo "| Severity | Count |"
+            echo "|---|---|"
+            echo "| 🔴 Critical | $C |"
+            echo "| 🟠 High     | $H |"
+            echo "| 🟡 Medium   | $M |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          case "$SEVERITY_GATE" in
+            CRITICAL) (( C > 0 ))             && { echo "::error::$C critical"; exit 1; } ;;
+            HIGH)     (( C + H > 0 ))         && { echo "::error::$((C+H)) HIGH+"; exit 1; } ;;
+            MEDIUM)   (( C + H + M > 0 ))     && { echo "::error::$((C+H+M)) MED+"; exit 1; } ;;
+          esac
+
+      - name: Upload SARIF to GitHub Code Scanning
+        if: always() && hashFiles('breachlens.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: breachlens.sarif
+          category:   breachlens
+```
+
+That's the entire workflow. ~70 lines of bash + one trusted upstream action (`github/codeql-action/upload-sarif@v3` from GitHub itself) for the Security-tab integration.
+
+**Trade-offs vs Pattern A:**
+
+|   | Pattern A (composite) | Pattern B (bash) |
+|---|---|---|
+| Lines of YAML in consumer repo | ~10 | ~70 |
+| External action download per run | yes | no |
+| Pinning + version updates | one-line `@v1` bump | edit each consumer repo's bash |
+| Marketplace branding | yes | no |
+| Action-parser quirks (the `${{ github.* }}` parser issue) | risk | none |
+| Centralised bug fixes propagate to all consumers | yes | no |
+
+**Use Pattern A when:** you want to ship to teams who shouldn't have to maintain bash. Pin `@v1`; one bump updates every consumer.
+
+**Use Pattern B when:** the repos consuming this are under your direct control. Fewer moving parts, no parser fragility, and you can debug the entire flow inline. **For a self-hosted BreachLens deployment scanning your own org's repos, this is the cleaner pattern.**
 
 ---
 

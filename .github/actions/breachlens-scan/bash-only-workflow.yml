@@ -1,0 +1,146 @@
+# Pattern B — bash-only BreachLens workflow.
+#
+# No external composite action download. The runner just calls
+# the BreachLens API and uploads SARIF. Recommended for repos under
+# your direct control (your own org's projects).
+#
+# Copy this file to YOUR repo at .github/workflows/security.yml.
+# This file is NOT in .github/workflows/ on the BreachLens monorepo
+# so it doesn't auto-execute here.
+#
+# Prerequisites (same as Pattern A):
+#   1. Mint a BreachLens API token (Settings → API Tokens → Generate)
+#      with scopes: scans:trigger + scans:read + findings:read
+#   2. Add to your repo: Settings → Secrets → BREACHLENS_API_TOKEN
+#   3. Add to your repo: Settings → Variables → BREACHLENS_API_URL
+#      (e.g. https://breachlens.fortisentinel.org)
+#
+# Compared with Pattern A (composite action via uses:):
+#   ✓ No GitHub-side action.yml download per run
+#   ✓ Immune to action-parser quirks
+#   ✓ Fully readable: the entire scan flow is right here
+#   ✗ Each consumer repo has its own copy (Pattern A is one bump)
+
+name: Security scan
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  security-events: write   # for SARIF upload to Code Scanning
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger BreachLens scan + wait + apply gate
+        env:
+          API_URL:       ${{ vars.BREACHLENS_API_URL }}
+          API_TOKEN:     ${{ secrets.BREACHLENS_API_TOKEN }}
+          # CRITICAL | HIGH | MEDIUM | LOW | INFO | none
+          # Recommended: HIGH (allows MEDIUM noise without blocking).
+          SEVERITY_GATE: HIGH
+          # Bump for very large repos / PENTEST_FULL targets.
+          TIMEOUT_MIN:   45
+          # Optional: comma-separated. Defaults to SAST,SCA,SECRET,IAC.
+          # SCAN_TYPES: "SAST,SCA,SECRET,IAC,CONTAINER"
+        run: |
+          set -euo pipefail
+
+          # ── Auto-discovery context (no repo-id needed) ─────────
+          PR=$(jq -r '.pull_request.number // empty' "$GITHUB_EVENT_PATH" 2>/dev/null || echo "")
+          GH_REF="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+
+          # ── Trigger scan ────────────────────────────────────────
+          BODY=$(jq -nc \
+            --arg full   "$GITHUB_REPOSITORY" \
+            --arg sha    "$GITHUB_SHA" \
+            --arg branch "$GH_REF" \
+            --arg pr     "$PR" \
+            --arg types  "${SCAN_TYPES:-}" \
+            '{githubFullName:$full, commitSha:$sha, branch:$branch}
+             + (if $pr    != "" then {prNumber:($pr|tonumber)}      else {} end)
+             + (if $types != "" then {scanTypes:($types|split(","))} else {} end)')
+          echo "POST $API_URL/api/scans/from-github"
+          RESPONSE=$(curl -fsS -X POST "$API_URL/api/scans/from-github" \
+            -H "Authorization: Bearer $API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$BODY")
+          echo "$RESPONSE" | jq .
+
+          SCAN_ID=$(echo "$RESPONSE" | jq -r '.scanJobId // .id')
+          [[ -z "$SCAN_ID" || "$SCAN_ID" == "null" ]] && {
+            echo "::error::Failed to extract scan ID"; exit 1; }
+          echo "Scan ID: $SCAN_ID"
+
+          # ── Poll for completion ─────────────────────────────────
+          STATUS=PENDING
+          DEADLINE=$(( $(date +%s) + (TIMEOUT_MIN * 60) ))
+          while [[ "$STATUS" != "COMPLETED" && "$STATUS" != "FAILED" ]]; do
+            if (( $(date +%s) > DEADLINE )); then
+              echo "::error::Scan exceeded ${TIMEOUT_MIN}-min timeout (last: $STATUS)"
+              exit 1
+            fi
+            sleep 15
+            STATUS=$(curl -fsS "$API_URL/api/scans/$SCAN_ID" \
+              -H "Authorization: Bearer $API_TOKEN" | jq -r '.status // "UNKNOWN"')
+            echo "[poll] $STATUS"
+          done
+          if [[ "$STATUS" == "FAILED" ]]; then
+            echo "::error::Scan reported FAILED"
+            exit 1
+          fi
+
+          # ── Fetch SARIF ─────────────────────────────────────────
+          curl -fsS "$API_URL/api/scans/$SCAN_ID/export.sarif" \
+            -H "Authorization: Bearer $API_TOKEN" \
+            -o breachlens.sarif
+          echo "SARIF: $(wc -c < breachlens.sarif) bytes"
+
+          # ── Severity breakdown + step summary ───────────────────
+          C=$(jq '[.runs[].results[] | select(.properties.severity == "CRITICAL")] | length' breachlens.sarif)
+          H=$(jq '[.runs[].results[] | select(.properties.severity == "HIGH")]     | length' breachlens.sarif)
+          M=$(jq '[.runs[].results[] | select(.properties.severity == "MEDIUM")]   | length' breachlens.sarif)
+          L=$(jq '[.runs[].results[] | select(.properties.severity == "LOW")]      | length' breachlens.sarif)
+          I=$(jq '[.runs[].results[] | select(.properties.severity == "INFO")]     | length' breachlens.sarif)
+
+          {
+            echo "## BreachLens scan results"
+            echo ""
+            echo "| Severity | Count |"
+            echo "|---|---|"
+            echo "| 🔴 Critical | $C |"
+            echo "| 🟠 High     | $H |"
+            echo "| 🟡 Medium   | $M |"
+            echo "| 🔵 Low      | $L |"
+            echo "| ⚪ Info     | $I |"
+            echo ""
+            echo "**Severity gate:** \`$SEVERITY_GATE\`"
+            echo ""
+            echo "**Scan:** \`$SCAN_ID\` · **Repo:** \`$GITHUB_REPOSITORY\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # ── Apply severity gate ─────────────────────────────────
+          case "$SEVERITY_GATE" in
+            CRITICAL) (( C > 0 ))             && { echo "::error::$C CRITICAL findings"; exit 1; } ;;
+            HIGH)     (( C + H > 0 ))         && { echo "::error::$((C+H)) HIGH+ findings"; exit 1; } ;;
+            MEDIUM)   (( C + H + M > 0 ))     && { echo "::error::$((C+H+M)) MEDIUM+ findings"; exit 1; } ;;
+            LOW)      (( C + H + M + L > 0 )) && { echo "::error::$((C+H+M+L)) LOW+ findings"; exit 1; } ;;
+            INFO)     (( C + H + M + L + I > 0 )) && { echo "::error::$((C+H+M+L+I)) total findings"; exit 1; } ;;
+            none)     echo "✓ Severity gate disabled" ;;
+          esac
+
+      # ── Upload SARIF to GitHub Code Scanning ─────────────────────
+      # Always runs (even after gate failure) so findings appear in
+      # the Security tab regardless of whether the build is gated red.
+      - name: Upload SARIF
+        if: always() && hashFiles('breachlens.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: breachlens.sarif
+          category:   breachlens
