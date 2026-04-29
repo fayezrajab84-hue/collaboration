@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { ShieldAlert, Search, Globe, Layers, Sparkles, ChevronDown, ChevronRight, ChevronsUpDown, ArrowUp, ArrowDown, KeyRound, Bot, Wrench, X, EyeOff, Eye, Download, CheckSquare, CheckCircle2, ShieldOff, RotateCcw, Ticket as TicketIcon, Code2, ExternalLink, Activity, Target, Cloud } from "lucide-react";
-import { findingsApi, reposApi, containersApi, domainsApi, suppressionsApi, applicationsApi } from "../lib/api";
+import { findingsApi, reposApi, containersApi, domainsApi, cloudAccountsApi, suppressionsApi, applicationsApi } from "../lib/api";
 import type { Finding, FindingGroup } from "@devsecops/types";
 import Can from "../components/Can";
 import SeverityBadge from "../components/SeverityBadge";
@@ -91,6 +91,39 @@ const WEB_SCAN_TYPE_OPTIONS: Array<{ value: string; label: string }> = [
 const RUNTIME_SCAN_TYPE_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "RUNTIME", label: "Runtime (Wazuh)" },
 ];
+// Phase 29 — Prowler Azure service taxonomy. The 20 services Prowler
+// 5.25 covers across ~180 azure checks. Listing all 20 (even if the
+// current scan didn't surface findings for some) is intentional: the
+// dropdown is also a coverage artefact — operators can see "AKS is
+// scanned" even if their subscription has no AKS clusters and the
+// filter returns empty. Categorised by Microsoft's product family so
+// the dropdown is scannable.
+const CLOUD_SERVICE_OPTIONS: Array<{ value: string; label: string }> = [
+  // Compute / runtime
+  { value: "vm",                 label: "Compute · Virtual Machines" },
+  { value: "aks",                label: "Compute · Kubernetes (AKS)" },
+  { value: "containerregistry",  label: "Compute · Container Registry" },
+  { value: "app",                label: "Compute · App Service" },
+  { value: "appinsights",        label: "Compute · App Insights" },
+  // Data
+  { value: "storage",            label: "Data · Storage Accounts" },
+  { value: "sqlserver",          label: "Data · SQL Server" },
+  { value: "cosmosdb",           label: "Data · Cosmos DB" },
+  { value: "mysql",              label: "Data · MySQL" },
+  { value: "postgresql",         label: "Data · PostgreSQL" },
+  { value: "databricks",         label: "Data · Databricks" },
+  { value: "aisearch",           label: "Data · AI Search" },
+  { value: "apim",               label: "Data · API Management" },
+  // Identity
+  { value: "iam",                label: "Identity · Roles + RBAC" },
+  { value: "entra",              label: "Identity · Entra ID" },
+  // Network + secrets + governance + monitoring
+  { value: "network",            label: "Network · NSGs / Watchers / Bastion" },
+  { value: "keyvault",           label: "Secrets · Key Vault" },
+  { value: "policy",             label: "Governance · Azure Policy" },
+  { value: "monitor",            label: "Monitoring · Activity Log + Alerts" },
+  { value: "defender",           label: "Posture · Defender for Cloud" },
+];
 // Phase 29 — Cloud (CSPM) findings come from Prowler against an Azure
 // subscription / AWS account / GCP project. Like Runtime, the operator's
 // mental model differs ("what's misconfigured in my cloud" vs "what's
@@ -113,27 +146,31 @@ const AI_FILTERS: Array<{ value: string; label: string }> = [
   { value: "untriaged", label: "AI: Untriaged" },
 ];
 
-// Encode each target filter value as "repo:<id>" / "container:<id>" / "domain:<id>".
-// Multi-select: the URL holds comma-separated values; split into per-type arrays
-// so the server can apply OR across target types.
+// Encode each target filter value as "repo:<id>" / "container:<id>" /
+// "domain:<id>" / "cloud:<id>". Multi-select: the URL holds
+// comma-separated values; split into per-type arrays so the server can
+// apply OR across target types.
 function parseTargets(val: string) {
   if (!val) return {};
-  const repoIds: string[] = [];
-  const containerIds: string[] = [];
-  const domainIds: string[] = [];
+  const repoIds: string[]         = [];
+  const containerIds: string[]    = [];
+  const domainIds: string[]       = [];
+  const cloudAccountIds: string[] = [];   // Phase 29
   for (const raw of val.split(",")) {
     const token = raw.trim();
     if (!token) continue;
     const [type, id] = token.split(":");
     if (!id) continue;
-    if (type === "repo")      repoIds.push(id);
+    if (type === "repo")           repoIds.push(id);
     else if (type === "container") containerIds.push(id);
     else if (type === "domain")    domainIds.push(id);
+    else if (type === "cloud")     cloudAccountIds.push(id);
   }
   const out: Record<string, string> = {};
-  if (repoIds.length)      out["repoId"]      = repoIds.join(",");
-  if (containerIds.length) out["containerId"] = containerIds.join(",");
-  if (domainIds.length)    out["domainId"]    = domainIds.join(",");
+  if (repoIds.length)         out["repoId"]         = repoIds.join(",");
+  if (containerIds.length)    out["containerId"]    = containerIds.join(",");
+  if (domainIds.length)       out["domainId"]       = domainIds.join(",");
+  if (cloudAccountIds.length) out["cloudAccountId"] = cloudAccountIds.join(",");
   return out;
 }
 
@@ -431,6 +468,11 @@ export default function FindingsPage() {
   // Phase 27.5 — filter by Application boundary
   const applications = parseMulti(searchParams.get("applicationId") ?? "");
   const aiFilter     = parseMulti(searchParams.get("ai") ?? "");
+  // Phase 29 — CSPM-only filters. cloudService matches Prowler ruleId
+  // prefix (defender_*, network_*, etc); complianceFramework matches
+  // evidence.compliance keys (CIS-5.0, PCI-4.0, MITRE-ATTACK, etc).
+  const cloudService     = parseMulti(searchParams.get("cloudService")         ?? "");
+  const cloudFramework   = parseMulti(searchParams.get("complianceFramework")  ?? "");
   // Single-value MITRE tactic filter — set via the dashboard's clickable
   // tactic bars. The runtime tab is the only tab where this makes sense
   // (only RUNTIME findings carry mitre.tactics in evidence).
@@ -554,6 +596,9 @@ export default function FindingsPage() {
   const { data: repos } = useQuery({ queryKey: ["repos"], queryFn: reposApi.list });
   const { data: containers } = useQuery({ queryKey: ["containers"], queryFn: containersApi.list });
   const { data: domains } = useQuery({ queryKey: ["domains"], queryFn: domainsApi.list });
+  // Phase 29 — populate the Targets dropdown's cloud-account branch when
+  // tab=cloud. Fetched eagerly so switching tabs feels instant.
+  const { data: cloudAccounts } = useQuery({ queryKey: ["cloud-accounts"], queryFn: cloudAccountsApi.list });
   // Phase 27.5 — Application list for the new filter chip
   const { data: applicationOptions } = useQuery({ queryKey: ["applications"], queryFn: applicationsApi.list });
 
@@ -622,11 +667,13 @@ export default function FindingsPage() {
   );
 
   const applicationsKey = applications.join(",");
+  const cloudServiceKey   = cloudService.join(",");
+  const cloudFrameworkKey = cloudFramework.join(",");
   const { data, isLoading } = useQuery({
     // Use effectiveScanTypeKey (tab ∩ user) so the cache invalidates correctly
     // when switching Code↔Web — same user-selected types but different tab
     // produces a different effective set, hence a different query.
-    queryKey: ["findings", { severityKey, effectiveScanTypeKey, statusKey, confidenceKey, reachabilityKey, applicationsKey, aiFilterKey, search, target, mitreTactic, tag, page, pageSize, sort, sortOrder, includeSuppressed }],
+    queryKey: ["findings", { severityKey, effectiveScanTypeKey, statusKey, confidenceKey, reachabilityKey, applicationsKey, aiFilterKey, cloudServiceKey, cloudFrameworkKey, search, target, mitreTactic, tag, page, pageSize, sort, sortOrder, includeSuppressed }],
     queryFn: () =>
       findingsApi.list({
         // Multi-select: send comma-joined values — server splits via `multi()`.
@@ -640,6 +687,10 @@ export default function FindingsPage() {
         ...(applicationsKey ? { applicationId: applicationsKey } : {}),
         ...(mitreTactic ? { mitreTactic: mitreTactic as never } : {}),
         ...(tag ? { tag } : {}),
+        // Phase 29 — CSPM service + compliance filters. Empty strings are
+        // omitted so the server doesn't treat "" as a real (no-match) value.
+        ...(cloudServiceKey   ? { cloudService:        cloudServiceKey   } : {}),
+        ...(cloudFrameworkKey ? { complianceFramework: cloudFrameworkKey } : {}),
         page,
         limit: pageSize,
         ...(aiFilterKey ? { ai: aiFilterKey as never } : {}),
@@ -762,15 +813,27 @@ export default function FindingsPage() {
                         backend JSONB filters; tracked as a follow-up.)
         */}
 
-        {/* Targets — hidden on Runtime (always Container via WorkloadAgent). */}
+        {/* Targets — hidden on Runtime (always Container via WorkloadAgent).
+            On Cloud tab the dropdown lists cloud accounts; on other tabs
+            it lists repos/containers/domains. The encoding `cloud:<id>`
+            (vs `repo:` / `container:` / `domain:`) routes through
+            parseTargets() which decodes to cloudAccountId on the
+            findings query. */}
         {tab !== "runtime" && (
           <MultiSelect
-            label="Targets"
-            options={[
-              ...(repos       ?? []).map((r) => ({ value: `repo:${r.id}`,      label: `Repo · ${r.fullName}` })),
-              ...(containers  ?? []).map((c) => ({ value: `container:${c.id}`, label: `Container · ${c.imageRef}` })),
-              ...(domains     ?? []).map((d) => ({ value: `domain:${d.id}`,    label: `Domain · ${d.domain}` })),
-            ]}
+            label={tab === "cloud" ? "Accounts" : "Targets"}
+            options={
+              tab === "cloud"
+                ? (cloudAccounts ?? []).map((a) => ({
+                    value: `cloud:${a.id}`,
+                    label: `${a.provider} · ${a.displayName}`,
+                  }))
+                : [
+                    ...(repos       ?? []).map((r) => ({ value: `repo:${r.id}`,      label: `Repo · ${r.fullName}` })),
+                    ...(containers  ?? []).map((c) => ({ value: `container:${c.id}`, label: `Container · ${c.imageRef}` })),
+                    ...(domains     ?? []).map((d) => ({ value: `domain:${d.id}`,    label: `Domain · ${d.domain}` })),
+                  ]
+            }
             value={parseMulti(target)}
             onChange={(v) => setMultiFilter("target", v)}
           />
@@ -808,17 +871,23 @@ export default function FindingsPage() {
           onChange={(v) => setMultiFilter("status", v)}
         />
 
-        <MultiSelect
-          label="Confidence"
-          options={CONFIDENCES.map((c) => ({ value: c, label: c }))}
-          value={confidence}
-          onChange={(v) => setMultiFilter("confidence", v)}
-        />
+        {/* Confidence — hidden on Cloud. Prowler CSPM checks are
+            deterministic (every FAIL is a real misconfig); confidence
+            is always LIKELY by the normalizer's rule. Filtering by it
+            adds a useless control. */}
+        {tab !== "cloud" && (
+          <MultiSelect
+            label="Confidence"
+            options={CONFIDENCES.map((c) => ({ value: c, label: c }))}
+            value={confidence}
+            onChange={(v) => setMultiFilter("confidence", v)}
+          />
+        )}
 
         {/* Reachability — Code-only. Phase 14's package-level reachability
             classification is meaningless for Web (URL-based) and Runtime
-            (production telemetry). Hiding here matches what we did on the
-            row's Confidence cell. */}
+            (production telemetry) AND CSPM (cloud resources, not packages).
+            Hiding here matches what we did on the row's Confidence cell. */}
         {tab === "code" && (
           <MultiSelect
             label="Reachability"
@@ -834,10 +903,48 @@ export default function FindingsPage() {
           />
         )}
 
-        {/* AI triage — hidden on Runtime. Wazuh findings don't go through
-            aiAnalyseService / aiFixSuggestionService yet, so this filter
-            would always return empty. */}
-        {tab !== "runtime" && (
+        {/* Phase 29 — Cloud-only filters. Service categorises Prowler's
+            azure check IDs (defender / monitor / network / etc) by the
+            Microsoft product family they evaluate. Compliance filters
+            findings to those mapped to a specific framework (CIS Azure /
+            PCI / NIST / MITRE ATT&CK / etc). Together they let
+            operators answer the two CSPM-specific questions: "what's
+            misconfigured in service X" and "what's failing for audit Y". */}
+        {tab === "cloud" && (
+          <>
+            <MultiSelect
+              label="Service"
+              options={CLOUD_SERVICE_OPTIONS}
+              value={cloudService}
+              onChange={(v) => setMultiFilter("cloudService", v)}
+              title="Filter by Azure service category (Prowler's 20-service taxonomy)"
+            />
+            <MultiSelect
+              label="Compliance"
+              // Compliance frameworks vary by Prowler version — derive the
+              // option list from the loaded findings rather than hardcoding.
+              // Empty data → empty list, which the dropdown handles cleanly.
+              options={(() => {
+                const seen = new Set<string>();
+                for (const f of (data?.data ?? [])) {
+                  const ev = (f.evidence ?? {}) as Record<string, unknown>;
+                  const compliance = (ev["compliance"] ?? {}) as Record<string, unknown>;
+                  for (const fw of Object.keys(compliance)) seen.add(fw);
+                }
+                return [...seen].sort().map((fw) => ({ value: fw, label: fw }));
+              })()}
+              value={cloudFramework}
+              onChange={(v) => setMultiFilter("complianceFramework", v)}
+              title="Filter findings to those mapped to a compliance framework"
+            />
+          </>
+        )}
+
+        {/* AI triage — hidden on Runtime + Cloud. Wazuh + Prowler
+            findings don't go through aiAnalyseService /
+            aiFixSuggestionService yet, so this filter would always
+            return empty. */}
+        {tab !== "runtime" && tab !== "cloud" && (
           <MultiSelect
             label="AI triage"
             options={AI_FILTERS}

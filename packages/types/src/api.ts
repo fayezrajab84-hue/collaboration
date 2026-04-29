@@ -214,6 +214,18 @@ export interface FindingFilterParams {
   repoId?: string;
   containerId?: string;
   domainId?: string;
+  /** Phase 29 — CSPM target filter. Comma-separated cloud account ids. */
+  cloudAccountId?: string | string[];
+  /** Phase 29 — CSPM service-prefix filter. Comma-separated service
+   *  names matching the leading token of Prowler check IDs (e.g.
+   *  "defender", "monitor", "network", "storage", "vm", "iam").
+   *  Server filters by `ruleId LIKE '<service>_%'`. */
+  cloudService?: string | string[];
+  /** Phase 29 — CSPM compliance framework filter. Comma-separated
+   *  framework keys (e.g. "CIS-5.0", "PCI-4.0", "ISO27001-2022",
+   *  "MITRE-ATTACK"). Server checks evidence.compliance for the
+   *  presence of any listed framework. */
+  complianceFramework?: string | string[];
   /** Phase 27.5 — filter findings to one or more applications. Resolves to
    *  "any finding whose target asset is in this application." Comma-separated
    *  string for the URL form, or string[] in JSON. */

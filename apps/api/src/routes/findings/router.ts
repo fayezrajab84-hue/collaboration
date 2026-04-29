@@ -114,6 +114,41 @@ router.get("/", async (req, res, next) => {
     if (targetOr.length === 1)      andClauses.push(targetOr[0]!);
     else if (targetOr.length > 1)   andClauses.push({ OR: targetOr });
 
+    // Phase 29 — CSPM-specific filters. The "service" axis groups
+    // Prowler check IDs by their service prefix (defender_*,
+    // monitor_*, network_*, storage_*, vm_*, iam_*) — operators
+    // triage CSPM by service first ("fix all Defender misconfigs")
+    // before drilling into individual checks.
+    const cloudServices = multi(q["cloudService"]);
+    if (cloudServices) {
+      andClauses.push({
+        OR: cloudServices.map((s) => ({ ruleId: { startsWith: `${s}_` } })),
+      });
+    }
+    // The "compliance framework" axis filters to findings whose Prowler
+    // metadata maps them to one of the requested frameworks (CIS-5.0,
+    // PCI-4.0, ISO27001-2022, MITRE-ATTACK, etc). Stored under
+    // evidence.compliance as a {framework: [controls]} dict.
+    //
+    // Implementation: pre-resolve to a Finding.id list via raw SQL
+    // (Prisma's JSON path filter requires a scalar comparator and
+    // "key exists" can't be expressed cleanly via the typed client).
+    // Postgres `?|` operator tests "any of these top-level keys exists"
+    // against a jsonb column. The candidate set typically resolves in
+    // <50ms for our finding volumes; we then narrow the main query by
+    // id IN (…), keeping the rest of the filter chain unchanged.
+    const cloudFrameworks = multi(q["complianceFramework"]);
+    if (cloudFrameworks) {
+      const matchingRows = await prisma.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM "Finding"
+        WHERE "orgId" = ${member.orgId}
+          AND "scanType" = 'CLOUD'
+          AND (evidence->'compliance') ?| ${cloudFrameworks}::text[]
+      `;
+      const ids = matchingRows.map((r) => r.id);
+      andClauses.push(ids.length ? { id: { in: ids } } : { id: "__no_match__" });
+    }
+
     // Phase 27.5 — Application filter. Resolves to "any finding whose target
     // asset belongs to one of the given applications." Composes with the
     // explicit target filters above (both apply if both passed).
