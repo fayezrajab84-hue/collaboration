@@ -39,6 +39,20 @@ POLL_INTERVAL=10
 TIMEOUT_MIN=45
 
 # ── Parse args ───────────────────────────────────────────────────────────
+# Pre-process so both --key=value AND --key value forms work. The README
+# examples use --key=value form; the original case-statement only matched
+# space-separated form, which made the documented examples error out
+# with "Unknown arg".
+PARSED_ARGS=()
+for raw_arg in "$@"; do
+  if [[ "$raw_arg" == --*=* ]]; then
+    PARSED_ARGS+=("${raw_arg%%=*}" "${raw_arg#*=}")
+  else
+    PARSED_ARGS+=("$raw_arg")
+  fi
+done
+set -- "${PARSED_ARGS[@]}"
+
 while [[ $# -gt 0 ]]; do
   case $1 in
     --api-url)       API_URL="$2"; shift 2 ;;
