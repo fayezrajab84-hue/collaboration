@@ -4,7 +4,7 @@ import {
   Gauge, FolderGit2, Container, Network, Bug,
   Workflow, Settings, LogOut, Radar, BrainCircuit, FileBarChart, Layers,
   Building2, ChevronsUpDown, Check, BookOpenCheck, GitGraph, Boxes,
-  ChevronDown, ChevronRight, Activity, Package,
+  ChevronDown, ChevronRight, Activity, Package, Cloud,
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../hooks/useAuth";
@@ -19,14 +19,16 @@ type LinkItem = { to: string; label: string; icon: typeof Gauge };
 
 // Order mirrors the operator's setup flow: define the Application boundary
 // first, then walk down the deployment stack — Domain (the front door) →
-// Container (what answers requests) → Repository (the source) → Runtime
-// (live monitoring once everything is deployed).
+// Container (what answers requests) → Repository (the source) → Cloud
+// (CSPM, the underlying infra) → Runtime (live monitoring once
+// everything is deployed).
 const ASSET_ITEMS: LinkItem[] = [
-  { to: "/applications", label: "Applications",  icon: Boxes      },
-  { to: "/domains",      label: "Domains",       icon: Network    },
-  { to: "/containers",   label: "Containers",    icon: Container  },
-  { to: "/repositories", label: "Repositories",  icon: FolderGit2 },
-  { to: "/runtime",      label: "Runtime",       icon: Activity   },
+  { to: "/applications",    label: "Applications",   icon: Boxes      },
+  { to: "/domains",         label: "Domains",        icon: Network    },
+  { to: "/containers",      label: "Containers",     icon: Container  },
+  { to: "/repositories",    label: "Repositories",   icon: FolderGit2 },
+  { to: "/cloud-accounts",  label: "Cloud",          icon: Cloud      },
+  { to: "/runtime",         label: "Runtime",        icon: Activity   },
 ];
 
 const NAV_ITEMS_TOP: LinkItem[] = [

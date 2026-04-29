@@ -1,6 +1,7 @@
 import type {
   AgentStatus,
   ApplicationEnv,
+  CloudProvider,
   Confidence,
   Criticality,
   FindingStatus,
@@ -290,6 +291,44 @@ export interface RuntimeEvidence {
     predecoder?:   string | null;
     agentLabels?:  Record<string, unknown> | null;
   };
+}
+
+// ── Phase 29 — Cloud Security Posture Management asset ───────────────────
+//
+// One CloudAccount = one (provider, scope) the operator authorises BreachLens
+// to evaluate. For AZURE that scope is one subscription; for AWS one account;
+// for GCP one project. Provider-specific identifier columns (tenantId,
+// azureClientId, subscriptionId) are flat for the AZURE-only Slice A; AWS/
+// GCP slices will add their own (awsAccountId, gcpProjectId) without
+// overloading these.
+//
+// `credentialsConfigured` is a derived boolean — true when the encrypted
+// credential blob is set on the row, false when the operator has only
+// pre-created the account record. Drives the UI "credentials needed" hint
+// without exposing the encrypted blob to the client.
+//
+// `lastScanError` surfaces the most recent test-connection / scan failure
+// so the UI can show "credentials no longer valid" without operators
+// digging in logs.
+export interface CloudAccount {
+  id:                   string;
+  orgId:                string;
+  provider:             CloudProvider;
+  displayName:          string;
+  // Azure-specific. Null for AWS/GCP (or when the operator hasn't
+  // populated them yet).
+  tenantId:             string | null;
+  azureClientId:        string | null;
+  subscriptionId:       string | null;
+  // True when encryptedCredentials has been set. The encrypted blob
+  // itself is never returned to the client.
+  credentialsConfigured: boolean;
+  isActive:             boolean;
+  lastScannedAt:        Date | string | null;
+  lastScanError:        string | null;
+  addedAt:              Date | string;
+  updatedAt:            Date | string;
+  findingCounts?:       FindingCounts;
 }
 
 // ── Phase 27.5 — Application boundary ────────────────────────────────────

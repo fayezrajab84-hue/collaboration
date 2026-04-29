@@ -41,6 +41,22 @@ enum ScanType {
   // ingestion service polls Wazuh and creates RUNTIME findings. Continuous,
   // not point-in-time — `firstSeen` and `lastSeen` track the rolling window.
   RUNTIME
+  // Phase 29 — Cloud Security Posture Management. CSPM scan over a
+  // CloudAccount target (Azure subscription scope for Slice A; AWS/GCP
+  // are future provider targets). Each evaluator rule emits one Finding
+  // with targetType=CLOUD_ACCOUNT.
+  CLOUD
+}
+
+// Phase 29 — Cloud provider taxonomy for CloudAccount.
+//   AZURE — Slice A (current). Service Principal + client-secret auth
+//           against a single subscription.
+//   AWS   — future Slice (B/C). IAM role assumption + AssumeRole pattern.
+//   GCP   — future Slice. Workload Identity Federation.
+enum CloudProvider {
+  AZURE
+  AWS
+  GCP
 }
 
 // Phase 28 Slice A — health of a Wazuh agent attached to this org.
@@ -115,6 +131,11 @@ enum TargetType {
   REPOSITORY
   CONTAINER
   DOMAIN
+  // Phase 29 — Cloud Security Posture Management.
+  // CloudAccount target represents a tenant/subscription pair the operator
+  // grants BreachLens read-access to via a Service Principal. Findings are
+  // misconfigurations on that account's resources (storage, VMs, NSGs etc).
+  CLOUD_ACCOUNT
 }
 
 enum TicketStatus {
@@ -258,6 +279,8 @@ model Organization {
   ssoConfig       SsoConfig?
   sboms           Sbom[]
   apiTokens       ApiToken[]
+  // Phase 29 — CSPM asset.
+  cloudAccounts   CloudAccount[]
 }
 
 // ── Phase A4 — API tokens for CI integration + automation ─────────────────
@@ -614,6 +637,68 @@ model Repository {
   @@index([applicationId])
 }
 
+// Phase 29 Slice A — Cloud Security Posture Management asset.
+//
+// Represents a single cloud-provider tenant/account/subscription scope the
+// operator has authorised BreachLens to evaluate against a CSPM ruleset.
+// Slice A only supports AZURE (one CloudAccount = one Azure subscription
+// + Service Principal). AWS / GCP land in later slices and will reuse the
+// same model.
+//
+// Credentials live in `encryptedCredentials` (AES-256-GCM via
+// encryptionService) — same pattern as DomainAuthConfig. The plaintext is
+// a JSON blob whose shape is provider-specific:
+//   AZURE: { clientSecret: "<SP secret>" }
+//   AWS:   { accessKeyId, secretAccessKey } | { roleArn, externalId }
+//   GCP:   { serviceAccountKey: <JSON> }
+// Provider-shaped non-secret identifiers stay as scalar columns
+// (tenantId / azureClientId / subscriptionId) so we can index + filter on
+// them without decrypting.
+//
+// `lastScanError` surfaces the most recent test-connection / scan failure
+// so operators see "credentials no longer valid" without digging in logs.
+model CloudAccount {
+  id              String        @id @default(cuid())
+  orgId           String
+  provider        CloudProvider
+  // Operator-facing label ("Production Azure", "Staging AWS dev account").
+  // Required because tenantId / subscription GUIDs are unmemorable.
+  displayName     String
+
+  // Azure-specific identifier columns. AWS/GCP slices will add their own
+  // (awsAccountId, gcpProjectId etc) rather than overloading these.
+  tenantId        String?       // Azure AD tenant id (GUID)
+  azureClientId   String?       // Service Principal application (client) id (GUID)
+  subscriptionId  String?       // Azure subscription scope for Slice A
+
+  // Encrypted secret material — base64(iv + tag + ciphertext) per
+  // encryptionService.encrypt(). Plaintext is provider-shaped JSON.
+  // Nullable so an operator can pre-create an account record before
+  // pasting credentials, but a CloudAccount with null creds can't scan.
+  encryptedCredentials String?
+
+  // Operational metadata.
+  isActive        Boolean       @default(true)
+  lastScannedAt   DateTime?
+  lastScanError   String?       // surfaces test-connection / scan failures
+
+  addedAt         DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  org             Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  scans           ScanJob[]
+  findings        Finding[]
+
+  // One subscription/account per (org, provider) — prevents accidental
+  // duplicates when an operator re-pastes credentials. Provider-shaped:
+  // for Azure the natural key is subscriptionId; for AWS it'll be
+  // awsAccountId; for GCP gcpProjectId. Keeping it on subscriptionId
+  // for Slice A is correct since AZURE is the only provider that
+  // populates it.
+  @@unique([orgId, provider, subscriptionId])
+  @@index([orgId])
+}
+
 model Container {
   id             String    @id @default(cuid())
   orgId          String
@@ -834,6 +919,8 @@ model ScanJob {
   repositoryId   String?
   containerId    String?
   domainId       String?
+  // Phase 29 — CSPM target. Optional; null for non-CLOUD scans.
+  cloudAccountId String?
   scanTypes      ScanType[]
   bullJobIds     Json       @default("{}")
   totalScans     Int        @default(0)
@@ -879,12 +966,13 @@ model ScanJob {
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
 
-  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  repository Repository?  @relation(fields: [repositoryId], references: [id])
-  container  Container?   @relation(fields: [containerId], references: [id])
-  domain     Domain?      @relation(fields: [domainId], references: [id])
-  findings   Finding[]
-  reports    Report[]
+  org          Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  repository   Repository?   @relation(fields: [repositoryId], references: [id])
+  container    Container?    @relation(fields: [containerId], references: [id])
+  domain       Domain?       @relation(fields: [domainId], references: [id])
+  cloudAccount CloudAccount? @relation(fields: [cloudAccountId], references: [id], onDelete: Cascade)
+  findings     Finding[]
+  reports      Report[]
   recordings         RecordingSession[] @relation("RecordingInteractiveScan")
   promotedRecordings RecordingSession[] @relation("RecordingPromotedScan")
   prCheckRun         PrCheckRun?
@@ -902,6 +990,8 @@ model Finding {
   repositoryId   String?
   containerId    String?
   domainId       String?
+  // Phase 29 — CSPM finding target. Optional; null for non-CLOUD findings.
+  cloudAccountId String?
   scanType       ScanType
   title          String
   description    String        @db.Text
@@ -967,12 +1057,13 @@ model Finding {
   correlationEdges      Json?
   correlationComputedAt DateTime?
 
-  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  scanJob    ScanJob      @relation(fields: [scanJobId], references: [id])
-  repository Repository?  @relation(fields: [repositoryId], references: [id])
-  container  Container?   @relation(fields: [containerId], references: [id])
-  domain     Domain?      @relation(fields: [domainId], references: [id])
-  ticket     Ticket?
+  org          Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  scanJob      ScanJob       @relation(fields: [scanJobId], references: [id])
+  repository   Repository?   @relation(fields: [repositoryId], references: [id])
+  container    Container?    @relation(fields: [containerId], references: [id])
+  domain       Domain?       @relation(fields: [domainId], references: [id])
+  cloudAccount CloudAccount? @relation(fields: [cloudAccountId], references: [id], onDelete: Cascade)
+  ticket       Ticket?
   // Phase 16 compliance mapping — many-to-many to ComplianceControl via the
   // FindingControl join table. Computed on-demand by the mapping service
   // (CWE → control rules) and persisted so dashboards can JOIN cheaply.

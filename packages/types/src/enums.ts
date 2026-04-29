@@ -1,7 +1,9 @@
 export type ScanType =
   | "SAST" | "SCA" | "SECRET" | "IAC" | "CONTAINER" | "DAST" | "PENTEST" | "PENTEST_FULL"
   // Phase 28 Slice A — Wazuh runtime alerts ingested as Findings.
-  | "RUNTIME";
+  | "RUNTIME"
+  // Phase 29 Slice A — Cloud Security Posture Management.
+  | "CLOUD";
 
 // Phase 28 Slice A — Wazuh agent health.
 export type AgentStatus = "HEALTHY" | "STALE" | "OFFLINE" | "UNKNOWN";
@@ -18,7 +20,11 @@ export type FindingStatus = "OPEN" | "ACKNOWLEDGED" | "FALSE_POSITIVE" | "FIXED"
 
 export type ScanStatus = "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED";
 
-export type TargetType = "REPOSITORY" | "CONTAINER" | "DOMAIN";
+export type TargetType = "REPOSITORY" | "CONTAINER" | "DOMAIN" | "CLOUD_ACCOUNT";
+
+// Phase 29 — Cloud provider enumeration. AZURE is Slice A; AWS/GCP are
+// future-slice expansions reusing the CloudAccount model.
+export type CloudProvider = "AZURE" | "AWS" | "GCP";
 
 export type TicketStatus = "OPEN" | "IN_PROGRESS" | "RESOLVED" | "CLOSED";
 

@@ -90,6 +90,81 @@ export const containersApi = {
     apiClient.patch<AssetLinksResponse>(`/containers/${id}/asset-links`, data).then((r) => r.data),
 };
 
+// ── Cloud Accounts (Phase 29) ─────────────────────────────────────────────
+
+export interface CloudAccountListItem {
+  id:                    string;
+  orgId:                 string;
+  provider:              "AZURE" | "AWS" | "GCP";
+  displayName:           string;
+  tenantId:              string | null;
+  azureClientId:         string | null;
+  subscriptionId:        string | null;
+  credentialsConfigured: boolean;
+  isActive:              boolean;
+  lastScannedAt:         string | null;
+  lastScanError:         string | null;
+  addedAt:               string;
+  updatedAt:             string;
+  findingCounts?:        { CRITICAL: number; HIGH: number; MEDIUM: number; LOW: number };
+}
+
+export interface CreateAzureCloudAccountRequest {
+  provider:       "AZURE";
+  displayName:    string;
+  tenantId:       string;
+  azureClientId:  string;
+  subscriptionId: string;
+  clientSecret:   string;
+}
+
+export interface UpdateAzureCloudAccountRequest {
+  displayName?:    string;
+  tenantId?:       string;
+  azureClientId?:  string;
+  subscriptionId?: string;
+  clientSecret?:   string;
+  isActive?:       boolean;
+}
+
+export type TestConnectionResult =
+  | { ok: true;  subscription: { id: string; name: string; state: string }; tokenExpiresAt: string }
+  | { ok: false; code: "invalid_client" | "subscription_not_found" | "network" | "unknown"; message: string };
+
+export const cloudAccountsApi = {
+  list:   ()           => apiClient.get<CloudAccountListItem[]>("/cloud-accounts").then((r) => r.data),
+  get:    (id: string) => apiClient.get<CloudAccountListItem>(`/cloud-accounts/${id}`).then((r) => r.data),
+  create: (data: CreateAzureCloudAccountRequest) =>
+    apiClient.post<CloudAccountListItem>("/cloud-accounts", data).then((r) => r.data),
+  update: (id: string, data: UpdateAzureCloudAccountRequest) =>
+    apiClient.patch<CloudAccountListItem>(`/cloud-accounts/${id}`, data).then((r) => r.data),
+  delete: (id: string) => apiClient.delete(`/cloud-accounts/${id}`),
+  /** Validate stored credentials against Azure (login.microsoftonline.com
+   *  + ARM /subscriptions/:id). Returns ok:true with subscription details
+   *  on success, ok:false with code+message on failure. Failures DO NOT
+   *  throw — the response is structured. */
+  testConnection: (id: string) =>
+    apiClient.post<TestConnectionResult>(`/cloud-accounts/${id}/test-connection`)
+      .then((r) => r.data)
+      // Axios throws on 422 from validation failures — unwrap to the
+      // structured TestConnectionResult so the UI can show a precise
+      // message. 500 / network errors still bubble.
+      .catch((e) => {
+        if (e.response?.status === 422 && e.response.data?.ok === false) return e.response.data as TestConnectionResult;
+        throw e;
+      }),
+  /** Validate inline-entered credentials (used by the create modal's
+   *  "Test connection" button before save). Same response shape as
+   *  testConnection, but takes the credential set inline. */
+  testConnectionInline: (data: CreateAzureCloudAccountRequest) =>
+    apiClient.post<TestConnectionResult>("/cloud-accounts/test-connection-inline", data)
+      .then((r) => r.data)
+      .catch((e) => {
+        if (e.response?.status === 422 && e.response.data?.ok === false) return e.response.data as TestConnectionResult;
+        throw e;
+      }),
+};
+
 // ── Domains ───────────────────────────────────────────────────────────────
 
 export const domainsApi = {
