@@ -1,8 +1,38 @@
 # Phase 28 — Runtime detection (Wazuh-first)
 
-**Status:** scoped, not started
+**Status (2026-04-29):** Slices A + B + emergent D + E **shipped**. Slice C **pending** (~80 LOC, ~4 hours).
+
+| Slice | Status | Notes |
+|---|---|---|
+| **A** — Wazuh alert → Finding ingestion | ✅ Shipped | Wazuh deployed at `20.205.154.88` (cloud spot); agent `c0263b172aab` linked to dvwa container; 61 alert findings ingested via the indexer fetcher (`wazuhIngestService.ts`). Hourly-bucket fingerprint dedup working. |
+| **B** — `/runtime` UI tab | ✅ Shipped | `RuntimePage.tsx`: Agents + Install tabs, multi-OS install snippets (Linux/Windows/Docker), agent linking modal, per-agent Reachability drawer (refactored from initial top-level tab on operator feedback — per-agent context is the natural unit). |
+| **C** — `runtimeBridge` plugin for Phase 27 correlation | ❌ Not built | The architectural unlock. Without it, RUNTIME findings ingest cleanly but stay isolated from attack chains. ~80 LOC + ~4 hours estimated. Cheapest single change to move runtime grade C+ → B-. |
+| **D** *(emergent — not in original plan)* — Wazuh VD state ingest | ✅ Shipped | Wazuh 4.13 retired the manager API path `/vulnerability/<id>` (returns 404 with valid auth). New ingestor pulls from `wazuh-states-vulnerabilities-*` indexer indices. 26 vulnerabilities ingested with full enrichment (cveId / packageName / packageVersion / fixVersion / cvssScore / references). Fingerprint = SHA-256(orgId\|agentId\|cveId\|pkgName\|pkgVersion). Idempotent on re-poll. |
+| **E** *(emergent — not in original plan)* — Synthesised MITRE on VD findings | ✅ Shipped | Wazuh VD docs ship zero MITRE classification. Built a 7-rule heuristic classifier (`vulnToMitre()` in `wazuhIngestService.ts`) that infers tactics/techniques from CVE description + CVSS score. Stamps `evidence.mitre.synthesized: true` + `basis` string. Dashboard MITRE chart now sees vulnerability state alongside attack events. Honest UI: dashed-border render in FindingsPage column + "Inferred from CVE — <basis>" caveat in drawer. **Standard upgrade path**: replace heuristic with CWE-driven layer (CVE→CWE from NVD + CWE→ATT&CK from MITRE) + CTID/Vulnrichment dataset for KEV-tier CVEs. ~150 LOC + ~250 LOC respectively, scoped but not built. |
+
+**Cross-cutting work shipped in the same session** (not strictly Phase 28 but enabled by it):
+
+- **Server-side tag system** (`services/findingTags.ts`) — 5 named predicates (`runtime-exploit` / `runtime-attack` / `runtime-vulnerability` / `confirmed-exploit` / `ai-suppressed`); same evaluator powers `/findings?tag=` and `/findings/summary/stats?tag=` for card-count ≡ destination-count parity. Replaces client-side predicate replication that drifted.
+- **Tag dropdown** on `/findings` toolbar — single-select, tab-scoped.
+- **Per-target dashboard filter** — combined `<details>` dropdown across repos/containers/domains.
+- **Per-scanner column pivot** in FindingsPage Runtime tab — headers dual-purpose ("Attacker / Package", "Process / Version", "Hits / CVSS"); per-row branch on `f.scanner === "wazuh-vd"` swaps cell content.
+- **VdDetailPanel** drawer branch — Vulnerability / Package / Fix / Timeline / synthesised MITRE / References sections instead of the empty attack-event sections.
+- **4-site predicate guard parity** — `scanner === "wazuh-vd"` exclusion added to (1) server `findingTags.hasActiveAttack`, (2) server `routes/runtime/dashboard activeAttacks24h`, (3) client `lib/findings.ts:hasActiveAttack`, (4) client `wasExploitSuccessful` + `hasProofOfExploit`. Site (3) was missed initially and false-fired ATTACK on 25/26 VD findings + EXPLOIT on 11/26 (DoS-class CVEs whose synthesised tactic "Impact" matched `SUCCESS_TACTICS`); caught + fixed in same session via direct user observation. **Lesson**: any new state-class scanner needs the guard at all 4 sites in parallel — worth a parity test if a 3rd state scanner ever lands (Trivy state? OpenSCAP?).
+
 **Predecessor:** Phase 27 (attack-path correlation) — must ship first so the runtime bridge has a correlation engine to plug into. Slice C below is a no-op without Phase 27's `Bridge` interface.
-**Surfaced by:** end-of-session conversation about coverage gaps. Today BreachLens is exclusively *static* + *active black-box*. Runtime — what the app is actually doing in production right now — is the missing third axis. Closes the gap to CNAPP buyers (Wiz, Aqua, Sysdig) who expect runtime as table stakes, and gives the Phase 27 attack chain a fourth act: "and 4 minutes ago someone tried to exploit it in production."
+
+**Surfaced by:** end-of-session conversation about coverage gaps. BreachLens was exclusively *static* + *active black-box*. Runtime — what the app is actually doing in production right now — was the missing third axis. Closes the gap to CNAPP buyers (Wiz, Aqua, Sysdig) who expect runtime as table stakes, and gives the Phase 27 attack chain a fourth act: "and 4 minutes ago someone tried to exploit it in production."
+
+---
+
+## Original plan below — preserved for context
+
+The slice-by-slice plan that follows was the original scope. Slices A + B
++ C are still the canonical structure; D + E (Wazuh VD state ingest +
+synthesised MITRE) emerged during integration when we discovered Wazuh
+4.13 had retired the manager VD API. Read the slice details below for
+the design rationale; read the status table above for what's actually
+shipped.
 
 ---
 
