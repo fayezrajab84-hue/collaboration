@@ -30,6 +30,7 @@ import { attackPathsApi, applicationsApi, findingsApi } from "../lib/api";
 import SeverityBadge from "../components/SeverityBadge";
 import MultiSelect from "../components/MultiSelect";
 import FindingDetailDrawer from "../components/FindingDetailDrawer";
+import AttackPathFlow, { ProofOnlyToggle, filterToProofChains } from "../components/AttackPathFlow";
 import { useToast } from "../hooks/useToast";
 import type { AttackPathSummary, AttackPathNode, AttackPathSummaryAI, Finding } from "@devsecops/types";
 
@@ -308,6 +309,17 @@ function AttackPathsList() {
     setSearchParams(sp, { replace: true });
   };
 
+  // Proof-of-exploit-only filter — when on, hide chains without any
+  // CONFIRMED-confidence finding. URL-driven: ?proofOnly=1 survives
+  // reloads + shared links so an operator triaging "what's actually
+  // proven" can pin that view.
+  const proofOnly = searchParams.get("proofOnly") === "1";
+  const setProofOnly = (v: boolean) => {
+    const sp = new URLSearchParams(searchParams);
+    if (v) sp.set("proofOnly", "1"); else sp.delete("proofOnly");
+    setSearchParams(sp, { replace: true });
+  };
+
   const { data, isLoading } = useQuery({
     queryKey: ["attackPaths"],
     queryFn:  () => attackPathsApi.list(50),
@@ -320,15 +332,20 @@ function AttackPathsList() {
   // Filter chains by selected applications using the `applicationIds` field
   // the backend now stamps on each chain summary (Phase 27.5.x). A chain
   // matches when ANY of its application IDs is in the selected set.
+  // Then optionally narrow to proof-of-exploit chains only.
   const filtered = useMemo(() => {
     if (!data?.paths) return [];
-    if (appIds.length === 0) return data.paths;
-    const selected = new Set(appIds);
-    return data.paths.filter((p) => p.applicationIds.some((id) => selected.has(id)));
-  }, [data, appIds]);
+    let out = data.paths;
+    if (appIds.length > 0) {
+      const selected = new Set(appIds);
+      out = out.filter((p) => p.applicationIds.some((id) => selected.has(id)));
+    }
+    return filterToProofChains(out, proofOnly);
+  }, [data, appIds, proofOnly]);
 
   if (isLoading) return <div className="p-6 text-gray-500">Loading attack paths…</div>;
   const paths = filtered;
+  const proofChainCount = (data?.paths ?? []).filter((p) => p.hasConfirmed).length;
 
   return (
     <FindingDrawerHost>
@@ -342,23 +359,33 @@ function AttackPathsList() {
           Click any path to expand the walk; click any finding to see its full evidence.
         </p>
 
-        {/* Filter row — only render the app filter when there's at least one
-            application in the org (avoid an empty-options dropdown). */}
-        {(applications?.length ?? 0) > 0 && (
-          <div className="mb-5 flex items-center gap-3">
+        {/* Filter row. Application filter rendered only when the org has at
+            least one application (avoid empty-options dropdown). The Proof-
+            of-exploit toggle always shows — operator can quickly narrow to
+            chains with at least one CONFIRMED finding regardless of app. */}
+        <div className="mb-5 flex flex-wrap items-center gap-3">
+          {(applications?.length ?? 0) > 0 && (
             <MultiSelect
               label="Applications"
               options={(applications ?? []).map((a) => ({ value: a.id, label: a.name }))}
               value={appIds}
               onChange={setAppFilter}
             />
-            {appIds.length > 0 && (
-              <span className="text-xs text-gray-500">
-                Showing {paths.length} chain{paths.length === 1 ? "" : "s"} for {appIds.length} app{appIds.length === 1 ? "" : "s"}
-              </span>
-            )}
-          </div>
-        )}
+          )}
+          <ProofOnlyToggle
+            value={proofOnly}
+            onChange={setProofOnly}
+            count={proofChainCount}
+            totalCount={data?.paths?.length ?? 0}
+          />
+          {(appIds.length > 0 || proofOnly) && (
+            <span className="text-xs text-gray-500">
+              Showing {paths.length} chain{paths.length === 1 ? "" : "s"}
+              {appIds.length > 0 && <> for {appIds.length} app{appIds.length === 1 ? "" : "s"}</>}
+              {proofOnly && <> with confirmed exploit</>}
+            </span>
+          )}
+        </div>
 
         {paths.length === 0 ? <EmptyState filtered={appIds.length > 0} /> : (
           <div className="space-y-3">
@@ -497,6 +524,17 @@ function PathCard({
               title when expanded. Lazy: the cached summary loads via the
               chain-detail query the first time the card opens. */}
           <ExpandedSummaryHost groupId={path.groupId} />
+          {/* Kill-chain flow diagram — 4-phase block view (Source → Image →
+              Surface → Runtime). Compresses the chain's potentially-many
+              findings into a single horizontal scan: where evidence exists,
+              where bridges connect tiers, where Proof-of-Exploit lands.
+              Sits ABOVE the per-scan-type drill-down so operators get the
+              picture before the detail. */}
+          <AttackPathFlow
+            nodes={path.nodes}
+            edges={path.edges}
+            groupId={path.groupId}
+          />
           <ScanTypeGroups
             nodes={path.nodes}
             isGroupOpen={isGroupOpen}
