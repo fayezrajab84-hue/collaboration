@@ -124,6 +124,17 @@ export async function runWazuhIngestionSweep(
 
   const sinceWindow = pollSince();
 
+  // Track which orgs had findings written so we can fire a single
+  // correlation refresh per org at the end of the sweep — not per-agent
+  // (would re-run correlation for the same org N times per cycle).
+  // Phase 28 Slice C — runtimeBridge connects RUNTIME findings to
+  // CONTAINER / DAST / PENTEST findings on the same workload, so a fresh
+  // ingest needs a chain refresh to surface the new edges. The findings
+  // pipeline does this inline via findingService.upsertFindings, but
+  // the Wazuh ingestor writes to prisma directly — so we mirror the
+  // fire-and-forget pattern here.
+  const orgsTouched = new Set<string>();
+
   for (const agent of agents) {
     try {
       const alerts = await fetcher(agent.wazuhAgentId, sinceWindow);
@@ -132,6 +143,7 @@ export async function runWazuhIngestionSweep(
 
       const touched = await ingestAlertsForAgent(agent.id, agent.orgId, alerts);
       summary.findingsTouched += touched;
+      if (touched > 0) orgsTouched.add(agent.orgId);
 
       // Vulnerability state sweep — only when the indexer is configured
       // (modern Wazuh 4.13+; the legacy manager path doesn't expose VD).
@@ -145,6 +157,7 @@ export async function runWazuhIngestionSweep(
           if (vdDocs.length > 0) {
             const vdTouched = await ingestVulnerabilitiesForAgent(agent.id, agent.orgId, vdDocs);
             summary.findingsTouched += vdTouched;
+            if (vdTouched > 0) orgsTouched.add(agent.orgId);
           }
         } catch (err) {
           // VD failure shouldn't kill the alert-ingest path for the same
@@ -172,6 +185,27 @@ export async function runWazuhIngestionSweep(
         where: { id: agent.id },
         data:  { lastIngestError: msg.slice(0, 500), status: "OFFLINE" },
       });
+    }
+  }
+
+  // Phase 28 Slice C — fire-and-forget correlation refresh per touched org.
+  // runtimeBridge connects RUNTIME findings to CONTAINER / DAST / PENTEST
+  // findings on the same workload (when the agent is operator-linked to a
+  // Container). Without this refresh, new alerts/vulns sit isolated until
+  // the hourly recurring sweep in correlationWorker picks them up — too
+  // slow for the demo narrative ("4 minutes ago someone exploited it"
+  // shouldn't take an hour to enter the chain). Errors are logged +
+  // swallowed so a bridge failure never blocks the next ingest sweep.
+  if (orgsTouched.size > 0) {
+    try {
+      const { runCorrelationForOrg } = await import("../correlation/correlationService.js");
+      for (const orgId of orgsTouched) {
+        runCorrelationForOrg(orgId).catch((err) => {
+          logger.warn(`[wazuh-ingest] correlation refresh failed for org ${orgId}: ${err.message}`);
+        });
+      }
+    } catch (err) {
+      logger.warn(`[wazuh-ingest] failed to schedule correlation refresh: ${(err as Error).message}`);
     }
   }
 
