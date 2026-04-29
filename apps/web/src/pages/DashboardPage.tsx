@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
-import { ShieldAlert, GitBranch, Box, Globe, ArrowRight, Flame, Plus, Target, Code2, Activity, AlertTriangle, Filter, ChevronDown, Check } from "lucide-react";
+import { ShieldAlert, GitBranch, Box, Globe, ArrowRight, Flame, Plus, Target, Code2, Activity, AlertTriangle, Filter, ChevronDown, Check, Cloud as CloudIcon } from "lucide-react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { findingsApi, reposApi, containersApi, domainsApi, scansApi, runtimeApi, type RuntimeDashboardResponse } from "../lib/api";
 import { wasExploitSuccessful, hasActiveAttack } from "../lib/findings";
@@ -20,8 +20,10 @@ import type { ScanJob, Finding } from "@devsecops/types";
 const CODE_SCAN_TYPES    = ["SAST", "SCA", "SECRET", "IAC", "CONTAINER"];
 const WEB_SCAN_TYPES     = ["DAST", "PENTEST_FULL"];
 const RUNTIME_SCAN_TYPES = ["RUNTIME"];
+const CLOUD_SCAN_TYPES   = ["CLOUD"];   // Phase 29 — CSPM
 const WEB_TYPES_SET      = new Set(WEB_SCAN_TYPES);
 const RUNTIME_TYPES_SET  = new Set(RUNTIME_SCAN_TYPES);
+const CLOUD_TYPES_SET    = new Set(CLOUD_SCAN_TYPES);
 
 // Web target Globe rendered in light silver (gray-300) — same shade used
 // across every Globe in the app (dashboard tabs, stats cards, TargetTag,
@@ -311,7 +313,7 @@ function CodeCategoriesWidget({
 function ExploitsWidget({
   tab, runtimeDash, exploits, isLoading,
 }: {
-  tab: "code" | "web" | "runtime";
+  tab: "code" | "web" | "runtime" | "cloud";
   runtimeDash?: RuntimeDashboardResponse;
   // Pre-filtered exploits from the parent — already passes the badge
   // predicate (wasExploitSuccessful for Code/Web, hasActiveAttack for
@@ -326,6 +328,7 @@ function ExploitsWidget({
   const tabLabel =
     tab === "runtime" ? "Runtime"
     : tab === "web"   ? "Web"
+    : tab === "cloud" ? "Cloud"
     :                   "Code";
 
   return (
@@ -584,11 +587,12 @@ export default function DashboardPage() {
   // was on. Default to Code since most users add a repo first.
   const [searchParams, setSearchParams] = useSearchParams();
   const tabRaw = searchParams.get("tab");
-  const tab: "code" | "web" | "runtime" =
+  const tab: "code" | "web" | "runtime" | "cloud" =
     tabRaw === "web"     ? "web"
     : tabRaw === "runtime" ? "runtime"
+    : tabRaw === "cloud"   ? "cloud"
     :                      "code";
-  const setTab = (t: "code" | "web" | "runtime") => {
+  const setTab = (t: "code" | "web" | "runtime" | "cloud") => {
     setSearchParams((prev) => {
       if (t === "code") prev.delete("tab"); else prev.set("tab", t);
       return prev;
@@ -622,6 +626,7 @@ export default function DashboardPage() {
   const tabScanTypes =
     tab === "web"     ? WEB_SCAN_TYPES
     : tab === "runtime" ? RUNTIME_SCAN_TYPES
+    : tab === "cloud"   ? CLOUD_SCAN_TYPES
     :                    CODE_SCAN_TYPES;
   const tabScanCsv    = tabScanTypes.join(",");
 
@@ -748,8 +753,11 @@ export default function DashboardPage() {
   const runtimeFindings = (globalStats?.scanTypeCounts ?? [])
     .filter((s) => RUNTIME_TYPES_SET.has(s.scanType))
     .reduce((a, b) => a + b._count, 0);
+  const cloudFindings = (globalStats?.scanTypeCounts ?? [])
+    .filter((s) => CLOUD_TYPES_SET.has(s.scanType))
+    .reduce((a, b) => a + b._count, 0);
   const codeFindings = (globalStats?.scanTypeCounts ?? [])
-    .filter((s) => !WEB_TYPES_SET.has(s.scanType) && !RUNTIME_TYPES_SET.has(s.scanType))
+    .filter((s) => !WEB_TYPES_SET.has(s.scanType) && !RUNTIME_TYPES_SET.has(s.scanType) && !CLOUD_TYPES_SET.has(s.scanType))
     .reduce((a, b) => a + b._count, 0);
 
   return (
@@ -812,6 +820,19 @@ export default function DashboardPage() {
             <span className={`tabular-nums rounded-full px-1.5 py-0.5 text-[10px] ${
               tab === "runtime" ? "bg-indigo-500/30 text-indigo-100" : "bg-gray-800 text-gray-500"
             }`}>{runtimeFindings.toLocaleString()}</span>
+          </button>
+          <button
+            onClick={() => setTab("cloud")}
+            className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+              tab === "cloud" ? "bg-indigo-700 text-white" : "text-gray-400 hover:text-white"
+            }`}
+            title="CSPM — Prowler misconfig findings (Azure / AWS / GCP)"
+          >
+            <CloudIcon className="h-3.5 w-3.5" />
+            Cloud
+            <span className={`tabular-nums rounded-full px-1.5 py-0.5 text-[10px] ${
+              tab === "cloud" ? "bg-indigo-500/30 text-indigo-100" : "bg-gray-800 text-gray-500"
+            }`}>{cloudFindings.toLocaleString()}</span>
           </button>
         </div>
       </div>

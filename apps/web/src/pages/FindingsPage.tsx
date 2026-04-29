@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
-import { ShieldAlert, Search, Globe, Layers, Sparkles, ChevronDown, ChevronRight, ChevronsUpDown, ArrowUp, ArrowDown, KeyRound, Bot, Wrench, X, EyeOff, Eye, Download, CheckSquare, CheckCircle2, ShieldOff, RotateCcw, Ticket as TicketIcon, Code2, ExternalLink, Activity, Target } from "lucide-react";
+import { ShieldAlert, Search, Globe, Layers, Sparkles, ChevronDown, ChevronRight, ChevronsUpDown, ArrowUp, ArrowDown, KeyRound, Bot, Wrench, X, EyeOff, Eye, Download, CheckSquare, CheckCircle2, ShieldOff, RotateCcw, Ticket as TicketIcon, Code2, ExternalLink, Activity, Target, Cloud } from "lucide-react";
 import { findingsApi, reposApi, containersApi, domainsApi, suppressionsApi, applicationsApi } from "../lib/api";
 import type { Finding, FindingGroup } from "@devsecops/types";
 import Can from "../components/Can";
@@ -87,9 +87,18 @@ const WEB_SCAN_TYPE_OPTIONS: Array<{ value: string; label: string }> = [
 const RUNTIME_SCAN_TYPE_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "RUNTIME", label: "Runtime (Wazuh)" },
 ];
+// Phase 29 — Cloud (CSPM) findings come from Prowler against an Azure
+// subscription / AWS account / GCP project. Like Runtime, the operator's
+// mental model differs ("what's misconfigured in my cloud" vs "what's
+// vulnerable in my code"), and the columns differ (resource id +
+// compliance frameworks instead of file path / URL).
+const CLOUD_SCAN_TYPE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "CLOUD", label: "Cloud (Prowler)" },
+];
 const CODE_SCAN_TYPES    = CODE_SCAN_TYPE_OPTIONS.map((o) => o.value);
 const WEB_SCAN_TYPES     = WEB_SCAN_TYPE_OPTIONS.map((o) => o.value);
 const RUNTIME_SCAN_TYPES = RUNTIME_SCAN_TYPE_OPTIONS.map((o) => o.value);
+const CLOUD_SCAN_TYPES   = CLOUD_SCAN_TYPE_OPTIONS.map((o) => o.value);
 const STATUSES = ["OPEN", "ACKNOWLEDGED", "FALSE_POSITIVE", "FIXED", "IGNORED"];
 const CONFIDENCES = ["CONFIRMED", "LIKELY", "POSSIBLE"];
 // AI triage filter values — matched server-side against aiAnalysedAt/aiFixSuggestedAt
@@ -406,7 +415,7 @@ export default function FindingsPage() {
   // URL column only appears where it makes sense and dropdown options aren't
   // mixed across two very different finding shapes. Default to "code" since
   // most users add a repo first and code findings dominate volume.
-  const tab        = (searchParams.get("tab") as "code" | "web" | "runtime" | "groups") ?? "code";
+  const tab        = (searchParams.get("tab") as "code" | "web" | "runtime" | "cloud" | "groups") ?? "code";
   // Multi-select filters stored as comma-separated values in the URL so links
   // remain shareable; the server splits and parses them via `multi()`.
   const parseMulti = (v: string) => v.split(",").map((s) => s.trim()).filter(Boolean);
@@ -442,6 +451,7 @@ export default function FindingsPage() {
   const tabScanTypes =
     tab === "web"     ? WEB_SCAN_TYPES
     : tab === "runtime" ? RUNTIME_SCAN_TYPES
+    : tab === "cloud"   ? CLOUD_SCAN_TYPES
     : CODE_SCAN_TYPES;
   const effectiveScanTypes = scanType.length
     ? scanType.filter((t) => tabScanTypes.includes(t))
@@ -680,6 +690,18 @@ export default function FindingsPage() {
             Runtime
           </button>
           <button
+            onClick={() => setTab("cloud")}
+            className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+              tab === "cloud"
+                ? "bg-indigo-700 text-white"
+                : "text-gray-400 hover:text-white"
+            }`}
+            title="CSPM — Prowler misconfig findings from Azure / AWS / GCP"
+          >
+            <Cloud className="h-3.5 w-3.5 text-gray-300" />
+            Cloud
+          </button>
+          <button
             onClick={() => setTab("groups")}
             className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
               tab === "groups"
@@ -757,14 +779,19 @@ export default function FindingsPage() {
           onChange={(v) => setMultiFilter("severity", v)}
         />
 
-        {/* Types — hidden on Runtime (only one scan type: RUNTIME). */}
-        {tab !== "runtime" && (
+        {/* Types — hidden on Runtime + Cloud (each has only one scan type). */}
+        {tab !== "runtime" && tab !== "cloud" && (
           <MultiSelect
             label="Types"
             // Tab-scoped — Code tab shows file-based scanners, Web tab shows
             // URL-based scanners. Mixing them was confusing and made the
             // dropdown longer than necessary.
-            options={tab === "web" ? WEB_SCAN_TYPE_OPTIONS : CODE_SCAN_TYPE_OPTIONS}
+            options={
+              tab === "web"     ? WEB_SCAN_TYPE_OPTIONS
+              : tab === "cloud" ? CLOUD_SCAN_TYPE_OPTIONS
+              : tab === "runtime" ? RUNTIME_SCAN_TYPE_OPTIONS
+              : CODE_SCAN_TYPE_OPTIONS
+            }
             value={scanType}
             onChange={(v) => setMultiFilter("scanType", v)}
           />

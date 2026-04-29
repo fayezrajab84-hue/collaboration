@@ -100,14 +100,17 @@ router.get("/", async (req, res, next) => {
     const andClauses: Array<Record<string, unknown>> = [];
 
     // Target filters — each supports multi-select. Across target types we OR
-    // (a finding with a matching repo OR container OR domain qualifies).
-    const repoIds      = multi(q["repoId"]);
-    const containerIds = multi(q["containerId"]);
-    const domainIds    = multi(q["domainId"]);
+    // (a finding with a matching repo OR container OR domain OR cloud
+    // account qualifies).
+    const repoIds         = multi(q["repoId"]);
+    const containerIds    = multi(q["containerId"]);
+    const domainIds       = multi(q["domainId"]);
+    const cloudAccountIds = multi(q["cloudAccountId"]);   // Phase 29
     const targetOr: Array<Record<string, unknown>> = [];
-    if (repoIds)      targetOr.push({ repositoryId: { in: repoIds } });
-    if (containerIds) targetOr.push({ containerId:  { in: containerIds } });
-    if (domainIds)    targetOr.push({ domainId:     { in: domainIds } });
+    if (repoIds)         targetOr.push({ repositoryId:   { in: repoIds         } });
+    if (containerIds)    targetOr.push({ containerId:    { in: containerIds    } });
+    if (domainIds)       targetOr.push({ domainId:       { in: domainIds       } });
+    if (cloudAccountIds) targetOr.push({ cloudAccountId: { in: cloudAccountIds } });
     if (targetOr.length === 1)      andClauses.push(targetOr[0]!);
     else if (targetOr.length > 1)   andClauses.push({ OR: targetOr });
 
@@ -257,10 +260,12 @@ router.get("/", async (req, res, next) => {
         where,
         orderBy,
         include: {
-          ticket:     { select: { id: true, status: true, jiraKey: true } },
-          repository: { select: { fullName: true } },
-          container:  { select: { imageRef: true } },
-          domain:     { select: { domain: true } },
+          ticket:       { select: { id: true, status: true, jiraKey: true } },
+          repository:   { select: { fullName: true } },
+          container:    { select: { imageRef: true } },
+          domain:       { select: { domain: true } },
+          // Phase 29 — CSPM target for the finding row's "Target" column.
+          cloudAccount: { select: { displayName: true, provider: true, subscriptionId: true } },
         },
       });
       const filtered = candidates.filter((f) => tagPredicate!(f as never));
@@ -277,10 +282,11 @@ router.get("/", async (req, res, next) => {
         skip,
         take: limit,
         include: {
-          ticket:     { select: { id: true, status: true, jiraKey: true } },
-          repository: { select: { fullName: true } },
-          container:  { select: { imageRef: true } },
-          domain:     { select: { domain: true } },
+          ticket:       { select: { id: true, status: true, jiraKey: true } },
+          repository:   { select: { fullName: true } },
+          container:    { select: { imageRef: true } },
+          domain:       { select: { domain: true } },
+          cloudAccount: { select: { displayName: true, provider: true, subscriptionId: true } },
         },
       }),
       prisma.finding.count({ where }),
@@ -355,13 +361,15 @@ router.get("/summary/stats", async (req, res, next) => {
       return arr.flatMap((x) => (typeof x === "string" ? x.split(",") : []))
         .map((s) => s.trim()).filter(Boolean);
     };
-    const repoIds      = parseTargetParam(req.query["repoId"]);
-    const containerIds = parseTargetParam(req.query["containerId"]);
-    const domainIds    = parseTargetParam(req.query["domainId"]);
+    const repoIds         = parseTargetParam(req.query["repoId"]);
+    const containerIds    = parseTargetParam(req.query["containerId"]);
+    const domainIds       = parseTargetParam(req.query["domainId"]);
+    const cloudAccountIds = parseTargetParam(req.query["cloudAccountId"]);  // Phase 29
     const targetOr: Array<Record<string, unknown>> = [];
-    if (repoIds.length)      targetOr.push({ repositoryId: { in: repoIds } });
-    if (containerIds.length) targetOr.push({ containerId:  { in: containerIds } });
-    if (domainIds.length)    targetOr.push({ domainId:     { in: domainIds } });
+    if (repoIds.length)         targetOr.push({ repositoryId:   { in: repoIds         } });
+    if (containerIds.length)    targetOr.push({ containerId:    { in: containerIds    } });
+    if (domainIds.length)       targetOr.push({ domainId:       { in: domainIds       } });
+    if (cloudAccountIds.length) targetOr.push({ cloudAccountId: { in: cloudAccountIds } });
     if (targetOr.length) scopedWhere["OR"] = targetOr;
 
     const [severityCounts, scanTypeCounts, statusCounts, confidenceCounts, severityByScanType] = await Promise.all([

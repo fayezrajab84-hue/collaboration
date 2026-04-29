@@ -394,6 +394,8 @@ export interface ScanJob {
   repository?: { id: string; fullName: string } | null;
   container?: { id: string; imageRef: string } | null;
   domain?: { id: string; domain: string } | null;
+  // Phase 29 — CSPM target (CLOUD scanType findings).
+  cloudAccount?: { displayName: string; provider: string; subscriptionId: string | null } | null;
 }
 
 // ── Phase 6: Finding groups ───────────────────────────────────────────────────

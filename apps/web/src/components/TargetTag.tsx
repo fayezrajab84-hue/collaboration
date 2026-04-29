@@ -1,4 +1,4 @@
-import { GitBranch, Box, Globe } from "lucide-react";
+import { GitBranch, Box, Globe, Cloud } from "lucide-react";
 import type { Finding } from "@devsecops/types";
 
 /**
@@ -45,6 +45,19 @@ export default function TargetTag({
       <span className={chip}>
         <Globe className="h-3 w-3 shrink-0 text-gray-300" />
         <span className="truncate">{finding.domain.domain}</span>
+      </span>
+    );
+  }
+  // Phase 29 — CSPM target. CloudAccount findings (CLOUD scan type)
+  // populate `cloudAccount` instead of repository/container/domain. Show
+  // the operator-friendly displayName (e.g. "Production Azure") rather
+  // than the subscription GUID — operators recognise their account
+  // labels much faster than 36-char IDs.
+  if (finding.cloudAccount) {
+    return (
+      <span className={chip}>
+        <Cloud className="h-3 w-3 shrink-0 text-indigo-400" />
+        <span className="truncate">{finding.cloudAccount.displayName}</span>
       </span>
     );
   }

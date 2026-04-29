@@ -771,9 +771,14 @@ export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: n
         orgId,
         scanJobId,
         targetType,
-        repositoryId: targetType === "REPOSITORY" ? targetId : null,
-        containerId:  targetType === "CONTAINER"  ? targetId : null,
-        domainId:     targetType === "DOMAIN"     ? targetId : null,
+        repositoryId:   targetType === "REPOSITORY"     ? targetId : null,
+        containerId:    targetType === "CONTAINER"      ? targetId : null,
+        domainId:       targetType === "DOMAIN"         ? targetId : null,
+        // Phase 29 — CSPM finding FK. Without this, CLOUD findings come
+        // through with cloudAccountId=null and `/api/cloud-accounts/:id`
+        // can't tally finding counts; the dashboard / cloud-accounts page
+        // both show 0 even though the parent ScanJob has the FK set.
+        cloudAccountId: targetType === "CLOUD_ACCOUNT"  ? targetId : null,
         scanType:     f.scanType,
         title:        f.title,
         description:  f.description,
