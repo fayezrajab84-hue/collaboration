@@ -1,31 +1,51 @@
 /**
  * AttackPathWorkflow — Phase 27.5.y AI-generated step-by-step attack walk.
  *
- * Renders the AI's ordered workflow as a visual flow chart: each step is
- * a card connected to the next by a curved SVG arrow. Phase colours match
- * AttackPathFlow's block diagram (source/image=indigo, surface/runtime=red)
- * so the operator's eye carries from one component to the next.
+ * Renders the AI's ordered workflow as a HORIZONTAL flow chart: each step
+ * is a card laid out left-to-right, connected to the next by a curved
+ * bezier arrow with phase-transition gradient stops + arrowhead. This is
+ * the visual the user asked for: "graph + evidence... blocks with flow".
  *
- * Layout: vertical flow (step 1 at top, step N at bottom). The arrow
- * between adjacent steps is rendered as an SVG path that:
- *   - curves from the bottom of the previous step's circle to the top of
- *     the next step's circle (gives the "branching/flowing" feel)
- *   - colours by phase TRANSITION — gradient from source-phase color to
- *     destination-phase color so an operator can read the kill-chain
- *     progression at a glance
- *   - terminates with an arrowhead marker
+ * Why horizontal:
+ *   - reads as a kill-chain timeline (entry on the left, deepest impact
+ *     on the right) which mirrors how attackers actually walk a target
+ *   - 3-6 cards laid horizontally fit a typical wide chain card without
+ *     wrapping; on narrow viewports the container scrolls horizontally
+ *   - arrows-between-cards is more "diagram"-like than a numbered list
+ *     with a single vertical connector
  *
- * Vertical (rather than horizontal) is deliberate:
- *   - 3-6 steps fits naturally in the chain card's expanded view without
- *     horizontal scrolling
- *   - a step's evidence-chip cluster wants more horizontal room than
- *     a column-narrow card would give it
- *   - it reads top-to-bottom like a runbook
+ * Geometry — measured, not approximated:
+ *   - Each step card has a `ref` so we can read its real `offsetLeft` /
+ *     `offsetWidth` after layout. Arrow paths anchor on those measured
+ *     positions, so they always land exactly on the right edge of card
+ *     N and the left edge of card N+1.
+ *   - A ResizeObserver re-measures when the chain card's container
+ *     changes width (e.g. operator drags the browser window) so arrows
+ *     don't drift out of sync with the cards.
+ *   - The SVG canvas spans the full row and has `overflow: visible` so
+ *     arrows can poke a few pixels outside their bounding box without
+ *     being clipped.
  *
- * Why not import a graph library: pnpm install hits the Windows
- * file-lock issue documented in CLAUDE.md. SVG-by-hand is plenty for a
- * 3-6 step linear flow and ships zero new bundle weight.
+ * Visual polish:
+ *   - Phase colours mirror AttackPathFlow (source/image=indigo,
+ *     surface/runtime=red) so the operator's eye carries from one
+ *     component to the next.
+ *   - Each step card has a phase-coloured top strip + step-number badge
+ *     in the corner.
+ *   - Arrows use a per-arrow linearGradient (source-phase → dest-phase
+ *     stops) so the colour transition is visible mid-arrow.
+ *   - Arrows ENTERING a step backed by a CONFIRMED Proof-of-Exploit
+ *     finding pulse subtly via a CSS animation — operator's eye lands
+ *     on proof-bearing transitions first.
+ *   - On mount, arrows draw themselves left-to-right via stroke-
+ *     dasharray animation. Reinforces the kill-chain reading order.
+ *
+ * Why not import a graph library: pnpm install of reactflow hit the
+ * Windows file-lock issue documented in CLAUDE.md (workspace symlink
+ * EACCES). Hand-rolled SVG with curved bezier + gradient stops is
+ * plenty for a 3-6-step linear flow and ships zero new bundle weight.
  */
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Code2, Box, Globe, Activity, ShieldAlert, Flame } from "lucide-react";
 import type { AttackPathNode, WorkflowStep } from "@devsecops/types";
 
@@ -36,52 +56,51 @@ type Phase = WorkflowStep["phase"];
 const PHASE_DEF: Record<Phase, {
   label:        string;
   Icon:         typeof Code2;
-  /** Stop colour for the SVG gradient — used at both the card border and
-   *  the arrow leaving this phase. Keep these in sync with the same
-   *  phase colours in AttackPathFlow.tsx. */
+  /** Arrow gradient stop colour. Keep in sync with AttackPathFlow. */
   stopColor:    string;
-  /** Tailwind utility classes for the step circle (border + bg + text). */
-  circleClass:  string;
-  /** Tailwind utility classes for the phase chip in card header. */
-  chipClass:    string;
-  /** Light bg behind the card body, picks up the phase tone subtly. */
-  bodyBgClass:  string;
+  /** Header strip background — picks up the phase tone strongly so the
+   *  operator can phase-tag a card at-a-glance even with the strip
+   *  collapsed off-screen. */
+  stripClass:   string;
+  /** Step-number badge inside the strip. */
+  badgeClass:   string;
+  /** Card body background — phase-tinted but mostly neutral so the
+   *  evidence chips inside don't clash with the colour palette. */
+  bodyClass:    string;
 }> = {
   source: {
-    label:       "Source",
-    Icon:        Code2,
-    stopColor:   "#6366f1",     // indigo-500
-    circleClass: "border-indigo-500 bg-indigo-950/60 text-indigo-200",
-    chipClass:   "bg-indigo-950/60 text-indigo-200 border-indigo-700/60",
-    bodyBgClass: "bg-indigo-950/15",
+    label:      "Source",
+    Icon:       Code2,
+    stopColor:  "#6366f1",        // indigo-500
+    stripClass: "bg-indigo-900/50 border-indigo-600/60",
+    badgeClass: "bg-indigo-700 text-white",
+    bodyClass:  "bg-indigo-950/15 border-indigo-900/40",
   },
   image: {
-    label:       "Image",
-    Icon:        Box,
-    stopColor:   "#818cf8",     // indigo-400
-    circleClass: "border-indigo-400 bg-indigo-950/50 text-indigo-200",
-    chipClass:   "bg-indigo-950/50 text-indigo-200 border-indigo-700/50",
-    bodyBgClass: "bg-indigo-950/10",
+    label:      "Image",
+    Icon:       Box,
+    stopColor:  "#818cf8",        // indigo-400
+    stripClass: "bg-indigo-800/50 border-indigo-500/60",
+    badgeClass: "bg-indigo-600 text-white",
+    bodyClass:  "bg-indigo-950/10 border-indigo-900/30",
   },
   surface: {
-    label:       "Surface",
-    Icon:        Globe,
-    stopColor:   "#dc2626",     // red-600
-    circleClass: "border-red-600 bg-red-950/60 text-red-200",
-    chipClass:   "bg-red-950/60 text-red-200 border-red-700/60",
-    bodyBgClass: "bg-red-950/15",
+    label:      "Surface",
+    Icon:       Globe,
+    stopColor:  "#dc2626",        // red-600
+    stripClass: "bg-red-900/50 border-red-600/60",
+    badgeClass: "bg-red-700 text-white",
+    bodyClass:  "bg-red-950/15 border-red-900/40",
   },
   runtime: {
-    label:       "Runtime",
-    Icon:        Activity,
-    stopColor:   "#f87171",     // red-400 (lighter — runtime is "live")
-    circleClass: "border-red-500 bg-red-950/70 text-red-200",
-    chipClass:   "bg-red-950/70 text-red-200 border-red-600/60",
-    bodyBgClass: "bg-red-950/20",
+    label:      "Runtime",
+    Icon:       Activity,
+    stopColor:  "#f87171",        // red-400 (lighter — runtime is "live")
+    stripClass: "bg-red-800/55 border-red-500/60",
+    badgeClass: "bg-red-600 text-white",
+    bodyClass:  "bg-red-950/20 border-red-900/40",
   },
 };
-
-// ── Severity → chip color (matches the rest of the app) ─────────────────
 
 const SEV_CHIP: Record<string, string> = {
   CRITICAL: "border-red-700/70   bg-red-950/40 text-red-300",
@@ -104,16 +123,21 @@ export default function AttackPathWorkflow({
    *  this component stays presentational + shareable across pages. */
   onOpenFinding: (findingId: string) => void;
 }) {
-  // Index nodes by ID once for evidence-chip lookup (O(steps × evidence)
-  // walks vs O(n) scan per chip).
-  const nodeById = new Map(nodes.map((n) => [n.findingId, n]));
+  // Index nodes by ID for evidence-chip lookup (O(steps × evidence) walks
+  // vs O(n) per chip).
+  const nodeById = useMemo(() => new Map(nodes.map((n) => [n.findingId, n])), [nodes]);
+
+  // Pre-compute "step has CONFIRMED evidence" so arrows entering a PoE
+  // step can pulse without each arrow re-walking the evidence list.
+  // NOTE: keep this above any early return — hooks must run in the
+  // same order on every render.
+  const stepHasPoE = useMemo(() => {
+    return workflow.map((step) =>
+      step.evidenceFindingIds.some((id) => nodeById.get(id)?.confidence === "CONFIRMED"),
+    );
+  }, [workflow, nodeById]);
 
   if (workflow.length === 0) return null;
-
-  // Pre-compute "step has CONFIRMED evidence" — lights up the flame badge
-  // so the operator's eye lands on proof-bearing steps first.
-  const stepHasPoE = (step: WorkflowStep) =>
-    step.evidenceFindingIds.some((id) => nodeById.get(id)?.confidence === "CONFIRMED");
 
   return (
     <div className="rounded-lg border border-gray-800 bg-gray-950/60 p-4">
@@ -127,138 +151,249 @@ export default function AttackPathWorkflow({
         </span>
       </div>
 
-      <div className="relative">
-        {/* SVG layer for connector arrows. Sits absolutely behind the
-            step cards. Each connector is a curved bezier from the
-            previous step circle's bottom to the next step circle's top.
-            */}
-        <FlowConnectors workflow={workflow} />
+      <FlowCanvas workflow={workflow} stepHasPoE={stepHasPoE} nodeById={nodeById} onOpenFinding={onOpenFinding} />
+    </div>
+  );
+}
 
-        <ol className="relative space-y-5">
-          {workflow.map((step, i) => (
-            <Step
-              key={step.stepNumber}
-              step={step}
-              isLast={i === workflow.length - 1}
-              hasPoE={stepHasPoE(step)}
-              nodeById={nodeById}
-              onOpenFinding={onOpenFinding}
+// ── Flow canvas — measured layout, SVG arrows ────────────────────────────
+
+interface ArrowGeom {
+  /** Leaving step index (0-based) */
+  from:    number;
+  /** Entering step index */
+  to:      number;
+  /** SVG `d` path (cubic bezier, screen-space px) */
+  d:       string;
+  /** True when the destination step has CONFIRMED evidence — drives
+   *  the pulse animation. */
+  toIsPoE: boolean;
+}
+
+function FlowCanvas({
+  workflow,
+  stepHasPoE,
+  nodeById,
+  onOpenFinding,
+}: {
+  workflow:      WorkflowStep[];
+  stepHasPoE:    boolean[];
+  nodeById:      Map<string, AttackPathNode>;
+  onOpenFinding: (findingId: string) => void;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const stepRefs     = useRef<Array<HTMLDivElement | null>>([]);
+  const [arrows, setArrows] = useState<ArrowGeom[]>([]);
+  const [dims, setDims]     = useState<{ w: number; h: number }>({ w: 0, h: 0 });
+
+  // Measure step positions and (re-)compute arrow paths whenever:
+  //   - layout settles after first render
+  //   - container width changes (e.g. window resize, sidebar toggle)
+  //   - step count changes (rare — workflow regen)
+  // Arrows are anchored on each card's RIGHT-MIDDLE → next card's
+  // LEFT-MIDDLE so they always look "between cards" regardless of
+  // card height differences.
+  useLayoutEffect(() => {
+    const measure = () => {
+      const container = containerRef.current;
+      if (!container) return;
+      const cBox = container.getBoundingClientRect();
+      const setW = container.scrollWidth;
+      const positions = stepRefs.current.map((el) => {
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return {
+          left:   r.left   - cBox.left,
+          right:  r.right  - cBox.left,
+          top:    r.top    - cBox.top,
+          bottom: r.bottom - cBox.top,
+          midY:   r.top    - cBox.top + r.height / 2,
+        };
+      });
+
+      const next: ArrowGeom[] = [];
+      for (let i = 0; i < positions.length - 1; i++) {
+        const a = positions[i];
+        const b = positions[i + 1];
+        if (!a || !b) continue;
+        // Anchor: right-middle of A → left-middle of B. Curve via
+        // cubic bezier with control points pulled to the midpoint X
+        // and a slight vertical wiggle so the arrow looks "drawn"
+        // rather than a straight horizontal line.
+        const x1 = a.right;
+        const y1 = a.midY;
+        const x2 = b.left;
+        const y2 = b.midY;
+        const midX = (x1 + x2) / 2;
+        const c1x = midX;
+        const c1y = y1;
+        const c2x = midX;
+        const c2y = y2;
+        const d = `M ${x1} ${y1} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${x2} ${y2}`;
+        next.push({ from: i, to: i + 1, d, toIsPoE: stepHasPoE[i + 1] ?? false });
+      }
+      setArrows(next);
+      setDims({ w: setW, h: container.scrollHeight });
+    };
+
+    measure();
+    // Re-measure on any container resize.
+    const ro = new ResizeObserver(measure);
+    if (containerRef.current) ro.observe(containerRef.current);
+    // Cards' children (chips) load async — observe each card too so
+    // the arrows snap when content reflows.
+    for (const el of stepRefs.current) {
+      if (el) ro.observe(el);
+    }
+    return () => ro.disconnect();
+  }, [workflow.length, stepHasPoE]);
+
+  // Tick to run the entrance animation. Forces a re-render after first
+  // paint with `animateIn = true` so the stroke-dasharray transition
+  // kicks off (instant transitions don't animate).
+  const [animateIn, setAnimateIn] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setAnimateIn(true), 30);
+    return () => clearTimeout(t);
+  }, [arrows.length]);
+
+  return (
+    <div
+      ref={containerRef}
+      // overflow-x-auto: horizontal scroll on narrow viewports rather
+      // than wrapping (wrapping breaks the kill-chain reading order).
+      // pb-1 gives the scrollbar breathing room so it doesn't crowd
+      // the bottom edge of the cards.
+      className="relative overflow-x-auto pb-1"
+    >
+      <div className="relative flex items-stretch gap-12 px-1" style={{ minWidth: "fit-content" }}>
+        {workflow.map((step, i) => (
+          <StepCard
+            key={step.stepNumber}
+            step={step}
+            hasPoE={stepHasPoE[i] ?? false}
+            innerRef={(el) => { stepRefs.current[i] = el; }}
+            nodeById={nodeById}
+            onOpenFinding={onOpenFinding}
+          />
+        ))}
+
+        {/* Arrow layer — sits absolute over the row. Its bounding box
+            matches the row's content width + height so SVG coordinates
+            stay in pixel-space with the measured anchor points. */}
+        <svg
+          className="pointer-events-none absolute inset-0"
+          width={dims.w}
+          height={dims.h}
+          style={{ overflow: "visible" }}
+          aria-hidden="true"
+        >
+          <defs>
+            {arrows.map((a) => {
+              const fromPhase = workflow[a.from]!.phase;
+              const toPhase   = workflow[a.to]!.phase;
+              return (
+                <linearGradient
+                  key={`g-${a.from}`}
+                  id={`wf-grad-${a.from}`}
+                  x1="0%" y1="0%" x2="100%" y2="0%"
+                >
+                  <stop offset="0%"   stopColor={PHASE_DEF[fromPhase].stopColor} stopOpacity="0.85" />
+                  <stop offset="100%" stopColor={PHASE_DEF[toPhase].stopColor}   stopOpacity="1.0"  />
+                </linearGradient>
+              );
+            })}
+            {arrows.map((a) => (
+              <marker
+                key={`m-${a.to}`}
+                id={`wf-arrow-${a.to}`}
+                viewBox="0 0 10 10"
+                refX="9"
+                refY="5"
+                markerWidth="6"
+                markerHeight="6"
+                orient="auto"
+              >
+                <path d="M 0 0 L 10 5 L 0 10 z" fill={PHASE_DEF[workflow[a.to]!.phase].stopColor} />
+              </marker>
+            ))}
+          </defs>
+          {arrows.map((a) => (
+            <ArrowPath
+              key={`p-${a.from}-${a.to}`}
+              d={a.d}
+              fromIdx={a.from}
+              toIdx={a.to}
+              toIsPoE={a.toIsPoE}
+              animateIn={animateIn}
             />
           ))}
-        </ol>
+        </svg>
       </div>
     </div>
   );
 }
 
-// ── Connector arrows (SVG layer) ─────────────────────────────────────────
-//
-// Drawn behind the cards using absolute positioning + percent
-// coordinates. The arrow goes from approximately the left edge below
-// step (i)'s circle to the left edge above step (i+1)'s circle, with
-// a slight bezier curve so it doesn't look like a straight line.
-//
-// The only thing that's actually phase-colour-aware is the gradient
-// stops; the path geometry itself is reusable.
+// ── Arrow path — animated draw-on + optional PoE pulse ───────────────────
 
-function FlowConnectors({ workflow }: { workflow: WorkflowStep[] }) {
-  if (workflow.length < 2) return null;
-
+function ArrowPath({
+  d, fromIdx, toIdx, toIsPoE, animateIn,
+}: {
+  d:         string;
+  fromIdx:   number;
+  toIdx:     number;
+  toIsPoE:   boolean;
+  animateIn: boolean;
+}) {
+  // pathLength normalizes the dash math regardless of actual length so
+  // the entrance animation duration is consistent across short + long
+  // bezier curves. We feed a fake pathLength of 100 and dash from 0 →
+  // 100 — equivalent to drawing the whole stroke over the transition.
   return (
-    <svg
-      className="pointer-events-none absolute inset-0 h-full w-full"
-      preserveAspectRatio="none"
-      aria-hidden="true"
-    >
-      {/* One arrowhead marker per step pair — coloured by destination
-          phase so the arrow visually "lands" in the next phase's hue. */}
-      <defs>
-        {workflow.slice(1).map((step) => (
-          <marker
-            key={`arrow-${step.stepNumber}`}
-            id={`wf-arrow-${step.stepNumber}`}
-            viewBox="0 0 10 10"
-            refX="8"
-            refY="5"
-            markerWidth="6"
-            markerHeight="6"
-            orient="auto"
-          >
-            <path d="M 0 0 L 10 5 L 0 10 z" fill={PHASE_DEF[step.phase].stopColor} />
-          </marker>
-        ))}
-        {workflow.slice(0, -1).map((step, i) => {
-          const next = workflow[i + 1]!;
-          return (
-            <linearGradient
-              key={`grad-${step.stepNumber}`}
-              id={`wf-grad-${step.stepNumber}`}
-              x1="0%" y1="0%" x2="0%" y2="100%"
-            >
-              <stop offset="0%"  stopColor={PHASE_DEF[step.phase].stopColor} stopOpacity="0.7" />
-              <stop offset="100%" stopColor={PHASE_DEF[next.phase].stopColor} stopOpacity="0.95" />
-            </linearGradient>
-          );
-        })}
-      </defs>
-      {/*
-        We can't compute exact pixel coordinates without measuring the
-        rendered DOM — instead, we use the fact that each step <li> is a
-        fixed gap apart (space-y-5 = 20px gap, ~110px card + circle). We
-        draw the arrows as percent-of-track absolute SVG which scales
-        naturally as cards grow.
-
-        The geometry approximation is "good enough" for visual guidance —
-        the arrow lands close to but not pixel-perfect on the next
-        circle. Operator gets the directional cue regardless.
-      */}
-      {workflow.slice(0, -1).map((step, i) => {
-        const next = workflow[i + 1]!;
-        const totalGaps = workflow.length - 1;
-        // Each gap occupies an even slice of the SVG height. Start of
-        // gap i is at `i / totalGaps`, end at `(i+1) / totalGaps`. We
-        // adjust the start downward + end upward by a small offset so
-        // the arrow leaves the bottom of one circle and enters the top
-        // of the next instead of overshooting.
-        const yStart = ((i + 0.10) / totalGaps) * 100;
-        const yEnd   = ((i + 0.90) / totalGaps) * 100;
-        // Curve: start at x=15px (under circle, which sits at left:0
-        // with a 32px width centred at 16px), bow out to x=30px in the
-        // middle, end at x=15px. Subtle but readable.
-        const xStart = 15.5;
-        const xEnd   = 15.5;
-        const xCtrl  = 30;
-        const yCtrl  = (yStart + yEnd) / 2;
-        const d = `M ${xStart} ${yStart}% Q ${xCtrl} ${yCtrl}%, ${xEnd} ${yEnd}%`;
-        return (
-          <path
-            key={`path-${step.stepNumber}`}
-            d={d}
-            stroke={`url(#wf-grad-${step.stepNumber})`}
-            strokeWidth={2}
-            fill="none"
-            strokeLinecap="round"
-            markerEnd={`url(#wf-arrow-${next.stepNumber})`}
-            opacity={0.9}
-          />
-        );
-      })}
-    </svg>
+    <g>
+      {/* Soft glow underlay — same path, wider stroke, low opacity.
+          Adds depth without colour-shifting the gradient. */}
+      <path
+        d={d}
+        stroke={`url(#wf-grad-${fromIdx})`}
+        strokeWidth={6}
+        strokeLinecap="round"
+        fill="none"
+        opacity={0.18}
+      />
+      {/* Main stroke. PoE-target arrows pulse via CSS-keyframe class. */}
+      <path
+        d={d}
+        stroke={`url(#wf-grad-${fromIdx})`}
+        strokeWidth={2.25}
+        strokeLinecap="round"
+        fill="none"
+        markerEnd={`url(#wf-arrow-${toIdx})`}
+        pathLength={100}
+        strokeDasharray={100}
+        strokeDashoffset={animateIn ? 0 : 100}
+        style={{
+          transition: "stroke-dashoffset 0.7s ease-out",
+          transitionDelay: `${fromIdx * 0.18}s`,
+        }}
+        className={toIsPoE ? "wf-arrow-poe" : undefined}
+      />
+    </g>
   );
 }
 
-// ── Step ─────────────────────────────────────────────────────────────────
+// ── Step card ────────────────────────────────────────────────────────────
 
-function Step({
+function StepCard({
   step,
-  isLast,
   hasPoE,
+  innerRef,
   nodeById,
   onOpenFinding,
 }: {
   step:          WorkflowStep;
-  isLast:        boolean;
   hasPoE:        boolean;
+  innerRef:      (el: HTMLDivElement | null) => void;
   nodeById:      Map<string, AttackPathNode>;
   onOpenFinding: (findingId: string) => void;
 }) {
@@ -266,26 +401,28 @@ function Step({
   const PhaseIcon = def.Icon;
 
   return (
-    <li className="relative flex gap-3">
-      {/* Step-number circle. The SVG connector enters/exits at this
-          circle's left edge. Width: 32px, sits at left:0 of the row. */}
-      <div
-        className={`relative z-10 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-2 text-[11px] font-semibold ${def.circleClass}`}
-        title={def.label}
-      >
-        {step.stepNumber}
-      </div>
-
-      <div className={`min-w-0 flex-1 rounded-md border border-gray-800 ${def.bodyBgClass}`}>
-        {/* Top strip: phase chip + technique + PoE flame */}
-        <div className="flex flex-wrap items-center gap-2 border-b border-gray-800/60 px-3 py-1.5 text-[10px] uppercase tracking-wider">
-          <span className={`flex items-center gap-1 rounded border px-1.5 py-0.5 ${def.chipClass}`}>
+    <div
+      ref={innerRef}
+      // Fixed width keeps the row geometry predictable for the SVG
+      // arrow math; flex-shrink-0 prevents the row from compressing
+      // cards under tight layouts.
+      className={`relative w-72 shrink-0 rounded-lg border ${def.bodyClass} shadow-sm shadow-black/30`}
+    >
+      {/* Phase strip + step number badge */}
+      <div className={`flex items-center justify-between rounded-t-lg border-b px-3 py-1.5 ${def.stripClass}`}>
+        <div className="flex items-center gap-2">
+          <span className={`flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold ${def.badgeClass}`}>
+            {step.stepNumber}
+          </span>
+          <span className="flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-white">
             <PhaseIcon className="h-3 w-3" />
             {def.label}
           </span>
+        </div>
+        <div className="flex items-center gap-1.5">
           {step.technique && (
             <span
-              className="flex items-center gap-1 rounded border border-gray-700 bg-gray-900 px-1.5 py-0.5 font-mono text-[9px] text-gray-300"
+              className="flex items-center gap-1 rounded border border-gray-700 bg-gray-900/80 px-1.5 py-0.5 font-mono text-[9px] text-gray-300"
               title={`MITRE ATT&CK ${step.technique}`}
             >
               <ShieldAlert className="h-2.5 w-2.5" />
@@ -294,7 +431,7 @@ function Step({
           )}
           {hasPoE && (
             <span
-              className="ml-auto flex items-center gap-1 rounded border border-red-700/60 bg-red-950/60 px-1.5 py-0.5 font-semibold text-red-200"
+              className="flex items-center gap-1 rounded border border-red-600/70 bg-red-950/80 px-1.5 py-0.5 text-[9px] font-bold text-red-200"
               title="This step is backed by a CONFIRMED Proof-of-Exploit finding"
             >
               <Flame className="h-2.5 w-2.5" />
@@ -302,36 +439,23 @@ function Step({
             </span>
           )}
         </div>
-
-        {/* Title + description */}
-        <div className="px-3 py-2">
-          <div className="mb-1 text-sm font-medium text-gray-100">{step.title}</div>
-          <div className="mb-2 text-xs leading-relaxed text-gray-400">{step.description}</div>
-
-          {/* Evidence chips — one per cited finding ID. Click-through to
-              the existing FindingDetailDrawer. Skips IDs that don't
-              resolve (defense in depth — schema already strips invalid
-              IDs server-side, but a chain rebuild between AI gen and
-              render could orphan an ID). */}
-          <div className="flex flex-wrap gap-1.5">
-            {step.evidenceFindingIds.map((id) => {
-              const node = nodeById.get(id);
-              if (!node) return null;
-              return (
-                <EvidenceChip
-                  key={id}
-                  node={node}
-                  onClick={() => onOpenFinding(id)}
-                />
-              );
-            })}
-          </div>
-        </div>
       </div>
 
-      {/* Spacer for SVG arrow on non-last steps */}
-      {!isLast && <div className="absolute -bottom-5 h-5" />}
-    </li>
+      {/* Title + description */}
+      <div className="px-3 pt-2">
+        <div className="mb-1 text-sm font-semibold leading-snug text-gray-100">{step.title}</div>
+        <div className="text-xs leading-relaxed text-gray-400">{step.description}</div>
+      </div>
+
+      {/* Evidence chips */}
+      <div className="flex flex-wrap gap-1.5 px-3 pb-3 pt-2">
+        {step.evidenceFindingIds.map((id) => {
+          const node = nodeById.get(id);
+          if (!node) return null;
+          return <EvidenceChip key={id} node={node} onClick={() => onOpenFinding(id)} />;
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -345,15 +469,13 @@ function EvidenceChip({
   onClick: () => void;
 }) {
   const sevClass = SEV_CHIP[node.severity] ?? SEV_CHIP["INFO"]!;
-  // Build a tight inline label: scanner badge + truncated title. The
-  // chip stays one line; the full evidence is one click away.
-  const label = node.title.length > 60 ? `${node.title.slice(0, 58)}…` : node.title;
+  const label = node.title.length > 48 ? `${node.title.slice(0, 46)}…` : node.title;
 
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`inline-flex max-w-full items-center gap-1.5 rounded border px-2 py-1 text-[11px] transition-all hover:brightness-125 hover:shadow-sm ${sevClass}`}
+      className={`inline-flex max-w-full items-center gap-1.5 rounded border px-2 py-1 text-[11px] transition-all hover:brightness-125 hover:shadow ${sevClass}`}
       title={`Open ${node.scanType} finding: ${node.title}`}
     >
       <span className="font-mono text-[9px] uppercase opacity-70">

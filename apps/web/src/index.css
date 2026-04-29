@@ -45,4 +45,25 @@
     scrollbar-width: thin;
     scrollbar-color: theme(colors.gray.700) transparent;
   }
+
+  /* AttackPathWorkflow — gentle pulse on arrows that ENTER a step
+     backed by a CONFIRMED Proof-of-Exploit finding. The stroke width
+     +/-15% over a 2.4s loop reads as "this connection is real" without
+     being distractingly busy. Limited to the SVG path stroke; doesn't
+     cascade to children. */
+  .wf-arrow-poe {
+    animation: wfArrowPoePulse 2.4s ease-in-out infinite;
+  }
+  @keyframes wfArrowPoePulse {
+    0%, 100% { stroke-width: 2.25; opacity: 0.95; }
+    50%      { stroke-width: 3.00; opacity: 1.00; }
+  }
+  /* Respect users who prefer reduced motion — drop the pulse entirely
+     and just show the arrow at its mid-pulse stroke width. */
+  @media (prefers-reduced-motion: reduce) {
+    .wf-arrow-poe {
+      animation: none;
+      stroke-width: 2.6;
+    }
+  }
 }
