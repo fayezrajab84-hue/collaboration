@@ -11,5 +11,12 @@ setuptools==75.8.2
 # Playwright: headless Chromium for true SPA crawling (React/Angular/Vue)
 # Captures network requests made by JS frameworks that static crawlers miss.
 playwright==1.44.0
+# Phase 29 — CSPM (Prowler) is NOT installed here. Prowler's Azure SDK
+# dep tree conflicts with semgrep/checkov pin sets (pip backtracks across
+# every semgrep version trying to resolve). Lives in a dedicated container
+# `scanner-cspm` with its own minimal dep set (apps/scanner/requirements-cspm.txt).
+# The cloud_azure scanner module imports here resolve via standard Python
+# path; the entry point is gated by SCANNER_MAP[ScanType.CLOUD] which is
+# only reachable from the scanner-cspm container.
 # QA harness — smoke + contract tests for all scanners. See apps/scanner/qa/.
 pytest==8.2.0

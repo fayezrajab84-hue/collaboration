@@ -16,9 +16,7 @@
  *   PATCH  /:id                  update display name OR re-paste credentials
  *   DELETE /:id                  ADMIN+ — cascade-deletes scans + findings
  *   POST   /:id/test-connection  validate credentials hit Azure + can read sub
- *
- * Note: scan-trigger route (`POST /:id/scan`) intentionally NOT wired in
- * Commit 1. Lands in Commit 2 alongside the Python CSPM scanner.
+ *   POST   /:id/scan             trigger a CSPM scan (Phase 29 Commit 2)
  */
 import { Router } from "express";
 import { z } from "zod";
@@ -28,8 +26,10 @@ import prisma from "../../db.js";
 import { getActiveMembership } from "../../services/activeOrgService.js";
 import { encrypt, decrypt } from "../../services/encryptionService.js";
 import { testAzureConnection, type AzureCredentials } from "../../services/cloud/azureAuth.js";
+import { triggerScan } from "../../services/scanService.js";
 import * as audit from "../../services/auditService.js";
 import { logger } from "../../logger.js";
+import type { ScanType } from "@devsecops/types";
 
 const router = Router();
 router.use(requireAuth);
@@ -312,6 +312,54 @@ router.post("/:id/test-connection", async (req, res, next) => {
       // Distinct from 500 (our problem) and 401 (auth on BreachLens).
       res.status(422).json(result);
     }
+  } catch (err) { next(err); }
+});
+
+// POST /api/cloud-accounts/:id/scan — trigger a CSPM scan
+//
+// Wraps Prowler-Azure (Phase 29 Slice A). The worker decrypts the
+// CloudAccount's stored credentials at scan-trigger time and forwards
+// them to the scanner over the internal Docker network. DEVELOPER+
+// (consistent with /api/containers/:id/scan).
+router.post("/:id/scan", async (req, res, next) => {
+  try {
+    const user   = req.user as { id: string };
+    const member = await getActiveMembership(req);
+    if (!member) { res.status(404).json({ error: "Cloud account not found" }); return; }
+
+    const account = await prisma.cloudAccount.findFirst({
+      where: { id: req.params["id"], orgId: member.orgId },
+    });
+    if (!account) {
+      res.status(404).json({ error: "Cloud account not found" });
+      return;
+    }
+    if (!account.encryptedCredentials || !account.tenantId || !account.azureClientId || !account.subscriptionId) {
+      res.status(400).json({ error: "Cloud account has no credentials configured. Add credentials before scanning." });
+      return;
+    }
+    if (!account.isActive) {
+      res.status(400).json({ error: "Cloud account is inactive. Activate it before scanning." });
+      return;
+    }
+
+    const scanTypes: ScanType[] = ["CLOUD"];
+    const result = await triggerScan({
+      orgId:      member.orgId,
+      targetType: "CLOUD_ACCOUNT",
+      targetId:   account.id,
+      scanTypes,
+    });
+
+    await audit.log({
+      orgId:        member.orgId,
+      userId:       user.id,
+      action:       "cloud_account.scan",
+      resourceType: "CloudAccount",
+      resourceId:   account.id,
+      metadata:     { scanJobId: result.scanJobId, provider: account.provider, subscriptionId: account.subscriptionId },
+    });
+    res.status(202).json(result);
   } catch (err) { next(err); }
 });
 

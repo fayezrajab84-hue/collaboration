@@ -470,6 +470,40 @@ services:
       start_period: 60s
     mem_limit: 6g
 
+  # ── Scanner (CSPM) — opt-in via `--profile cspm` ─────────────────────────
+  # Phase 29 Slice A — Cloud Security Posture Management. Wraps Prowler 4+
+  # for Azure / AWS / GCP misconfig evaluation. Lives in a separate
+  # container because Prowler's Azure SDK + Microsoft Identity transitive
+  # pin set conflicts with semgrep + checkov in the main scanner image.
+  # Same FastAPI surface (/scan endpoint, ScanRequest body) as the main
+  # scanner so the API worker can hit it identically — only difference
+  # is which scan_types resolve in SCANNER_MAP. The API routes CLOUD
+  # scans here when SCANNER_CSPM_URL is set.
+  scanner-cspm:
+    image: devsecops-scanner-cspm:latest
+    build:
+      context: .
+      dockerfile: docker/scanner-cspm.Dockerfile
+    profiles: ["cspm"]
+    restart: unless-stopped
+    environment:
+      SCAN_WORKSPACE_DIR: /tmp/scan_workspace
+      # Flush print() in real time so `docker logs` shows scan progress live
+      PYTHONUNBUFFERED: "1"
+    networks:
+      - internal
+      - public        # Prowler needs outbound to login.microsoftonline.com + management.azure.com
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    # Prowler holds the Azure SDK + cached subscription state in memory.
+    # 2g is comfortable for typical Azure subscriptions; bump for very
+    # large estates (10k+ resources).
+    mem_limit: 2g
+
   # ── Ollama — local LLM inference (CPU mode, no GPU required) ─────────────
   # Opt-in service. Enable with COMPOSE_PROFILES=ai (or pentest,ai) in .env,
   # or run: docker compose --profile ai up -d
@@ -523,6 +557,10 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       SCANNER_URL: http://scanner:8000
       SCANNER_PENTEST_URL: ${SCANNER_PENTEST_URL:-http://scanner-pentest:8000}
+      # Phase 29 — CSPM scanner. Default points at the scanner-cspm
+      # service (only running when --profile cspm is active). When unset,
+      # CLOUD scans fail fast with a configuration error.
+      SCANNER_CSPM_URL: ${SCANNER_CSPM_URL:-http://scanner-cspm:8000}
       API_INTERNAL_URL: http://api:3000
       NODE_ENV: ${NODE_ENV:-production}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost}

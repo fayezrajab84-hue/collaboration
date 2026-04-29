@@ -9,7 +9,8 @@ type ScanTrigger = "MANUAL" | "PUSH" | "PULL_REQUEST" | "SCHEDULED";
 
 interface TriggerScanOptions {
   orgId: string;
-  targetType: "REPOSITORY" | "CONTAINER" | "DOMAIN";
+  // Phase 29 — adds CLOUD_ACCOUNT for CSPM scans.
+  targetType: "REPOSITORY" | "CONTAINER" | "DOMAIN" | "CLOUD_ACCOUNT";
   targetId: string;
   scanTypes: ScanType[];
   repoUrl?: string;
@@ -41,9 +42,11 @@ export async function triggerScan(opts: TriggerScanOptions) {
     data: {
       orgId,
       targetType,
-      repositoryId: targetType === "REPOSITORY" ? targetId : null,
-      containerId: targetType === "CONTAINER" ? targetId : null,
-      domainId: targetType === "DOMAIN" ? targetId : null,
+      repositoryId:   targetType === "REPOSITORY"     ? targetId : null,
+      containerId:    targetType === "CONTAINER"      ? targetId : null,
+      domainId:       targetType === "DOMAIN"         ? targetId : null,
+      // Phase 29 — CSPM target FK.
+      cloudAccountId: targetType === "CLOUD_ACCOUNT"  ? targetId : null,
       scanTypes,
       totalScans: scanTypes.length,
       completedScans: 0,

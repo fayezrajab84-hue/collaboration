@@ -21,7 +21,10 @@ import { resolvePolicy, evaluatePolicy } from "../services/policyService.js";
 import { markInProgress as markCheckInProgress, completeCheck } from "../services/prCheckService.js";
 import { extractApiSpecUrls } from "../services/openApiUrlExtractor.js";
 
-const SCAN_TYPES: ScanType[] = ["SAST", "SCA", "SECRET", "IAC", "CONTAINER", "DAST", "PENTEST", "PENTEST_FULL"];
+// Scan types that have a triggerable queue. RUNTIME is push-only via
+// the Wazuh ingest sweep (no scanWorker for it). CLOUD added in
+// Phase 29 — consumes scan-CLOUD jobs and routes to scanner-cspm.
+const SCAN_TYPES: ScanType[] = ["SAST", "SCA", "SECRET", "IAC", "CONTAINER", "DAST", "PENTEST", "PENTEST_FULL", "CLOUD"];
 
 async function processScanJob(payload: ScanJobPayload) {
   const { scanJobId, orgId, targetType, targetId, scanType, encryptedGitToken } = payload;
@@ -90,6 +93,49 @@ async function processScanJob(payload: ScanJobPayload) {
     }
   }
 
+  // Phase 29 — CSPM credential decrypt for CLOUD scans. The CloudAccount
+  // row stores the SP secret encrypted (AES-256-GCM via encryptionService);
+  // we decrypt at scan-trigger time and pass the credential set inline on
+  // the scanner POST body — same pattern as DomainAuthConfig and the
+  // git_token. The scanner sets these as env vars for `prowler azure
+  // --sp-env-auth` and never persists them. Failure = cancel the scan
+  // with a useful error.
+  let cloudCredentials: Record<string, string> | null = null;
+  if (targetType === "CLOUD_ACCOUNT" && scanType === "CLOUD") {
+    try {
+      const account = await prisma.cloudAccount.findUnique({
+        where: { id: targetId },
+      });
+      if (!account) {
+        throw new Error(`CloudAccount ${targetId} not found`);
+      }
+      if (!account.encryptedCredentials || !account.tenantId || !account.azureClientId || !account.subscriptionId) {
+        throw new Error("CloudAccount has no credentials configured");
+      }
+      const blob = JSON.parse(decrypt(account.encryptedCredentials)) as { clientSecret: string };
+      cloudCredentials = {
+        provider:        account.provider,
+        tenant_id:       account.tenantId,
+        client_id:       account.azureClientId,
+        client_secret:   blob.clientSecret,
+        subscription_id: account.subscriptionId,
+      };
+    } catch (err) {
+      logger.error("Failed to decrypt CloudAccount credentials", { scanJobId, error: (err as Error).message });
+      // Fail the scan immediately — without credentials the scanner can't run.
+      await prisma.scanJob.update({
+        where: { id: scanJobId },
+        data:  {
+          status:       "FAILED",
+          completedAt:  new Date(),
+          error:        `Cloud credentials unavailable: ${(err as Error).message}`,
+        },
+      });
+      emitStatusChange(scanJobId, "FAILED");
+      return;
+    }
+  }
+
   // Extract API spec URLs from imported OpenAPI/Swagger spec (DAST & PENTEST_FULL only).
   // Heavy lifting (per-operation enumeration, type-aware param substitution,
   // server-URL resolution) lives in `openApiUrlExtractor` so the worker stays
@@ -126,6 +172,9 @@ async function processScanJob(payload: ScanJobPayload) {
     selected_subdomains: payload.selectedSubdomains ?? [],
     pentest_depth: payload.pentestDepth ?? "STANDARD",
     auth_config: authConfig,  // decrypted, sent over internal Docker network only
+    // Phase 29 — Cloud credentials for CSPM scans (CLOUD scan_type only).
+    // Decrypted above; null for non-CLOUD scans (Pydantic ignores).
+    cloud_credentials: cloudCredentials,
     api_spec_urls: apiSpecUrls,
     // "Promote recording to Full Pentest" plumbing — when set, the scanner's
     // PENTEST_FULL orchestrator skips Playwright and pulls URLs from the live
@@ -141,11 +190,35 @@ async function processScanJob(payload: ScanJobPayload) {
     pr_number:        payload.prNumber        ?? null,
   };
 
-  // Route PENTEST_FULL to the dedicated pentest scanner if configured
-  const scannerUrl =
-    scanType === "PENTEST_FULL" && config.SCANNER_PENTEST_URL
-      ? config.SCANNER_PENTEST_URL
-      : config.SCANNER_URL;
+  // Route per scan type to the correct scanner image:
+  //   PENTEST_FULL → scanner-pentest (heavier exploit toolchain)
+  //   CLOUD        → scanner-cspm    (Phase 29 Slice A — Prowler isolated)
+  //   everything else → main scanner
+  // The dedicated containers have different dep sets that conflict with
+  // the main scanner image; co-installation isn't possible. URLs are
+  // optional in config — when unset for a scan type that requires them,
+  // fail fast with a clear error rather than misrouting.
+  let scannerUrl: string;
+  if (scanType === "PENTEST_FULL" && config.SCANNER_PENTEST_URL) {
+    scannerUrl = config.SCANNER_PENTEST_URL;
+  } else if (scanType === "CLOUD") {
+    if (!config.SCANNER_CSPM_URL) {
+      logger.error("CLOUD scan requested but SCANNER_CSPM_URL is not configured", { scanJobId });
+      await prisma.scanJob.update({
+        where: { id: scanJobId },
+        data:  {
+          status:      "FAILED",
+          completedAt: new Date(),
+          error:       "Cloud scanner not configured. Start the scanner-cspm service via `docker compose --profile cspm up -d`.",
+        },
+      });
+      emitStatusChange(scanJobId, "FAILED");
+      return;
+    }
+    scannerUrl = config.SCANNER_CSPM_URL;
+  } else {
+    scannerUrl = config.SCANNER_URL;
+  }
 
   // Call Python scanner service. DAST scans tied to a recording session skip
   // the full /scan pipeline — they re-scan an existing ZAP context populated
@@ -172,6 +245,9 @@ async function processScanJob(payload: ScanJobPayload) {
     const timeoutMs =
       scanType === "PENTEST_FULL"    ? 7_200_000 : // 2 h
       scanType === "DAST"            ? 3_600_000 : // 1 h (covers interactive)
+      // Phase 29 — Prowler against a real subscription with hundreds of
+      // resources can take 10-20 min. 30 min headroom matches DAST.
+      scanType === "CLOUD"           ? 1_800_000 : // 30 min
                                        1_800_000;  // 30 min (SAST/SCA/SECRET/IAC/CONTAINER)
     const response = await axios.post<ScanResult>(
       `${scannerUrl}${endpoint}`,

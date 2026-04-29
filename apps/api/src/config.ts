@@ -11,6 +11,11 @@ const envSchema = z.object({
   GITHUB_CALLBACK_URL: z.string().url(),
   SCANNER_URL: z.string().url(),
   SCANNER_PENTEST_URL: z.string().url().optional(),
+  // Phase 29 — CSPM scanner (Prowler). Optional because CSPM is opt-in
+  // via the `cspm` compose profile; when unset, CLOUD scans fail fast
+  // with a clear "Cloud scanner not configured" error rather than
+  // routing to the main scanner (which doesn't ship Prowler).
+  SCANNER_CSPM_URL: z.string().url().optional(),
   API_INTERNAL_URL: z.string().url().optional(), // e.g. http://api:3000 — used by scanner for phase callbacks
   API_PUBLIC_URL: z.string().url(),
   FRONTEND_URL: z.string().url(),

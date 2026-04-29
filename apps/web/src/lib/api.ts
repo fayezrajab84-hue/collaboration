@@ -139,6 +139,8 @@ export const cloudAccountsApi = {
   update: (id: string, data: UpdateAzureCloudAccountRequest) =>
     apiClient.patch<CloudAccountListItem>(`/cloud-accounts/${id}`, data).then((r) => r.data),
   delete: (id: string) => apiClient.delete(`/cloud-accounts/${id}`),
+  triggerScan: (id: string) =>
+    apiClient.post<TriggerScanResponse>(`/cloud-accounts/${id}/scan`).then((r) => r.data),
   /** Validate stored credentials against Azure (login.microsoftonline.com
    *  + ARM /subscriptions/:id). Returns ok:true with subscription details
    *  on success, ok:false with code+message on failure. Failures DO NOT

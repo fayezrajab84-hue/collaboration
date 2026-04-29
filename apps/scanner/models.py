@@ -18,6 +18,10 @@ class ScanType(str, Enum):
     DAST = "DAST"
     PENTEST = "PENTEST"
     PENTEST_FULL = "PENTEST_FULL"
+    # Phase 29 — Cloud Security Posture Management. Wraps Prowler against
+    # an authorised Azure subscription / AWS account / GCP project. Slice A
+    # is AZURE-only; AWS/GCP are placeholders pending future slices.
+    CLOUD = "CLOUD"
 
 
 class PentestDepth(str, Enum):
@@ -30,6 +34,9 @@ class TargetType(str, Enum):
     REPOSITORY = "REPOSITORY"
     CONTAINER = "CONTAINER"
     DOMAIN = "DOMAIN"
+    # Phase 29 — CSPM target. CloudAccount represents (provider, scope) — for
+    # AZURE that's a single subscription; AWS = account; GCP = project.
+    CLOUD_ACCOUNT = "CLOUD_ACCOUNT"
 
 
 class Severity(str, Enum):
@@ -92,6 +99,33 @@ class AuthConfig(BaseModel):
     csrf_header_name:   Optional[str] = None        # null = use crawler default
 
 
+class CloudProvider(str, Enum):
+    """Phase 29 — CSPM provider taxonomy. Slice A is AZURE-only; AWS/GCP
+    are placeholders for future slices reusing the same model."""
+    AZURE = "AZURE"
+    AWS   = "AWS"
+    GCP   = "GCP"
+
+
+class CloudCredentials(BaseModel):
+    """Phase 29 — credentials forwarded from the API worker to the scanner
+    for one CSPM scan. Decrypted at scan-trigger time from
+    ``CloudAccount.encryptedCredentials``; never persisted on the scanner
+    side. Sent over the internal Docker network only.
+
+    Provider-specific fields are nullable so the same model carries
+    AZURE / AWS / GCP credential shapes — Slice A only populates the
+    Azure quartet.
+    """
+    provider:        CloudProvider
+
+    # Azure Service Principal auth (Slice A)
+    tenant_id:       Optional[str] = None     # Entra ID tenant (GUID)
+    client_id:       Optional[str] = None     # SP application id (GUID)
+    client_secret:   Optional[str] = None     # SP client secret — never logged
+    subscription_id: Optional[str] = None     # subscription scope
+
+
 class ScanRequest(BaseModel):
     scan_job_id: str
     org_id: str
@@ -116,6 +150,11 @@ class ScanRequest(BaseModel):
 
     # Optional auth config for authenticated DAST / pentest scans
     auth_config: Optional[AuthConfig] = None
+
+    # Phase 29 — Cloud credentials for CSPM scans (target_type=CLOUD_ACCOUNT,
+    # scan_type=CLOUD). Populated by the API worker after decrypting
+    # CloudAccount.encryptedCredentials; never logged.
+    cloud_credentials: Optional[CloudCredentials] = None
 
     # Populated by the pentest orchestrator after obtaining a session — shared
     # across all phases so each tool doesn't have to re-authenticate.

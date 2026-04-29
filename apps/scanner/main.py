@@ -25,6 +25,7 @@ from scanners import (
     PentestScanner,
     PentestFullScanner,
 )
+from scanners.cloud_azure import CloudAzureScanner
 from scanners.pentest_full.recon import ReconScanner
 from scanners.verify import verify_finding
 from scanners.dast_interactive import InteractiveDASTSession
@@ -55,6 +56,8 @@ SCANNER_MAP = {
     ScanType.DAST: DASTScanner,
     ScanType.PENTEST: PentestScanner,
     ScanType.PENTEST_FULL: PentestFullScanner,
+    # Phase 29 Slice A — CSPM (Prowler).
+    ScanType.CLOUD: CloudAzureScanner,
 }
 
 

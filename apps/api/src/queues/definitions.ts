@@ -5,7 +5,11 @@ import type { ScanType } from "@devsecops/types";
 export interface ScanJobPayload {
   scanJobId: string;
   orgId: string;
-  targetType: "REPOSITORY" | "CONTAINER" | "DOMAIN";
+  // Phase 29 — adds CLOUD_ACCOUNT to support CSPM scans. Cloud-specific
+  // credentials are NOT in the queue payload — the worker fetches the
+  // CloudAccount row by targetId and decrypts at scan-trigger time
+  // (same pattern as DomainAuthConfig and encryptedGitToken).
+  targetType: "REPOSITORY" | "CONTAINER" | "DOMAIN" | "CLOUD_ACCOUNT";
   targetId: string;
   scanType: ScanType;
   // Repository
@@ -103,7 +107,12 @@ export const correlationQueue = new Queue("correlation", {
   },
 });
 
-export const scanQueues: Record<ScanType, Queue<ScanJobPayload>> = {
+// Partial<Record<...>> rather than Record<...>: RUNTIME has no queue
+// because Wazuh ingest is push-based (recurring sweep via wazuhIngestQueue),
+// not triggered by triggerScan(). triggerScan() still runtime-checks via
+// the `if (!queue) throw` path so an unknown ScanType fails loud rather
+// than silently dropping.
+export const scanQueues: Partial<Record<ScanType, Queue<ScanJobPayload>>> = {
   SAST: new Queue("scan-SAST", QUEUE_OPTS),
   SCA: new Queue("scan-SCA", QUEUE_OPTS),
   SECRET: new Queue("scan-SECRET", QUEUE_OPTS),
@@ -112,4 +121,7 @@ export const scanQueues: Record<ScanType, Queue<ScanJobPayload>> = {
   DAST: new Queue("scan-DAST", QUEUE_OPTS),
   PENTEST: new Queue("scan-PENTEST", QUEUE_OPTS),
   PENTEST_FULL: new Queue("scan-PENTEST_FULL", QUEUE_OPTS),
+  // Phase 29 Slice A — CSPM (Prowler-Azure). Same queue pattern as the
+  // other scanner types; the scanWorker dispatches based on scanType.
+  CLOUD: new Queue("scan-CLOUD", QUEUE_OPTS),
 };

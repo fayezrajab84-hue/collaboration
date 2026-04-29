@@ -1,0 +1,244 @@
+"""
+Prowler OCSF → BreachLens NormalizedFinding mapping.
+
+Prowler 4.x emits findings as OCSF v1.1 `compliance_finding` records when
+invoked with `--output-modes json-ocsf`. This module maps each OCSF
+finding into a `NormalizedFinding` ready for upsert via the API's
+findingService.
+
+Why we only emit findings for status FAIL:
+  Prowler reports both PASS and FAIL records. PASS records exist so
+  compliance reports can show "rule X applied to N resources, all
+  compliant". BreachLens already shows PASS-counts in the scan summary,
+  and emitting them as Findings would 10x the row count without value.
+
+Severity mapping:
+  Prowler uses an "Informational | Low | Medium | High | Critical"
+  severity scale; we map 1-1 with the BreachLens enum.
+
+Confidence:
+  CSPM checks are deterministic on resource state — Prowler reads the
+  Azure ARM API and asserts a property. There's no probabilistic
+  detection. Hence confidence = LIKELY by default. The CONFIRMED tier
+  is reserved for in-platform proof-of-exploit (PENTEST tools that
+  reproduce the issue with a payload); a CSPM check that says
+  "storage allows public blob access" is strong evidence the
+  configuration is wrong, but doesn't itself prove an attacker is
+  exploiting it.
+
+References:
+  Prowler exposes `remediation.references` as an array of objects with
+  `url` field. We surface those plus the canonical Microsoft Learn
+  link Prowler stores under `metadata.event_code`'s associated
+  documentation when present.
+"""
+from __future__ import annotations
+
+from typing import Any, Optional
+
+from models import (
+    Confidence,
+    NormalizedFinding,
+    ScanRequest,
+    ScanType,
+    Severity,
+)
+from ..base import BaseScanner
+
+
+# ── Severity translation ────────────────────────────────────────────────
+
+_PROWLER_SEVERITY_MAP: dict[str, Severity] = {
+    "CRITICAL":      Severity.CRITICAL,
+    "HIGH":          Severity.HIGH,
+    "MEDIUM":        Severity.MEDIUM,
+    "LOW":           Severity.LOW,
+    "INFORMATIONAL": Severity.INFO,
+    "INFO":          Severity.INFO,  # alt spelling
+}
+
+
+def _coerce_severity(raw: Any) -> Severity:
+    if not raw:
+        return Severity.INFO
+    return _PROWLER_SEVERITY_MAP.get(str(raw).upper(), Severity.INFO)
+
+
+# ── OCSF accessors ──────────────────────────────────────────────────────
+# OCSF v1.1 lays out the compliance_finding object with several nested
+# wrappers; these helpers keep the normalizer readable.
+
+def _first_resource(item: dict) -> dict:
+    """OCSF compliance_finding.resources[] — pick the first; CSPM checks
+    are normally scoped to one resource per finding. Empty dict on miss
+    so downstream `.get()` calls don't blow up."""
+    resources = item.get("resources") or []
+    return resources[0] if resources else {}
+
+
+def _check_id(item: dict) -> str:
+    """Prowler stores its native check id (e.g.
+    'storage_default_network_access_rule_is_denied') under
+    metadata.event_code AND finding_info.uid in different versions —
+    fall through both for forward-compat."""
+    md = item.get("metadata") or {}
+    if md.get("event_code"):
+        return str(md["event_code"])
+    fi = item.get("finding_info") or {}
+    if fi.get("uid"):
+        return str(fi["uid"])
+    return "unknown-check"
+
+
+def _remediation_text(item: dict) -> Optional[str]:
+    rem = item.get("remediation") or {}
+    desc = rem.get("desc")
+    return str(desc) if desc else None
+
+
+def _remediation_references(item: dict) -> list[str]:
+    rem = item.get("remediation") or {}
+    refs = rem.get("references") or []
+    out: list[str] = []
+    for r in refs:
+        if isinstance(r, str):
+            out.append(r)
+        elif isinstance(r, dict):
+            url = r.get("url") or r.get("href")
+            if url:
+                out.append(str(url))
+    return out
+
+
+def _compliance_frameworks(item: dict) -> dict[str, list[str]]:
+    """Prowler's OCSF output stores compliance mappings under unmapped
+    when no canonical OCSF field exists. Shape varies by version:
+        unmapped.compliance: { "CIS-2.0-Azure": ["1.1.1", "1.1.2"], ... }
+    Returns the dict as-is; consumers can downstream-map to BreachLens
+    compliance frameworks (Phase 16 mapping service)."""
+    unmapped = item.get("unmapped") or {}
+    compliance = unmapped.get("compliance") or {}
+    if not isinstance(compliance, dict):
+        return {}
+    cleaned: dict[str, list[str]] = {}
+    for k, v in compliance.items():
+        if isinstance(v, list):
+            cleaned[str(k)] = [str(x) for x in v]
+        elif isinstance(v, str):
+            cleaned[str(k)] = [v]
+    return cleaned
+
+
+# ── Public entry point ──────────────────────────────────────────────────
+
+def normalize_prowler_findings(
+    prowler_data: list[dict],
+    request: ScanRequest,
+) -> list[NormalizedFinding]:
+    """Map a Prowler json-ocsf output array into NormalizedFinding[].
+
+    Skips PASS / MANUAL records — only FAIL records become findings. The
+    scan summary view shows pass/fail counts via the raw Prowler output
+    so consumers who care about coverage still see them; finding rows
+    stay focused on actionable misconfigs.
+    """
+    if not isinstance(prowler_data, list):
+        return []
+
+    findings: list[NormalizedFinding] = []
+    creds = request.cloud_credentials
+    subscription_id = creds.subscription_id if creds else None
+
+    for item in prowler_data:
+        if not isinstance(item, dict):
+            continue
+
+        # Status filter — drop PASS + MANUAL. Prowler uses status_code
+        # under finding_info or top-level depending on version; check
+        # both. Default-skip on missing field (don't accidentally emit
+        # everything).
+        status = (
+            item.get("status_code")
+            or (item.get("finding_info") or {}).get("status_code")
+            or item.get("status")
+            or ""
+        )
+        if str(status).upper() not in ("FAIL", "FAILED", "FAIL_OPEN"):
+            continue
+
+        # Resource block
+        resource = _first_resource(item)
+        resource_uid  = str(resource.get("uid")  or resource.get("id") or "unknown")
+        resource_name = str(resource.get("name") or resource_uid.split("/")[-1] or resource_uid)
+        resource_type = str(resource.get("type") or "unknown")
+        cloud_block   = resource.get("cloud") or {}
+        region        = cloud_block.get("region") or resource.get("region")
+        # OCSF nests subscription under cloud.account.uid; fallback to the
+        # request's subscription if the OCSF field isn't populated.
+        account_uid   = (
+            (cloud_block.get("account") or {}).get("uid")
+            or subscription_id
+            or "unknown"
+        )
+
+        # Title / description
+        finding_info = item.get("finding_info") or {}
+        title_raw    = finding_info.get("title") or item.get("title") or "Cloud misconfiguration"
+        title        = f"{title_raw} — {resource_name}"
+        description  = finding_info.get("desc") or item.get("desc") or ""
+
+        # Severity
+        severity_raw = item.get("severity") or finding_info.get("severity")
+        severity     = _coerce_severity(severity_raw)
+
+        # Check id (used for fingerprinting + UI rule_id)
+        check_id = _check_id(item)
+
+        # Fingerprint: stable across runs for same (account, resource,
+        # check). NOTE: BaseScanner.compute_fingerprint signature takes
+        # file_path + line; we pass the resource_uid as file_path for
+        # CSPM (the "file" is the cloud resource) and 0 line.
+        fingerprint = BaseScanner.compute_fingerprint(
+            org_id=request.org_id,
+            target_id=request.target_id,
+            scan_type=ScanType.CLOUD,
+            rule_id=check_id,
+            file_path=resource_uid,
+            line=0,
+        )
+
+        # Evidence — preserves the Azure-shaped data the UI / correlation
+        # engine want, plus the raw Prowler item for audit / debugging.
+        evidence: dict[str, Any] = {
+            "source":    "prowler",
+            "check_id":  check_id,
+            "azure": {
+                "subscriptionId": account_uid,
+                "resourceId":     resource_uid,
+                "resourceType":   resource_type,
+                "resourceName":   resource_name,
+                "region":         region,
+            },
+            "compliance": _compliance_frameworks(item),
+        }
+        # Sanitise: drop None values from nested azure dict for compact
+        # JSON in the DB.
+        evidence["azure"] = {k: v for k, v in evidence["azure"].items() if v is not None}
+
+        findings.append(NormalizedFinding(
+            fingerprint=fingerprint,
+            rule_id=check_id,
+            title=title,
+            description=description,
+            severity=severity,
+            scan_type=ScanType.CLOUD,
+            scanner="prowler",
+            file_path=resource_uid,    # the resource arn IS the locator
+            remediation=_remediation_text(item),
+            references=_remediation_references(item),
+            raw_output=item,
+            evidence=evidence,
+            confidence=Confidence.LIKELY,
+        ))
+
+    return findings

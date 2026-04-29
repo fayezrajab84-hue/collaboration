@@ -21,7 +21,7 @@
  */
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Trash2, Pencil, X, CheckCircle2, AlertTriangle, Cloud, RefreshCw } from "lucide-react";
+import { Plus, Trash2, Pencil, Play, X, CheckCircle2, AlertTriangle, Cloud, RefreshCw } from "lucide-react";
 import {
   cloudAccountsApi,
   type CloudAccountListItem,
@@ -30,6 +30,8 @@ import {
 } from "../lib/api";
 import Can from "../components/Can";
 import FindingCountBadges from "../components/FindingCountBadges";
+import ScanStatusBadge from "../components/ScanStatusBadge";
+import { useTargetScanStatus } from "../hooks/useTargetScanStatus";
 import { useToast } from "../hooks/useToast";
 import { formatRelative } from "../lib/utils";
 
@@ -274,6 +276,40 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
   );
 }
 
+// ── Per-row scan button ─────────────────────────────────────────────────
+
+function ScanButton({ accountId, disabled }: { accountId: string; disabled?: boolean }) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const { status, isActive } = useTargetScanStatus(accountId);
+  const scan = useMutation({
+    mutationFn: () => cloudAccountsApi.triggerScan(accountId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["scans"] });
+      qc.invalidateQueries({ queryKey: ["scans", "active"] });
+      qc.invalidateQueries({ queryKey: ["cloud-accounts"] });
+      toast.success("Cloud scan queued (Prowler)");
+    },
+    onError: (err: Error & { response?: { data?: { error?: string } } }) =>
+      toast.error(err.response?.data?.error ?? err.message ?? "Failed to queue scan"),
+  });
+  const rawStatus = status ?? (scan.isPending ? "PENDING" : null);
+  const displayStatus = rawStatus && rawStatus !== "COMPLETED" ? rawStatus : null;
+  return (
+    <div className="flex items-center gap-2">
+      {displayStatus && <ScanStatusBadge status={displayStatus} />}
+      <button
+        onClick={() => scan.mutate()}
+        disabled={Boolean(disabled) || scan.isPending || isActive}
+        className="flex items-center gap-1.5 rounded bg-indigo-700 px-2.5 py-1 text-xs font-medium text-white hover:bg-indigo-600 disabled:opacity-50"
+        title={disabled ? "Configure credentials before scanning" : "Run Prowler against this subscription"}
+      >
+        <Play className="h-3 w-3" /> Scan
+      </button>
+    </div>
+  );
+}
+
 // ── Per-row test-connection button ──────────────────────────────────────
 
 function TestConnectionButton({ accountId }: { accountId: string }) {
@@ -390,6 +426,9 @@ export default function CloudAccountsPage() {
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center justify-end gap-1.5">
+                      <Can role="DEVELOPER">
+                        <ScanButton accountId={a.id} disabled={!a.credentialsConfigured || !a.isActive} />
+                      </Can>
                       <TestConnectionButton accountId={a.id} />
                       <Can role="DEVELOPER">
                         <button
