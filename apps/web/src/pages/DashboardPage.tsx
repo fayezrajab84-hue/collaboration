@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { ShieldAlert, GitBranch, Box, Globe, ArrowRight, Flame, Plus, Target, Code2, Activity, AlertTriangle, Filter, ChevronDown, Check, Cloud as CloudIcon } from "lucide-react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { findingsApi, reposApi, containersApi, domainsApi, scansApi, runtimeApi, type RuntimeDashboardResponse } from "../lib/api";
+import { findingsApi, reposApi, containersApi, domainsApi, scansApi, runtimeApi, cloudAccountsApi, type RuntimeDashboardResponse } from "../lib/api";
 import { wasExploitSuccessful, hasActiveAttack } from "../lib/findings";
 import ExploitSuccessBadge from "../components/ExploitSuccessBadge";
 import ActiveAttackBadge from "../components/ActiveAttackBadge";
@@ -648,6 +648,8 @@ export default function DashboardPage() {
   const { data: repos } = useQuery({ queryKey: ["repos"], queryFn: reposApi.list });
   const { data: containers } = useQuery({ queryKey: ["containers"], queryFn: containersApi.list });
   const { data: domains } = useQuery({ queryKey: ["domains"], queryFn: domainsApi.list });
+  // Phase 29 — cloud accounts for the CSPM tab's "Cloud Accounts" stats card.
+  const { data: cloudAccounts } = useQuery({ queryKey: ["cloud-accounts"], queryFn: cloudAccountsApi.list });
   const { data: scans } = useQuery({
     queryKey: ["scans"],
     queryFn: () => scansApi.list(1, 20),
@@ -728,12 +730,19 @@ export default function DashboardPage() {
   const noisyRules   = (noisyRulesAll ?? []).filter((r) =>
     tab === "web"     ? WEB_TYPES_SET.has(r.scanType)
     : tab === "runtime" ? RUNTIME_TYPES_SET.has(r.scanType)
-    :                    !WEB_TYPES_SET.has(r.scanType) && !RUNTIME_TYPES_SET.has(r.scanType),
+    : tab === "cloud"   ? CLOUD_TYPES_SET.has(r.scanType)
+    // Code tab — exclude web, runtime, AND cloud so CSPM rules don't
+    // bleed into the code-tier rule list.
+    :                    !WEB_TYPES_SET.has(r.scanType) && !RUNTIME_TYPES_SET.has(r.scanType) && !CLOUD_TYPES_SET.has(r.scanType),
   ).slice(0, 5);
   const tabScans = (scans?.data ?? []).filter((s) =>
     tab === "web"     ? s.targetType === "DOMAIN"
     : tab === "runtime" ? (s.scanTypes ?? []).includes("RUNTIME")
-    :                    s.targetType !== "DOMAIN",
+    : tab === "cloud"   ? s.targetType === "CLOUD_ACCOUNT"
+    // Code tab — exclude DOMAIN + CLOUD_ACCOUNT scans (those belong
+    // to Web + Cloud tabs respectively). Without the CLOUD_ACCOUNT
+    // exclusion, CSPM scans showed up under "Recent Code Findings".
+    :                    s.targetType !== "DOMAIN" && s.targetType !== "CLOUD_ACCOUNT",
   ).slice(0, 6);
 
   const severityData = (stats?.severityCounts ?? []).map((s) => ({
@@ -878,6 +887,23 @@ export default function DashboardPage() {
               />
             );
           }
+          if (tab === "cloud") {
+            // Cloud (CSPM) — Prowler findings are misconfigurations, not
+            // exploits. Lead with total open findings; severity breakdown
+            // sits in the trailing cards. Operators triage CSPM by
+            // counting how much misconfig debt they're carrying, not by
+            // "did the scanner reproduce it" (CSPM checks are
+            // deterministic — every fail is a real misconfig).
+            return (
+              <StatsCard
+                label="Cloud Findings"
+                value={cloudFindings}
+                icon={<CloudIcon className="h-5 w-5 text-indigo-300" />}
+                onClick={() => navigate(`/findings?tab=cloud`)}
+                hint={cloudFindings > 0 ? "Open misconfigurations" : "No findings yet"}
+              />
+            );
+          }
           // runtime — lead card sources from stats.tagCounts so the
           // count exactly matches what /findings?tag=runtime-exploit
           // returns. No client-side predicate replication; single
@@ -986,6 +1012,52 @@ export default function DashboardPage() {
               />
             </>
           );
+        })() : tab === "cloud" ? (() => {
+          // Cloud (CSPM) — Prowler maps every failed check to multiple
+          // compliance frameworks (CIS / PCI / NIST / HIPAA / MITRE
+          // ATT&CK / FedRAMP / etc — 12+ per finding on Azure). The
+          // operator's triage axes here are:
+          //   1. Severity   — how urgent is each misconfig
+          //   2. Compliance — which frameworks are at risk (audit prep)
+          //   3. Scope      — how many cloud accounts have findings
+          // We surface 2 cards (combined with the lead "Cloud Findings"
+          // card above + the trailing "Cloud Accounts" card below = 4).
+
+          // Critical + High count: misconfigs the operator should fix
+          // FIRST. CSPM rarely produces CRITICAL (Prowler's worst tier
+          // is HIGH for most checks); we sum the two so the card stays
+          // useful regardless of which one populates.
+          const criticalHighCount = criticalCount + highCount;
+          // Compliance breadth: distinct compliance frameworks tagged
+          // across all CLOUD findings. Sourced client-side from the
+          // exploits/findings list since the API doesn't yet aggregate
+          // this field.
+          const frameworkSet = new Set<string>();
+          for (const f of (exploits ?? [])) {
+            const ev = (f.evidence ?? {}) as Record<string, unknown>;
+            const compliance = (ev["compliance"] ?? {}) as Record<string, unknown>;
+            for (const fw of Object.keys(compliance)) frameworkSet.add(fw);
+          }
+          return (
+            <>
+              <StatsCard
+                label="Critical + High"
+                value={criticalHighCount}
+                valueClassName="text-orange-400"
+                icon={<ShieldAlert className="h-5 w-5 text-orange-500/70" />}
+                onClick={() => navigate(`/findings?tab=cloud&severity=CRITICAL,HIGH&status=OPEN`)}
+                hint={criticalHighCount > 0 ? "Fix-first misconfigurations" : "No high-severity"}
+              />
+              <StatsCard
+                label="Compliance Frameworks"
+                value={frameworkSet.size}
+                valueClassName="text-indigo-200"
+                icon={<Target className="h-5 w-5 text-indigo-400/70" />}
+                onClick={() => navigate(`/findings?tab=cloud`)}
+                hint={frameworkSet.size > 0 ? "Mapped per finding (CIS · PCI · NIST · …)" : "No compliance mappings"}
+              />
+            </>
+          );
         })() : (
           // Code: severity is still the right axis (CVE counts are
           // graded by impact severity, that's what operators triage by)
@@ -1023,6 +1095,14 @@ export default function DashboardPage() {
             icon={<Activity className="h-5 w-5 text-indigo-400" />}
             onClick={() => navigate("/runtime")}
             hint="View runtime dashboard"
+          />
+        ) : tab === "cloud" ? (
+          <StatsCard
+            label="Cloud Accounts"
+            value={cloudAccounts?.length ?? 0}
+            icon={<CloudIcon className="h-5 w-5 text-indigo-300" />}
+            onClick={() => navigate("/cloud-accounts")}
+            hint="CSPM scan targets (Azure / AWS / GCP)"
           />
         ) : (
           <StatsCard
@@ -1176,7 +1256,12 @@ export default function DashboardPage() {
       <div className="rounded-lg border border-gray-800 bg-gray-900 p-5">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-sm font-semibold text-white">
-            Recent {tab === "web" ? "Web " : "Code "}Findings
+            Recent {
+              tab === "web"     ? "Web "
+              : tab === "runtime" ? "Runtime "
+              : tab === "cloud"   ? "Cloud "
+              :                    "Code "
+            }Findings
           </h2>
           <Link to={`/findings?tab=${tab}`} className="flex items-center gap-1 text-xs text-indigo-400 hover:text-indigo-300">
             View all <ArrowRight className="h-3 w-3" />
@@ -1196,7 +1281,10 @@ export default function DashboardPage() {
               </thead>
               <tbody>
                 {recentFindings?.data.map((f) => {
-                  const isWeb = WEB_TYPES_SET.has(f.scanType);
+                  const isWeb     = WEB_TYPES_SET.has(f.scanType);
+                  const isRuntime = RUNTIME_TYPES_SET.has(f.scanType);
+                  const isCloud   = CLOUD_TYPES_SET.has(f.scanType);
+                  const targetTab = isCloud ? "cloud" : isRuntime ? "runtime" : isWeb ? "web" : "code";
                   return (
                     <tr
                       key={f.id}
@@ -1204,7 +1292,7 @@ export default function DashboardPage() {
                       // Land on the matching tab so back/forward and the
                       // surrounding list are coherent with the finding the
                       // user just opened.
-                      onClick={() => navigate(`/findings?tab=${isWeb ? "web" : "code"}&id=${f.id}`)}
+                      onClick={() => navigate(`/findings?tab=${targetTab}&id=${f.id}`)}
                     >
                       <td className="py-2 pr-4"><SeverityBadge severity={f.severity} /></td>
                       <td className="py-2 pr-4 max-w-xs">

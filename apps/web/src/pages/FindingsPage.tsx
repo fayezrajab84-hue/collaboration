@@ -1065,10 +1065,21 @@ export default function FindingsPage() {
               {tab === "runtime" && <th className="px-4 py-3 font-medium">Process / Version</th>}
               {tab === "runtime" && <th className="px-4 py-3 font-medium">MITRE</th>}
               {tab === "runtime" && <th className="px-4 py-3 font-medium">Hits / CVSS</th>}
-              {tab !== "runtime" && <th className="px-4 py-3 font-medium">Target</th>}
-              {tab !== "runtime" && <SortTh field="scanType"   label="Type"       sort={sort} sortOrder={sortOrder} toggle={toggleSort} />}
+              {/* Cloud (CSPM) — Prowler findings have no file path / URL.
+                  The actionable axes are: which resource (e.g. "Containers"
+                  defender plan), which Azure resource type (e.g.
+                  microsoft.security/pricings), and which compliance
+                  frameworks the rule maps to (CIS / PCI / NIST / MITRE
+                  ATT&CK). Type column is suppressed because all rows are
+                  CLOUD scan_type — redundant. */}
+              {tab === "cloud" && <th className="px-4 py-3 font-medium">Resource</th>}
+              {tab === "cloud" && <th className="px-4 py-3 font-medium">Resource Type</th>}
+              {tab === "cloud" && <th className="px-4 py-3 font-medium">Account</th>}
+              {tab === "cloud" && <th className="px-4 py-3 font-medium">Compliance</th>}
+              {tab !== "runtime" && tab !== "cloud" && <th className="px-4 py-3 font-medium">Target</th>}
+              {tab !== "runtime" && tab !== "cloud" && <SortTh field="scanType"   label="Type"       sort={sort} sortOrder={sortOrder} toggle={toggleSort} />}
               <SortTh field="confidence" label="Confidence" sort={sort} sortOrder={sortOrder} toggle={toggleSort} />
-              {tab !== "runtime" && <th className="px-4 py-3 font-medium">AI</th>}
+              {tab !== "runtime" && tab !== "cloud" && <th className="px-4 py-3 font-medium">AI</th>}
               <SortTh field="status"     label="Status"     sort={sort} sortOrder={sortOrder} toggle={toggleSort} />
               <SortTh field={tab === "runtime" ? "lastSeen" : "firstSeen"} label={tab === "runtime" ? "Last Seen" : "First Seen"} sort={sort} sortOrder={sortOrder} toggle={toggleSort} />
             </tr>
@@ -1405,12 +1416,59 @@ export default function FindingsPage() {
                       </>
                     );
                   })()}
-                  {tab !== "runtime" && (
+                  {tab !== "runtime" && tab !== "cloud" && (
                     <>
                       <td className="px-4 py-3"><TargetTag finding={f} /></td>
                       <td className="px-4 py-3 text-xs text-gray-400">{f.scanType}</td>
                     </>
                   )}
+                  {tab === "cloud" && (() => {
+                    // CSPM cells from Prowler-shaped evidence. The
+                    // normalizer (apps/scanner/scanners/cloud_azure/
+                    // normalizer.py) writes evidence.azure.{resourceName,
+                    // resourceType} + evidence.compliance for every CLOUD
+                    // finding. If absent (legacy / non-Prowler CLOUD
+                    // findings) cells render as "—" rather than crashing.
+                    const ev = (f.evidence ?? {}) as Record<string, unknown>;
+                    const azure = (ev["azure"] ?? {}) as Record<string, unknown>;
+                    const resourceName = String(azure["resourceName"] ?? "—");
+                    const resourceType = String(azure["resourceType"] ?? "—");
+                    const compliance = (ev["compliance"] ?? {}) as Record<string, string[]>;
+                    const frameworks = Object.keys(compliance);
+                    return (
+                      <>
+                        <td className="px-4 py-3">
+                          <span className="inline-block max-w-[180px] truncate font-mono text-xs text-gray-200" title={resourceName}>
+                            {resourceName}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className="inline-block max-w-[200px] truncate font-mono text-[11px] text-gray-400" title={resourceType}>
+                            {resourceType}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3"><TargetTag finding={f} /></td>
+                        <td className="px-4 py-3">
+                          {frameworks.length > 0 ? (
+                            <div className="flex flex-wrap gap-1" title={frameworks.join(", ")}>
+                              {frameworks.slice(0, 3).map((fw) => (
+                                <span key={fw} className="rounded border border-indigo-700/40 bg-indigo-950/30 px-1.5 py-0.5 font-mono text-[9px] uppercase text-indigo-300">
+                                  {fw.replace(/-\d.*$/, "")}
+                                </span>
+                              ))}
+                              {frameworks.length > 3 && (
+                                <span className="rounded border border-gray-700 bg-gray-800 px-1.5 py-0.5 text-[9px] text-gray-400">
+                                  +{frameworks.length - 3}
+                                </span>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-gray-600">—</span>
+                          )}
+                        </td>
+                      </>
+                    );
+                  })()}
                   <td className="px-4 py-3">
                     {/* flex-nowrap so the Confidence chip + Attack/Exploit
                         pill sit on a single baseline. flex-wrap was
