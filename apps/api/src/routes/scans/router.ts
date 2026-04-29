@@ -165,6 +165,69 @@ router.get("/:id", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// ── SARIF 2.1.0 export — Phase A1 CI integration ───────────────────────────
+// GET /api/scans/:id/export.sarif → SARIF 2.1.0 JSON for the scan's findings.
+//
+// Drop-in for GitHub Code Scanning, GitLab, Bitbucket, Azure DevOps. CI
+// pipelines fetch this after a scan completes and either upload it to
+// the platform's security tab OR exit non-zero based on the severity
+// distribution.
+//
+// Output is the FULL set of findings on the scan's target — not just
+// the ones discovered in this specific scan. Reasoning: a CI pipeline
+// asking "what's the security state of this commit?" wants the
+// complete picture (including findings discovered in earlier scans
+// that are still present). To get only the new-this-scan slice, use
+// the existing GET /:id/diff endpoint.
+//
+// Auth: same session-cookie auth as the rest of /api/scans. CI pipelines
+// supply a long-lived session cookie via env var. Proper API tokens
+// land in Phase A2 (CLI session).
+router.get("/:id/export.sarif", async (req, res, next) => {
+  try {
+    const member = await getActiveMembership(req);
+    if (!member) { res.status(404).json({ error: "Scan job not found" }); return; }
+
+    const scan = await prisma.scanJob.findFirst({
+      where: { id: req.params["id"], orgId: member.orgId },
+    });
+    if (!scan) { res.status(404).json({ error: "Scan job not found" }); return; }
+
+    // Same target-scoping pattern the GET /:id handler uses — pull all
+    // findings on the scan's target across the scanTypes that ran.
+    const targetFilter =
+      scan.targetType === "REPOSITORY" ? { repositoryId: scan.repositoryId }
+      : scan.targetType === "CONTAINER" ? { containerId:  scan.containerId  }
+      : { domainId: scan.domainId };
+
+    const findings = await prisma.finding.findMany({
+      where: {
+        orgId:    scan.orgId,
+        scanType: { in: scan.scanTypes },
+        status:   { not: "FALSE_POSITIVE" },
+        ...targetFilter,
+      },
+    });
+
+    const { findingsToSarif } = await import("../../services/sarifExport.js");
+    const { config } = await import("../../config.js");
+    const sarif = findingsToSarif(findings, {
+      scan,
+      apiBaseUrl: config.FRONTEND_URL ?? "http://localhost:5173",
+    });
+
+    // The official MIME type is application/sarif+json. GitHub Code
+    // Scanning's uploader tolerates either application/sarif+json or
+    // application/json; we send the official one for spec correctness.
+    res.setHeader("Content-Type", "application/sarif+json");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="breachlens-scan-${scan.id}.sarif"`,
+    );
+    res.json(sarif);
+  } catch (err) { next(err); }
+});
+
 // ── Diff two scans of the same target ────────────────────────────────────────
 // GET /scans/:id/diff            → compare against the immediately-previous
 //                                    COMPLETED scan of the same target
