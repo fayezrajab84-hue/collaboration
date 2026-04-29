@@ -3,6 +3,7 @@ import prisma from "../db.js";
 import { logger } from "../logger.js";
 import type { NormalizedFinding, ScanType, TargetType } from "@devsecops/types";
 import { applyMappingsToFinding } from "./complianceMappingService.js";
+import { classifyVulnerability } from "./mitre/cweToAttack.js";
 
 // ── JSON sanitizer ────────────────────────────────────────────────────────────
 //
@@ -734,6 +735,35 @@ export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: n
       reachability = "NOT_APPLICABLE";
     }
     const reachabilityEvidence = ev["reachability_evidence"];
+
+    // Phase 29-prep MITRE upgrade: classify SCA / CONTAINER / SAST findings
+    // via CWE → ATT&CK when the scanner supplied a CWE but didn't emit
+    // its own MITRE classification. Wazuh ingest does its own classify
+    // call (see wazuhIngestService.vulnToMitre) so we don't duplicate the
+    // work here for RUNTIME findings — we only fill the gap on
+    // upstream-scanner findings whose evidence lacks `mitre.*`.
+    const hasCweInput = (f.cweId && f.cweId.length > 0) || (f.cveId && f.cveId.length > 0);
+    if (hasCweInput && !ev["mitre"]) {
+      const classification = classifyVulnerability({
+        cveId:       f.cveId,
+        cweIds:      f.cweId ? [f.cweId] : [],
+        description: f.description ?? "",
+        cvssScore:   f.cvssScore ?? 0,
+      });
+      if (classification) {
+        // Mutate the in-memory evidence so the upsert below picks it up.
+        // Also append T-codes to references[] so the FindingDetailDrawer
+        // surfaces them as clickable links — same pattern Wazuh ingest
+        // uses.
+        f.evidence = { ...ev, mitre: classification };
+        const refs = [...(f.references ?? [])];
+        for (const t of classification.techniques) {
+          const ref = `MITRE ATT&CK ${t}`;
+          if (!refs.includes(ref)) refs.push(ref);
+        }
+        f.references = refs;
+      }
+    }
 
     const upserted = await prisma.finding.upsert({
       where: { fingerprint: f.fingerprint },
