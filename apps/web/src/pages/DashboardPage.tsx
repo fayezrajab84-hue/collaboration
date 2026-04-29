@@ -1277,15 +1277,31 @@ export default function DashboardPage() {
           // is HIGH for most checks); we sum the two so the card stays
           // useful regardless of which one populates.
           const criticalHighCount = criticalCount + highCount;
-          // Compliance breadth: distinct compliance frameworks tagged
-          // across all CLOUD findings. Sourced client-side from the
-          // exploits/findings list since the API doesn't yet aggregate
-          // this field.
-          const frameworkSet = new Set<string>();
+          // Resources at Risk — distinct Azure resourceIds across all
+          // CLOUD findings. The right "blast radius" metric: an
+          // operator triages by "how many things to fix", not "how many
+          // findings I have" (a single misconfigured Storage account
+          // can produce 5 findings). Replaces the Compliance Frameworks
+          // card after operator feedback that the framework count was
+          // a passive number — the resource count is actionable.
+          //
+          // Internet-Exposed — the urgency subset. Prowler tags certain
+          // checks under unmapped.categories with "internet-exposed"
+          // (publicly reachable storage, JIT-disabled VMs with public
+          // IPs, etc). When > 0 we surface it as the card's hint so
+          // the operator's eye lands on the most-urgent count without
+          // a click.
+          const resourceIdSet = new Set<string>();
+          let internetExposedCount = 0;
           for (const f of (filteredExploits ?? [])) {
-            const ev = (f.evidence ?? {}) as Record<string, unknown>;
-            const compliance = (ev["compliance"] ?? {}) as Record<string, unknown>;
-            for (const fw of Object.keys(compliance)) frameworkSet.add(fw);
+            const ev    = (f.evidence ?? {}) as Record<string, unknown>;
+            const azure = (ev["azure"] ?? {}) as Record<string, unknown>;
+            const rid   = azure["resourceId"];
+            if (typeof rid === "string" && rid) resourceIdSet.add(rid);
+            const cats  = ev["categories"];
+            if (Array.isArray(cats) && cats.includes("internet-exposed")) {
+              internetExposedCount++;
+            }
           }
           return (
             <>
@@ -1298,12 +1314,18 @@ export default function DashboardPage() {
                 hint={criticalHighCount > 0 ? "Fix-first misconfigurations" : "No high-severity"}
               />
               <StatsCard
-                label="Compliance Frameworks"
-                value={frameworkSet.size}
+                label="Resources at Risk"
+                value={resourceIdSet.size}
                 valueClassName="text-indigo-200"
-                icon={<Target className="h-5 w-5 text-indigo-400/70" />}
+                icon={<Box className="h-5 w-5 text-indigo-400/70" />}
                 onClick={() => navigate(`/findings?tab=cloud`)}
-                hint={frameworkSet.size > 0 ? "Mapped per finding (CIS · PCI · NIST · …)" : "No compliance mappings"}
+                hint={
+                  internetExposedCount > 0
+                    ? `${internetExposedCount} internet-exposed`
+                    : (resourceIdSet.size > 0
+                        ? "Distinct Azure resources affected"
+                        : "No resources flagged")
+                }
               />
             </>
           );
