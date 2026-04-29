@@ -1,0 +1,272 @@
+name: 'BreachLens Scan'
+description: |
+  Trigger a BreachLens scan, wait for completion, fetch SARIF results,
+  and (optionally) gate the build on severity. Uploads SARIF to GitHub
+  Code Scanning so findings appear in the Security tab.
+
+# Phase A2 — composite Action wrapping the existing /api/scans + SARIF
+# export endpoints. Stays curl-based on purpose: zero language runtime
+# requirement on the runner (uses bash + jq which are pre-installed
+# on every GitHub-hosted runner). The standalone TypeScript CLI is a
+# Phase A4 polish layer for people who want a proper `breachlens` binary.
+
+branding:
+  icon:  shield
+  color: blue
+
+inputs:
+  api-url:
+    description: |
+      Base URL of your BreachLens deployment (e.g. https://breachlens.example.com).
+      The Action POSTs to {api-url}/api/repos/{repo-id}/scan and polls
+      {api-url}/api/scans/{scan-id} for completion.
+    required: true
+
+  session-cookie:
+    description: |
+      A long-lived BreachLens session cookie. Until proper API tokens
+      land in Phase A4, the Action authenticates via session cookie:
+        1. Log into BreachLens in a browser
+        2. DevTools → Application → Cookies → copy the `connect.sid` value
+        3. Store as a GitHub secret: BREACHLENS_SESSION
+      Yes, this is awkward — an API-token mint workflow ships in Phase A4.
+    required: true
+
+  repo-id:
+    description: |
+      The BreachLens Repository ID to scan. Find it in the URL when you
+      open the repo on /repositories — it's the cuid after the slash.
+      Mutually exclusive with container-id and domain-id.
+    required: false
+    default: ''
+
+  container-id:
+    description: 'BreachLens Container ID to scan. Mutually exclusive with repo-id and domain-id.'
+    required: false
+    default: ''
+
+  domain-id:
+    description: 'BreachLens Domain ID to scan. Mutually exclusive with repo-id and container-id.'
+    required: false
+    default: ''
+
+  scan-types:
+    description: |
+      Comma-separated scan types to run. Defaults vary by target:
+        repo      → SAST,SCA,SECRET,IAC,CONTAINER (full code-side sweep)
+        container → CONTAINER
+        domain    → DAST  (use PENTEST_FULL for the deeper sweep — slow)
+    required: false
+    default: ''
+
+  severity-gate:
+    description: |
+      Fail the build if findings of this severity or higher are present.
+      One of: CRITICAL, HIGH, MEDIUM, LOW, INFO, none.
+      Default 'none' = report findings but never fail the build.
+      Recommended for production: HIGH (allows MEDIUM noise without blocking).
+    required: false
+    default: 'none'
+
+  upload-sarif:
+    description: |
+      Upload the SARIF result to GitHub Code Scanning so findings appear
+      in the Security tab. Requires the workflow to have `security-events:
+      write` permission. Default true.
+    required: false
+    default: 'true'
+
+  poll-interval-seconds:
+    description: 'How often to poll scan status while waiting for completion.'
+    required: false
+    default: '15'
+
+  timeout-minutes:
+    description: |
+      Hard timeout — fail the build if the scan does not complete in this
+      many minutes. PENTEST_FULL can take 30+ min; default 45 covers most
+      scan types. Bump for very large repos.
+    required: false
+    default: '45'
+
+outputs:
+  scan-id:
+    description: 'BreachLens scan job ID that was triggered.'
+    value: ${{ steps.trigger.outputs.scan-id }}
+  status:
+    description: 'Final scan status (COMPLETED / FAILED).'
+    value: ${{ steps.poll.outputs.status }}
+  critical-count:
+    description: 'Number of CRITICAL findings on the scan target.'
+    value: ${{ steps.summarise.outputs.critical }}
+  high-count:
+    description: 'Number of HIGH findings on the scan target.'
+    value: ${{ steps.summarise.outputs.high }}
+  medium-count:
+    description: 'Number of MEDIUM findings on the scan target.'
+    value: ${{ steps.summarise.outputs.medium }}
+  sarif-path:
+    description: 'Local file path of the downloaded SARIF report.'
+    value: ${{ steps.fetch-sarif.outputs.path }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Validate inputs
+      shell: bash
+      run: |
+        # Exactly one of repo-id, container-id, domain-id must be set.
+        TARGETS_SET=0
+        [[ -n "${{ inputs.repo-id }}"      ]] && TARGETS_SET=$((TARGETS_SET + 1))
+        [[ -n "${{ inputs.container-id }}" ]] && TARGETS_SET=$((TARGETS_SET + 1))
+        [[ -n "${{ inputs.domain-id }}"    ]] && TARGETS_SET=$((TARGETS_SET + 1))
+        if [[ $TARGETS_SET -ne 1 ]]; then
+          echo "::error::Must specify exactly one of repo-id, container-id, or domain-id."
+          exit 1
+        fi
+        # Severity gate must be one of the allowed values.
+        case "${{ inputs.severity-gate }}" in
+          CRITICAL|HIGH|MEDIUM|LOW|INFO|none) ;;
+          *) echo "::error::Invalid severity-gate '${{ inputs.severity-gate }}' — must be CRITICAL/HIGH/MEDIUM/LOW/INFO/none."; exit 1 ;;
+        esac
+        echo "✓ Inputs valid."
+
+    - name: Trigger scan
+      id: trigger
+      shell: bash
+      env:
+        API_URL:        ${{ inputs.api-url }}
+        SESSION:        ${{ inputs.session-cookie }}
+        REPO_ID:        ${{ inputs.repo-id }}
+        CONTAINER_ID:   ${{ inputs.container-id }}
+        DOMAIN_ID:      ${{ inputs.domain-id }}
+        SCAN_TYPES:     ${{ inputs.scan-types }}
+      run: |
+        # Pick the right endpoint based on which target is set.
+        if [[ -n "$REPO_ID" ]];      then ENDPOINT="$API_URL/api/repos/$REPO_ID/scan";
+        elif [[ -n "$CONTAINER_ID" ]]; then ENDPOINT="$API_URL/api/containers/$CONTAINER_ID/scan";
+        else                              ENDPOINT="$API_URL/api/domains/$DOMAIN_ID/scan";
+        fi
+
+        # Build request body. scan-types is comma-separated; the API
+        # expects JSON array.
+        if [[ -n "$SCAN_TYPES" ]]; then
+          BODY=$(jq -nc --arg types "$SCAN_TYPES" '{ scanTypes: ($types | split(",")) }')
+        else
+          BODY='{}'
+        fi
+
+        echo "POST $ENDPOINT"
+        RESPONSE=$(curl -fsS -X POST "$ENDPOINT" \
+          -H "Cookie: connect.sid=$SESSION" \
+          -H "Content-Type: application/json" \
+          -d "$BODY")
+        echo "$RESPONSE"
+
+        SCAN_ID=$(echo "$RESPONSE" | jq -r '.id // .scanJobId // empty')
+        if [[ -z "$SCAN_ID" ]]; then
+          echo "::error::Failed to extract scan ID from response."
+          exit 1
+        fi
+        echo "scan-id=$SCAN_ID" >> "$GITHUB_OUTPUT"
+        echo "✓ Triggered scan $SCAN_ID"
+
+    - name: Poll for completion
+      id: poll
+      shell: bash
+      env:
+        API_URL:           ${{ inputs.api-url }}
+        SESSION:           ${{ inputs.session-cookie }}
+        SCAN_ID:           ${{ steps.trigger.outputs.scan-id }}
+        POLL_INTERVAL:     ${{ inputs.poll-interval-seconds }}
+        TIMEOUT_MIN:       ${{ inputs.timeout-minutes }}
+      run: |
+        DEADLINE=$(( $(date +%s) + (TIMEOUT_MIN * 60) ))
+        STATUS=PENDING
+        while [[ "$STATUS" != "COMPLETED" && "$STATUS" != "FAILED" ]]; do
+          if (( $(date +%s) > DEADLINE )); then
+            echo "::error::Scan $SCAN_ID exceeded ${TIMEOUT_MIN}-minute timeout (last status: $STATUS)."
+            exit 1
+          fi
+          sleep "$POLL_INTERVAL"
+          STATUS=$(curl -fsS "$API_URL/api/scans/$SCAN_ID" \
+            -H "Cookie: connect.sid=$SESSION" | jq -r '.status // "UNKNOWN"')
+          echo "[poll] scan $SCAN_ID status: $STATUS"
+        done
+        echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+        if [[ "$STATUS" == "FAILED" ]]; then
+          echo "::error::Scan $SCAN_ID failed."
+          exit 1
+        fi
+        echo "✓ Scan $SCAN_ID COMPLETED"
+
+    - name: Fetch SARIF
+      id: fetch-sarif
+      shell: bash
+      env:
+        API_URL:  ${{ inputs.api-url }}
+        SESSION:  ${{ inputs.session-cookie }}
+        SCAN_ID:  ${{ steps.trigger.outputs.scan-id }}
+      run: |
+        SARIF_PATH="breachlens-${SCAN_ID}.sarif"
+        curl -fsS "$API_URL/api/scans/$SCAN_ID/export.sarif" \
+          -H "Cookie: connect.sid=$SESSION" \
+          -o "$SARIF_PATH"
+        echo "path=$SARIF_PATH" >> "$GITHUB_OUTPUT"
+        BYTES=$(wc -c < "$SARIF_PATH")
+        echo "✓ Wrote $SARIF_PATH ($BYTES bytes)"
+
+    - name: Summarise findings + apply severity gate
+      id: summarise
+      shell: bash
+      env:
+        SARIF_PATH:    ${{ steps.fetch-sarif.outputs.path }}
+        SEVERITY_GATE: ${{ inputs.severity-gate }}
+      run: |
+        # The SARIF properties bag carries `severity` directly.
+        # Count by severity buckets the BreachLens way.
+        CRITICAL=$(jq '[.runs[].results[] | select(.properties.severity == "CRITICAL")] | length' "$SARIF_PATH")
+        HIGH=$(jq     '[.runs[].results[] | select(.properties.severity == "HIGH")]     | length' "$SARIF_PATH")
+        MEDIUM=$(jq   '[.runs[].results[] | select(.properties.severity == "MEDIUM")]   | length' "$SARIF_PATH")
+        LOW=$(jq      '[.runs[].results[] | select(.properties.severity == "LOW")]      | length' "$SARIF_PATH")
+        INFO=$(jq     '[.runs[].results[] | select(.properties.severity == "INFO")]     | length' "$SARIF_PATH")
+
+        echo "critical=$CRITICAL" >> "$GITHUB_OUTPUT"
+        echo "high=$HIGH"         >> "$GITHUB_OUTPUT"
+        echo "medium=$MEDIUM"     >> "$GITHUB_OUTPUT"
+
+        # Step summary — surfaces in the GitHub Actions UI.
+        cat >> "$GITHUB_STEP_SUMMARY" << EOF
+        ## BreachLens scan results
+
+        | Severity | Count |
+        |---|---|
+        | 🔴 Critical | $CRITICAL |
+        | 🟠 High     | $HIGH     |
+        | 🟡 Medium   | $MEDIUM   |
+        | 🔵 Low      | $LOW      |
+        | ⚪ Info     | $INFO     |
+
+        **Severity gate:** \`$SEVERITY_GATE\`
+        EOF
+
+        # Severity gate — fail the build if findings >= the gate exist.
+        # Order: CRITICAL > HIGH > MEDIUM > LOW > INFO > none.
+        case "$SEVERITY_GATE" in
+          CRITICAL) (( CRITICAL > 0 )) && { echo "::error::Severity gate CRITICAL: found $CRITICAL critical findings."; exit 1; } ;;
+          HIGH)     (( CRITICAL + HIGH > 0 )) && { echo "::error::Severity gate HIGH: found $((CRITICAL + HIGH)) HIGH-or-above findings."; exit 1; } ;;
+          MEDIUM)   (( CRITICAL + HIGH + MEDIUM > 0 )) && { echo "::error::Severity gate MEDIUM: found $((CRITICAL + HIGH + MEDIUM)) MEDIUM-or-above findings."; exit 1; } ;;
+          LOW)      (( CRITICAL + HIGH + MEDIUM + LOW > 0 )) && { echo "::error::Severity gate LOW: found $((CRITICAL + HIGH + MEDIUM + LOW)) LOW-or-above findings."; exit 1; } ;;
+          INFO)     (( CRITICAL + HIGH + MEDIUM + LOW + INFO > 0 )) && { echo "::error::Severity gate INFO: found $((CRITICAL + HIGH + MEDIUM + LOW + INFO)) total findings."; exit 1; } ;;
+          none)     echo "✓ Severity gate disabled — findings reported but build will not fail." ;;
+        esac
+
+    - name: Upload SARIF to GitHub Code Scanning
+      if: ${{ inputs.upload-sarif == 'true' }}
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ steps.fetch-sarif.outputs.path }}
+        # Category groups uploads — using the scan ID lets re-uploads
+        # for the same commit replace the prior result instead of
+        # appending duplicates.
+        category: breachlens-${{ steps.trigger.outputs.scan-id }}

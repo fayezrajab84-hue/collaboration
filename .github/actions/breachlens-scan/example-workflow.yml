@@ -1,0 +1,63 @@
+# Example workflow showing how to use the breachlens-scan Action.
+#
+# Copy this file to YOUR repo at .github/workflows/security.yml and edit
+# the inputs. This file is NOT in .github/workflows/ on the BreachLens
+# monorepo so it doesn't run on push here.
+#
+# Prerequisites:
+#   1. Connect your GitHub repo to your BreachLens deployment
+#      (Settings → Repositories → Add).
+#   2. Note the BreachLens Repository ID from the resource detail URL —
+#      it's the cuid after /repositories/ (e.g. cmoh50000abc1234).
+#   3. Mint a long-lived BreachLens session cookie:
+#        - Log into BreachLens in a browser
+#        - DevTools → Application → Cookies → copy the connect.sid value
+#        - Add to your GitHub repo: Settings → Secrets → Actions →
+#          New repository secret → BREACHLENS_SESSION
+#      (Phase A4 will replace this with a proper API token mint flow.)
+#   4. Add your BreachLens API URL as a GitHub variable:
+#        Settings → Secrets and variables → Variables → New variable →
+#        BREACHLENS_API_URL = https://breachlens.example.com
+
+name: Security scan
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  # Required to upload SARIF to the Code Scanning surface (so findings
+  # appear in the Security tab + on PR diffs).
+  security-events: write
+  # Required to read the repo (composite action checks no source code).
+  contents: read
+
+jobs:
+  breachlens-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: BreachLens scan
+        uses: ./.github/actions/breachlens-scan
+        # In your own repo, reference the published Action:
+        #   uses: fayezrajab84-hue/breachlens@v1
+        # (publishing to GitHub Marketplace is a Phase A5 task)
+        with:
+          api-url:        ${{ vars.BREACHLENS_API_URL }}
+          session-cookie: ${{ secrets.BREACHLENS_SESSION }}
+          repo-id:        cmoh50000abc1234       # ← replace with YOUR BreachLens repo ID
+
+          # Recommended: HIGH gate. Allows MEDIUM-and-below noise without
+          # blocking the build. Bump to MEDIUM in long-running maintenance
+          # branches; relax to none in dev branches.
+          severity-gate:  HIGH
+
+          # Optional overrides:
+          # scan-types:           SAST,SCA,SECRET   # default depends on target
+          # upload-sarif:         true              # appears in Security tab
+          # poll-interval-seconds: 15
+          # timeout-minutes:       45               # bump for very large repos
