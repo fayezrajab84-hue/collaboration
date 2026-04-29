@@ -134,20 +134,41 @@ function severityToScore(sev: string, cvssScore: number | null): string {
 
 // ── Location synthesis ───────────────────────────────────────────────────
 //
-// SARIF requires every result to have at least one location. For
-// findings without a file path (DAST URLs, container CVEs, runtime
-// alerts), we synthesise a location URI that's still meaningful in the
-// CI surface — e.g. `container://nginx:1.25` or `https://example.com/login`
-// — so the GitHub Security tab shows something other than "(missing)".
+// SARIF requires every result to have at least one location. GitHub
+// Code Scanning's SARIF validator (stricter than the SARIF 2.1.0 spec)
+// only accepts artifactLocation.uri values in two forms:
+//   1. Repo-relative paths (no leading `/`, no scheme — e.g.
+//      `apps/web/src/foo.tsx`)
+//   2. HTTPS / HTTP URIs (for DAST findings on a target URL)
+//
+// Custom URI schemes like `breachlens://`, `wazuh-agent://`,
+// `container://` are REJECTED by the validator, so for findings
+// without a real file path we synthesise repo-relative paths under
+// a `_breachlens/` prefix. The leading underscore makes it visually
+// obvious in the Code Scanning UI that the "file" is a synthesised
+// container for a non-file finding (no actual repo file at that
+// path), while still passing validation.
+//
+// Sanitisation: file-system-unsafe chars ( : / @ # ? % space ) are
+// replaced with `-` so the synthetic path stays a clean relative URI.
+
+function sanitiseUriSegment(s: string): string {
+  return s
+    .replace(/[\/:@#?%\s]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 80) || "unknown";
+}
 
 function buildLocations(f: Finding): SarifLocation[] {
-  // Prefer the typed file location when present (SAST/SCA/IaC/SECRET).
+  // 1. Prefer the typed file location (SAST/SCA/IaC/SECRET).
+  //    Strip a leading `/` so absolute paths from the scanner workspace
+  //    don't break the relative-path expectation.
   if (f.filePath) {
+    const cleanPath = f.filePath.replace(/^\/+/, "");
     return [{
       physicalLocation: {
-        // SARIF expects a URI; bare paths are treated as relative to
-        // srcRoot, which matches GitHub Code Scanning's expectation.
-        artifactLocation: { uri: f.filePath },
+        artifactLocation: { uri: cleanPath },
         ...(f.lineStart != null
           ? {
               region: {
@@ -161,35 +182,49 @@ function buildLocations(f: Finding): SarifLocation[] {
     }];
   }
 
-  // DAST/PENTEST findings — pull URL from evidence. Same shape as
-  // recordingless DAST: the URL IS the location.
+  // 2. DAST/PENTEST findings — URL is a real https URI, GitHub accepts
+  //    these. Skip URIs with malformed shapes by guarding on protocol.
   const ev = (f.evidence as Record<string, unknown> | null) ?? {};
   const url = ev["url"] as string | undefined;
-  if (url) {
+  if (url && /^https?:\/\//i.test(url)) {
     return [{ physicalLocation: { artifactLocation: { uri: url } } }];
   }
 
-  // CONTAINER findings — synthesise container://imageRef path so the
-  // CI surface groups CVEs by image.
+  // 3. CONTAINER findings — synthesise `_breachlens/container/<image>/<package>`
   if (f.targetType === "CONTAINER") {
     const containerRef = (f.rawOutput as { container?: string } | null)?.container
-                       ?? `container://${f.containerId ?? "unknown"}`;
-    const path = f.packageName
-      ? `${containerRef}#${f.packageName}${f.packageVersion ? "@" + f.packageVersion : ""}`
-      : containerRef;
-    return [{ physicalLocation: { artifactLocation: { uri: path } } }];
+                       ?? f.containerId
+                       ?? "unknown";
+    const segments = ["_breachlens", "container", sanitiseUriSegment(containerRef)];
+    if (f.packageName) {
+      const pkgSeg = f.packageVersion
+        ? sanitiseUriSegment(`${f.packageName}-${f.packageVersion}`)
+        : sanitiseUriSegment(f.packageName);
+      segments.push(pkgSeg);
+    }
+    return [{ physicalLocation: { artifactLocation: { uri: segments.join("/") } } }];
   }
 
-  // RUNTIME findings (Wazuh) — synthesise wazuh-agent://<id>/<rule>
+  // 4. RUNTIME findings (Wazuh) — `_breachlens/runtime/<agent>/<rule>`
   if (f.scanType === "RUNTIME") {
-    const agentName = (ev["agentName"] as string | undefined) ?? "unknown";
-    const ruleId    = f.ruleId ?? "unknown";
-    return [{ physicalLocation: { artifactLocation: { uri: `wazuh-agent://${agentName}/${ruleId}` } } }];
+    const agentName = sanitiseUriSegment(
+      (ev["agentName"] as string | undefined) ?? "unknown",
+    );
+    const ruleId = sanitiseUriSegment(f.ruleId ?? "unknown");
+    return [{
+      physicalLocation: {
+        artifactLocation: { uri: `_breachlens/runtime/${agentName}/${ruleId}` },
+      },
+    }];
   }
 
-  // Fallback — every result MUST have a location. Use an opaque marker
-  // so the CI surface at least renders something parseable.
-  return [{ physicalLocation: { artifactLocation: { uri: `breachlens://finding/${f.id}` } } }];
+  // 5. Fallback — every result MUST have a location. Synthetic
+  //    relative path under _breachlens/ keeps validation passing.
+  return [{
+    physicalLocation: {
+      artifactLocation: { uri: `_breachlens/finding/${sanitiseUriSegment(f.id)}` },
+    },
+  }];
 }
 
 // ── Rule de-duplication ──────────────────────────────────────────────────
