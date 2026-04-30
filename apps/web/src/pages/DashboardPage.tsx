@@ -1328,11 +1328,11 @@ export default function DashboardPage() {
           code repos). Reusable for Cloud and Identity tabs in
           subsequent slices. */}
       {tab === "code" && (
-        <div className="mb-4 flex items-center gap-2 border-b border-gray-800 pb-2 text-xs">
-          <span className="text-gray-500">View:</span>
+        <div className="mb-4 flex items-center gap-2 border-b border-gray-800 pb-2.5 text-sm">
+          <span className="text-xs text-gray-500">View:</span>
           <button
             onClick={() => setSub("vulnerabilities")}
-            className={`rounded-md px-2.5 py-1 font-medium transition-colors ${
+            className={`rounded-md px-4 py-1.5 font-medium transition-colors ${
               sub === "vulnerabilities"
                 ? "bg-indigo-900/40 text-indigo-200 border border-indigo-700/50"
                 : "text-gray-400 hover:text-white"
@@ -1343,14 +1343,14 @@ export default function DashboardPage() {
           </button>
           <button
             onClick={() => setSub("posture")}
-            className={`rounded-md px-2.5 py-1 font-medium transition-colors ${
+            className={`rounded-md px-4 py-1.5 font-medium transition-colors ${
               sub === "posture"
                 ? "bg-indigo-900/40 text-indigo-200 border border-indigo-700/50"
                 : "text-gray-400 hover:text-white"
             }`}
             title="GitHub posture — hygiene of your code repos (branch protection, MFA, secret scanning, etc.)"
           >
-            Posture
+            GitHub Posture
           </button>
         </div>
       )}
