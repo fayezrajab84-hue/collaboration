@@ -22,6 +22,9 @@ class ScanType(str, Enum):
     # an authorised Azure subscription / AWS account / GCP project. Slice A
     # is AZURE-only; AWS/GCP are placeholders pending future slices.
     CLOUD = "CLOUD"
+    # Phase 29 Slice C1 — GitHub posture audit via Prowler `--provider github`.
+    # 24 checks across organization (5) + repository (18) + githubactions (1).
+    GITHUB_POSTURE = "GITHUB_POSTURE"
 
 
 class PentestDepth(str, Enum):
@@ -37,6 +40,8 @@ class TargetType(str, Enum):
     # Phase 29 — CSPM target. CloudAccount represents (provider, scope) — for
     # AZURE that's a single subscription; AWS = account; GCP = project.
     CLOUD_ACCOUNT = "CLOUD_ACCOUNT"
+    # Phase 29 Slice C1 — GitHub posture target. An entire user / org scope.
+    GITHUB_ACCOUNT = "GITHUB_ACCOUNT"
 
 
 class Severity(str, Enum):
@@ -126,6 +131,23 @@ class CloudCredentials(BaseModel):
     subscription_id: Optional[str] = None     # subscription scope
 
 
+class GitHubCredentials(BaseModel):
+    """Phase 29 Slice C1 — GitHub credentials for GITHUB_POSTURE scans.
+
+    Forwarded inline by the API worker after resolving the GitHubAccount
+    row's auth (App installation token OR encrypted PAT). The scanner
+    receives a single bearer token regardless of which path the operator
+    chose — the same env var (`GITHUB_PERSONAL_ACCESS_TOKEN`) feeds
+    Prowler in both cases.
+
+    Sent over the internal Docker network only; never persisted on the
+    scanner side.
+    """
+    token:         str                          # bearer token — never logged
+    account_login: str                          # "fayezrajab84-hue" or org name
+    account_type:  str                          # "USER" | "ORGANIZATION"
+
+
 class ScanRequest(BaseModel):
     scan_job_id: str
     org_id: str
@@ -155,6 +177,11 @@ class ScanRequest(BaseModel):
     # scan_type=CLOUD). Populated by the API worker after decrypting
     # CloudAccount.encryptedCredentials; never logged.
     cloud_credentials: Optional[CloudCredentials] = None
+
+    # Phase 29 Slice C1 — GitHub posture credentials (target_type=GITHUB_ACCOUNT,
+    # scan_type=GITHUB_POSTURE). Resolved by the API worker (App installation
+    # token OR decrypted PAT) and forwarded inline; never logged.
+    github_credentials: Optional[GitHubCredentials] = None
 
     # Populated by the pentest orchestrator after obtaining a session — shared
     # across all phases so each tool doesn't have to re-authenticate.

@@ -93,6 +93,53 @@ async function processScanJob(payload: ScanJobPayload) {
     }
   }
 
+  // Phase 29 Slice C1 — GitHub posture credential decrypt for GITHUB_POSTURE.
+  // Mirrors the CSPM pattern below: GitHubAccount row holds either an
+  // installationId (App auth — token minted on demand from GITHUB_APP_PRIVATE_KEY)
+  // OR an encrypted PAT. Resolve to a single bearer token here, forward to
+  // scanner inline. Failure = cancel scan with operator-readable error.
+  let githubCredentials: Record<string, unknown> | null = null;
+  if (targetType === "GITHUB_ACCOUNT" && scanType === "GITHUB_POSTURE") {
+    try {
+      const account = await prisma.gitHubAccount.findUnique({
+        where: { id: targetId },
+      });
+      if (!account) {
+        throw new Error(`GitHubAccount ${targetId} not found`);
+      }
+      if (!account.encryptedCredentials && !account.installationId) {
+        throw new Error("GitHubAccount has no auth configured");
+      }
+      // Resolve token via the same helper used by test-connection so both
+      // code paths exercise identical auth logic.
+      const { resolveToken } = await import("../services/github/githubAccountAuth.js");
+      const token = await resolveToken({
+        accountLogin:         account.accountLogin,
+        accountType:          account.accountType as "USER" | "ORGANIZATION",
+        installationId:       account.installationId,
+        encryptedCredentials: account.encryptedCredentials,
+      });
+      if (!token.ok) throw new Error(token.message);
+      githubCredentials = {
+        token:         token.value,
+        account_login: account.accountLogin,
+        account_type:  account.accountType,
+      };
+    } catch (err) {
+      logger.error("Failed to resolve GitHubAccount credentials", { scanJobId, error: (err as Error).message });
+      await prisma.scanJob.update({
+        where: { id: scanJobId },
+        data:  {
+          status:       "FAILED",
+          completedAt:  new Date(),
+          error:        `GitHub credentials unavailable: ${(err as Error).message}`,
+        },
+      });
+      emitStatusChange(scanJobId, "FAILED");
+      return;
+    }
+  }
+
   // Phase 29 — CSPM credential decrypt for CLOUD scans. The CloudAccount
   // row stores the SP secret encrypted (AES-256-GCM via encryptionService);
   // we decrypt at scan-trigger time and pass the credential set inline on
@@ -175,6 +222,9 @@ async function processScanJob(payload: ScanJobPayload) {
     // Phase 29 — Cloud credentials for CSPM scans (CLOUD scan_type only).
     // Decrypted above; null for non-CLOUD scans (Pydantic ignores).
     cloud_credentials: cloudCredentials,
+    // Phase 29 Slice C1 — GitHub posture credentials (GITHUB_POSTURE only).
+    // Resolved above (App-installation token or PAT); null otherwise.
+    github_credentials: githubCredentials,
     api_spec_urls: apiSpecUrls,
     // "Promote recording to Full Pentest" plumbing — when set, the scanner's
     // PENTEST_FULL orchestrator skips Playwright and pulls URLs from the live

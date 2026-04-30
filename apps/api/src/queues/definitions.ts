@@ -5,11 +5,12 @@ import type { ScanType } from "@devsecops/types";
 export interface ScanJobPayload {
   scanJobId: string;
   orgId: string;
-  // Phase 29 — adds CLOUD_ACCOUNT to support CSPM scans. Cloud-specific
-  // credentials are NOT in the queue payload — the worker fetches the
-  // CloudAccount row by targetId and decrypts at scan-trigger time
-  // (same pattern as DomainAuthConfig and encryptedGitToken).
-  targetType: "REPOSITORY" | "CONTAINER" | "DOMAIN" | "CLOUD_ACCOUNT";
+  // Phase 29 — adds CLOUD_ACCOUNT (Slice A) + GITHUB_ACCOUNT (Slice C1).
+  // Cloud-specific + GitHub-specific credentials are NOT in the queue
+  // payload — the worker fetches the asset row by targetId and decrypts
+  // at scan-trigger time (same pattern as DomainAuthConfig and
+  // encryptedGitToken).
+  targetType: "REPOSITORY" | "CONTAINER" | "DOMAIN" | "CLOUD_ACCOUNT" | "GITHUB_ACCOUNT";
   targetId: string;
   scanType: ScanType;
   // Repository
@@ -124,4 +125,9 @@ export const scanQueues: Partial<Record<ScanType, Queue<ScanJobPayload>>> = {
   // Phase 29 Slice A — CSPM (Prowler-Azure). Same queue pattern as the
   // other scanner types; the scanWorker dispatches based on scanType.
   CLOUD: new Queue("scan-CLOUD", QUEUE_OPTS),
+  // Phase 29 Slice C1 — GitHub posture (Prowler --provider github).
+  // 24 checks across organization / repository / githubactions services.
+  // Same queue pattern; scanWorker decrypts GitHubAccount.encryptedCredentials
+  // at trigger time and forwards as github_credentials to the scanner.
+  GITHUB_POSTURE: new Queue("scan-GITHUB_POSTURE", QUEUE_OPTS),
 };

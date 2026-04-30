@@ -26,6 +26,7 @@ from scanners import (
     PentestFullScanner,
 )
 from scanners.cloud_azure import CloudAzureScanner
+from scanners.github_posture import GitHubPostureScanner
 from scanners.pentest_full.recon import ReconScanner
 from scanners.verify import verify_finding
 from scanners.dast_interactive import InteractiveDASTSession
@@ -58,6 +59,8 @@ SCANNER_MAP = {
     ScanType.PENTEST_FULL: PentestFullScanner,
     # Phase 29 Slice A — CSPM (Prowler).
     ScanType.CLOUD: CloudAzureScanner,
+    # Phase 29 Slice C1 — GitHub posture (Prowler --provider github).
+    ScanType.GITHUB_POSTURE: GitHubPostureScanner,
 }
 
 
