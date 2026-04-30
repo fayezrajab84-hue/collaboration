@@ -1728,11 +1728,14 @@ export default function DashboardPage() {
               hint="Members can sign in without 2FA — direct credential-theft path"
             />
           ) : m.reposWithoutDependabot > 0 ? (
+            // Phase 29 Slice C1.5b — softened the loud amber-300 value to
+            // orange-400 to match the OWASP A03 card's warning tier and
+            // sit alongside the rose / red urgency cards consistently.
             <StatsCard
               label="No Dependabot"
               value={m.reposWithoutDependabot}
-              valueClassName="text-amber-300"
-              icon={<Package className="h-5 w-5 text-amber-400/80" />}
+              valueClassName="text-orange-400"
+              icon={<Package className="h-5 w-5 text-orange-500/70" />}
               onClick={() => navigate(`/findings?tab=code&sub=posture&search=repository_dependency_scanning_enabled`)}
               hint={`${m.reposWithoutDependabot} repo${m.reposWithoutDependabot === 1 ? "" : "s"} blind to known-CVE dependencies`}
             />
@@ -1740,8 +1743,8 @@ export default function DashboardPage() {
             <StatsCard
               label="No Secret Scanning"
               value={m.reposWithoutSecretScanning}
-              valueClassName="text-amber-300"
-              icon={<ShieldAlert className="h-5 w-5 text-amber-400/80" />}
+              valueClassName="text-orange-400"
+              icon={<ShieldAlert className="h-5 w-5 text-orange-500/70" />}
               onClick={() => navigate(`/findings?tab=code&sub=posture&search=repository_secret_scanning_enabled`)}
               hint={`${m.reposWithoutSecretScanning} repo${m.reposWithoutSecretScanning === 1 ? "" : "s"} can leak credentials at push`}
             />
@@ -1760,11 +1763,14 @@ export default function DashboardPage() {
               hint={`Public repos with ≥2 HIGH+ failures — max blast radius`}
             />
           ) : m.publicReposAtRisk > 0 ? (
+            // Phase 29 Slice C1.5b — same coloring fix as No Dependabot:
+            // amber-300 was reading as bright lemon yellow; orange-400
+            // matches the warning tier elsewhere in the row.
             <StatsCard
               label="Public Repos at Risk"
               value={m.publicReposAtRisk}
-              valueClassName="text-amber-300"
-              icon={<Github className="h-5 w-5 text-amber-400/80" />}
+              valueClassName="text-orange-400"
+              icon={<Github className="h-5 w-5 text-orange-500/70" />}
               onClick={() => navigate(`/findings?tab=code&sub=posture&severity=CRITICAL,HIGH`)}
               hint="HIGH+ findings on publicly visible repos"
             />
@@ -2246,12 +2252,38 @@ export default function DashboardPage() {
             </div>
           ) : (
             <div className="flex h-48 flex-col items-center justify-center gap-3 text-center text-sm text-gray-500">
-              <p>No {tab === "web" ? "web" : "code"} scans yet.</p>
+              {/* Phase 29 Slice C1.5b — sub-aware empty-state copy + CTA.
+                  Earlier the runtime tab showed "No code scans yet" + a
+                  "+ Add a target" button that went to /repositories,
+                  which is the wrong destination for runtime telemetry
+                  (those come from Wazuh agents, not scanned assets).
+                  Each tab now sees its own copy + correct destination. */}
+              <p>
+                No {
+                  tab === "web"     ? "web"
+                  : tab === "runtime" ? "runtime"
+                  : tab === "cloud"   ? "cloud"
+                  : tab === "code" && sub === "posture" ? "GitHub posture"
+                  :                     "code"
+                } scans yet.
+              </p>
               <Link
-                to={tab === "web" ? "/domains" : "/repositories"}
+                to={
+                  tab === "web"     ? "/domains"
+                  : tab === "runtime" ? "/runtime"
+                  : tab === "cloud"   ? "/cloud-accounts"
+                  : tab === "code" && sub === "posture" ? "/github-accounts"
+                  :                     "/repositories"
+                }
                 className="inline-flex items-center gap-1 rounded bg-indigo-700 px-3 py-1.5 text-xs text-white hover:bg-indigo-600"
               >
-                <Plus className="h-3 w-3" /> Add a {tab === "web" ? "domain" : "target"}
+                <Plus className="h-3 w-3" /> {
+                  tab === "web"     ? "Add a domain"
+                  : tab === "runtime" ? "Add a runtime agent"
+                  : tab === "cloud"   ? "Add a cloud account"
+                  : tab === "code" && sub === "posture" ? "Add a GitHub account"
+                  :                     "Add a repo or container"
+                }
               </Link>
             </div>
           )}
