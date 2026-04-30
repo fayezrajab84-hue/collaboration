@@ -1330,6 +1330,51 @@ export default function DashboardPage() {
   const criticalCount = severityData.find((s) => s.name === "CRITICAL")?.value ?? 0;
   const highCount = severityData.find((s) => s.name === "HIGH")?.value ?? 0;
 
+  // Phase 29 Slice C1.5b — code-vulnerabilities story metrics. Anchors
+  // the 4 story cards on Code-Vulnerabilities sub-pivot to concrete
+  // patterns (secrets / critical exposure / easy SCA wins / OWASP A03)
+  // instead of generic severity counts. Numbers come from the existing
+  // /findings/summary/stats endpoint, extended in Slice C1.5b with two
+  // new aggregations:
+  //   fixAvailableScaCount — SCA findings where the scanner already
+  //                          supplied a fixVersion. Drives "Easy Wins".
+  //   owaspA03Count        — SAST findings whose CWE maps to OWASP A03
+  //                          Injection. Drives the OWASP card.
+  const codeStoryMetrics = (() => {
+    if (!(tab === "code" && sub === "vulnerabilities")) return null;
+    if (!stats) return null;
+
+    // Secret findings — every one is high-priority by nature (a
+    // committed credential is a leak path regardless of scanner
+    // confidence). Sum across statuses; the stats payload already
+    // excludes FALSE_POSITIVE / IGNORED.
+    const secretsCount = (stats.scanTypeCounts ?? [])
+      .filter((s) => s.scanType === "SECRET")
+      .reduce((a, b) => a + b._count, 0);
+
+    // Critical exposure: SCA + CONTAINER critical findings only.
+    // SAST critical is rare (Semgrep mostly emits HIGH/MEDIUM); IaC
+    // critical is also uncommon. The two scan types here are the
+    // ones operators actually triage with urgency.
+    const sevByType = (stats.severityByScanType ?? []) as Array<{
+      scanType: string; severity: string; _count: number;
+    }>;
+    const criticalExposure = sevByType
+      .filter((r) => (r.scanType === "SCA" || r.scanType === "CONTAINER") && r.severity === "CRITICAL")
+      .reduce((a, b) => a + b._count, 0);
+
+    const statsExt = stats as unknown as { fixAvailableScaCount?: number; owaspA03Count?: number };
+    const easyScaWins = statsExt.fixAvailableScaCount ?? 0;
+    const owaspA03    = statsExt.owaspA03Count ?? 0;
+
+    // Total SCA count for the "X of Y" framing on the Easy Wins card.
+    const scaTotal = (stats.scanTypeCounts ?? [])
+      .filter((s) => s.scanType === "SCA")
+      .reduce((a, b) => a + b._count, 0);
+
+    return { secretsCount, criticalExposure, easyScaWins, owaspA03, scaTotal };
+  })();
+
   // Phase 29 Slice C1.5a — posture-specific metrics for the stats cards
   // when sub=posture. Computed from filteredExploits (already scoped to
   // GITHUB_POSTURE) so card-counts and widget-counts agree by construction.
@@ -1565,7 +1610,78 @@ export default function DashboardPage() {
           triage by total alert volume — they triage by what's actually
           exploited. */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        {tab === "code" && sub === "posture" && postureMetrics ? (() => {
+        {tab === "code" && sub === "vulnerabilities" && codeStoryMetrics ? (() => {
+          // Phase 29 Slice C1.5b — Story-driven Code-Vulnerabilities cards.
+          //
+          // Replaces the generic Posture/Critical/High/Repos quartet with
+          // four narratives anchored in the actual finding mix:
+          //
+          //   1. Secrets in Code   — CRITICAL by nature; click → SECRET filter
+          //   2. Critical Exposure — SCA + CONTAINER CRITICAL count;
+          //                          known-exploits-in-deps urgency
+          //   3. Easy SCA Wins     — count of SCA with fixVersion set.
+          //                          On real data this is 90%+ of SCA
+          //                          total — reads as "most CVEs are
+          //                          one bump from fixed"
+          //   4. OWASP A03         — SAST CWEs in the injection family
+          //                          (78/79/89/90/91/95/502/564/917/943).
+          //                          Procurement-recognisable framework.
+          //
+          // Each card filters /findings to its specific subset:
+          //   secrets  → ?scanType=SECRET
+          //   critical → ?scanType=SCA,CONTAINER&severity=CRITICAL
+          //   easy SCA → ?scanType=SCA&fixAvailable=true (filter shipped same slice)
+          //   OWASP    → ?owaspFamily=A03 (filter expanded to CWE list server-side)
+          const m = codeStoryMetrics;
+          const easyPct = m.scaTotal > 0
+            ? Math.round((m.easyScaWins / m.scaTotal) * 100)
+            : 0;
+
+          return (
+            <>
+              <StatsCard
+                label="Secrets in Code"
+                value={m.secretsCount}
+                valueClassName={m.secretsCount > 0 ? "text-red-400" : undefined}
+                icon={<ShieldAlert className={`h-5 w-5 ${m.secretsCount > 0 ? "text-red-500/70" : "text-gray-500"}`} />}
+                onClick={() => navigate(`/findings?tab=code&scanType=SECRET`)}
+                hint={m.secretsCount > 0
+                  ? `${m.secretsCount} credential${m.secretsCount === 1 ? "" : "s"} committed — leak path`
+                  : "No secrets detected ✓"}
+              />
+              <StatsCard
+                label="Critical Exposure"
+                value={m.criticalExposure}
+                valueClassName={m.criticalExposure > 0 ? "text-red-400" : undefined}
+                icon={<Flame className={`h-5 w-5 ${m.criticalExposure > 0 ? "text-red-500/70" : "text-gray-500"}`} />}
+                onClick={() => navigate(`/findings?tab=code&scanType=SCA,CONTAINER&severity=CRITICAL`)}
+                hint={m.criticalExposure > 0
+                  ? `${m.criticalExposure} known exploit${m.criticalExposure === 1 ? "" : "s"} in deps + container layers`
+                  : "No critical CVEs in deps/containers ✓"}
+              />
+              <StatsCard
+                label="Easy SCA Wins"
+                value={m.easyScaWins}
+                valueClassName={m.easyScaWins > 0 ? "text-emerald-300" : undefined}
+                icon={<Package className={`h-5 w-5 ${m.easyScaWins > 0 ? "text-emerald-400/80" : "text-gray-500"}`} />}
+                onClick={() => navigate(`/findings?tab=code&scanType=SCA&fixAvailable=true`)}
+                hint={m.scaTotal > 0
+                  ? `${easyPct}% of SCA findings have a fix available — bump deps`
+                  : "No dependency findings yet"}
+              />
+              <StatsCard
+                label="OWASP A03 Injection"
+                value={m.owaspA03}
+                valueClassName={m.owaspA03 > 0 ? "text-orange-400" : undefined}
+                icon={<Target className={`h-5 w-5 ${m.owaspA03 > 0 ? "text-orange-500/70" : "text-gray-500"}`} />}
+                onClick={() => navigate(`/findings?tab=code&owaspFamily=A03`)}
+                hint={m.owaspA03 > 0
+                  ? `${m.owaspA03} SAST finding${m.owaspA03 === 1 ? "" : "s"} — SQLi · XSS · eval · cmd injection`
+                  : "No injection patterns detected ✓"}
+              />
+            </>
+          );
+        })() : tab === "code" && sub === "posture" && postureMetrics ? (() => {
           // Phase 29 Slice C1.5a — Story-driven posture cards.
           //
           // Operators don't triage by abstract counts ("you have 165

@@ -95,9 +95,30 @@ router.get("/", async (req, res, next) => {
     // ?reachability=REACHABLE,UNKNOWN to surface "patch first + can't tell"
     // simultaneously. Without filter, all reachability tiers show.
     if (reach) where["reachability"] = { in: reach };
+    // Phase 29 Slice C1.5b — fix-availability filter. Powers the
+    // "Easy SCA Wins" dashboard card click-through. ?fixAvailable=true
+    // narrows to findings where the scanner emitted a non-empty
+    // fixVersion. Any other value is ignored (no inverse filter today).
+    if (q["fixAvailable"] === "true") {
+      where["fixVersion"] = { not: null, notIn: [""] } as never;
+    }
     // Multiple composite predicates below (target OR, search OR, AI OR) need
     // to be ANDed together. Using an AND array avoids clobbering `where.OR`.
     const andClauses: Array<Record<string, unknown>> = [];
+
+    // Phase 29 Slice C1.5b — OWASP family filter. Encodes the "click
+    // OWASP A03 Injection card → see the SAST findings under it" path.
+    // Accepts a category code; we expand to the canonical CWE family
+    // server-side rather than pushing the list to the client.
+    const owaspFamily = q["owaspFamily"] as string | undefined;
+    if (owaspFamily === "A03") {
+      const cwes = ["CWE-78", "CWE-79", "CWE-89", "CWE-90", "CWE-91",
+                    "CWE-95", "CWE-502", "CWE-564", "CWE-917", "CWE-943"];
+      andClauses.push({
+        scanType: "SAST",
+        OR: cwes.map((c) => ({ cweId: { startsWith: c } })),
+      });
+    }
 
     // Target filters — each supports multi-select. Across target types we OR
     // (a finding with a matching repo OR container OR domain OR cloud
@@ -432,7 +453,36 @@ router.get("/summary/stats", async (req, res, next) => {
     if (cloudAccountIds.length) targetOr.push({ cloudAccountId: { in: cloudAccountIds } });
     if (targetOr.length) scopedWhere["OR"] = targetOr;
 
-    const [severityCounts, scanTypeCounts, statusCounts, confidenceCounts, severityByScanType] = await Promise.all([
+    // Phase 29 Slice C1.5b — code-tier story-card aggregations.
+    //
+    //   fixAvailableScaCount: SCA findings where Trivy / similar emitted a
+    //     non-empty fixVersion. The "easy SCA wins" card uses this — the
+    //     percentage is usually 90%+ and reads as a powerful operator
+    //     story ("most of your CVEs are one bump away from fixed").
+    //
+    //   owaspA03Count: SAST findings whose CWE maps to OWASP A03 Injection.
+    //     Counts CWE-78 / 79 / 89 / 90 / 91 / 95 / 502 / 564 / 917 / 943
+    //     (the canonical injection family). Scoped to SAST so we count
+    //     application-code injection patterns, not transitive SCA noise.
+    //
+    // Both scoped through scopedWhere so they respect the same target /
+    // application / status filters as the rest of the stats payload.
+    const OWASP_A03_CWE_PATTERNS = [
+      "CWE-78", "CWE-79", "CWE-89", "CWE-90", "CWE-91",
+      "CWE-95", "CWE-502", "CWE-564", "CWE-917", "CWE-943",
+    ];
+    // cweId in our schema is a Text column that often carries the full
+    // human label ("CWE-89: Improper Neutralization of …"). Match by
+    // prefix using `startsWith` over an OR — keeps it index-friendlier
+    // than a regex.
+    const owaspA03Where = {
+      ...scopedWhere,
+      scanType: "SAST" as const,
+      status:   { notIn: ["FALSE_POSITIVE", "IGNORED"] as const },
+      OR:       OWASP_A03_CWE_PATTERNS.map((cwe) => ({ cweId: { startsWith: cwe } })),
+    };
+
+    const [severityCounts, scanTypeCounts, statusCounts, confidenceCounts, severityByScanType, fixAvailableScaCount, owaspA03Count] = await Promise.all([
       prisma.finding.groupBy({
         by: ["severity"],
         where: { ...scopedWhere, status: { notIn: ["FALSE_POSITIVE", "IGNORED"] } },
@@ -463,6 +513,23 @@ router.get("/summary/stats", async (req, res, next) => {
         where: { ...scopedWhere, status: { notIn: ["FALSE_POSITIVE", "IGNORED"] } },
         _count: true,
       }),
+      // Phase 29 Slice C1.5b — Easy SCA Wins card. Counts SCA findings
+      // where the scanner already supplied a fixVersion. "fix available"
+      // semantics rather than "is upgrade trivial" — distinguishing same-
+      // major from major-bump fixes would need package-version parsing
+      // we don't have on hand.
+      prisma.finding.count({
+        where: {
+          ...scopedWhere,
+          scanType: "SCA",
+          status: { notIn: ["FALSE_POSITIVE", "IGNORED"] },
+          NOT:    { fixVersion: null },
+          fixVersion: { not: "" },
+        },
+      }),
+      // Phase 29 Slice C1.5b — OWASP A03 Injection card. See header above
+      // for CWE family rationale.
+      prisma.finding.count({ where: owaspA03Where }),
     ]);
 
     // Per-tag counts — drives dashboard cards. Uses the same predicate
@@ -483,6 +550,9 @@ router.get("/summary/stats", async (req, res, next) => {
     res.json({
       severityCounts, scanTypeCounts, statusCounts, confidenceCounts, severityByScanType,
       tagCounts,
+      // Phase 29 Slice C1.5b — code-tier story-card aggregations.
+      fixAvailableScaCount,
+      owaspA03Count,
     });
   } catch (err) { next(err); }
 });
