@@ -4,7 +4,7 @@ import {
   Gauge, FolderGit2, Container, Network, Bug,
   Workflow, Settings, LogOut, Radar, BrainCircuit, FileBarChart, Layers,
   Building2, ChevronsUpDown, Check, BookOpenCheck, GitGraph, Boxes,
-  ChevronDown, ChevronRight, Activity, Package, Cloud,
+  ChevronDown, ChevronRight, Activity, Package, Cloud, Github,
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../hooks/useAuth";
@@ -28,6 +28,7 @@ const ASSET_ITEMS: LinkItem[] = [
   { to: "/containers",      label: "Containers",     icon: Container  },
   { to: "/repositories",    label: "Repositories",   icon: FolderGit2 },
   { to: "/cloud-accounts",  label: "Cloud",          icon: Cloud      },
+  { to: "/github-accounts", label: "GitHub",         icon: Github     },
   { to: "/runtime",         label: "Runtime",        icon: Activity   },
 ];
 

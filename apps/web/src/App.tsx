@@ -7,6 +7,7 @@ import DashboardPage from "./pages/DashboardPage";
 import RepositoriesPage from "./pages/RepositoriesPage";
 import ContainersPage from "./pages/ContainersPage";
 import CloudAccountsPage from "./pages/CloudAccountsPage";
+import GitHubAccountsPage from "./pages/GitHubAccountsPage";
 import DomainsPage from "./pages/DomainsPage";
 import DomainDetailPage from "./pages/DomainDetailPage";
 import FindingsPage from "./pages/FindingsPage";
@@ -64,6 +65,7 @@ function AppRoutes() {
         <Route path="repositories" element={<RepositoriesPage />} />
         <Route path="containers" element={<ContainersPage />} />
         <Route path="cloud-accounts" element={<CloudAccountsPage />} />
+        <Route path="github-accounts" element={<GitHubAccountsPage />} />
         <Route path="domains" element={<DomainsPage />} />
         <Route path="domains/:id" element={<DomainDetailPage />} />
         <Route path="runtime" element={<RuntimePage />} />

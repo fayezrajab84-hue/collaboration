@@ -167,6 +167,75 @@ export const cloudAccountsApi = {
       }),
 };
 
+// ── GitHub Accounts (Phase 29 Slice C1) ──────────────────────────────────
+
+export interface GitHubAccountListItem {
+  id:                    string;
+  orgId:                 string;
+  displayName:           string;
+  accountLogin:          string;
+  accountType:           "USER" | "ORGANIZATION";
+  installationId:        number | null;
+  credentialsConfigured: boolean;
+  isActive:              boolean;
+  lastScannedAt:         string | null;
+  lastScanError:         string | null;
+  addedAt:               string;
+  updatedAt:             string;
+  findingCounts?:        { CRITICAL: number; HIGH: number; MEDIUM: number; LOW: number };
+}
+
+export interface CreateGitHubAccountRequest {
+  displayName:    string;
+  accountLogin:   string;
+  accountType:    "USER" | "ORGANIZATION";
+  /** Set when using GitHub App installation auth. Mutually exclusive with token. */
+  installationId?: number;
+  /** Set when using PAT auth. Mutually exclusive with installationId. */
+  token?:         string;
+}
+
+export interface UpdateGitHubAccountRequest {
+  displayName?:    string;
+  accountLogin?:   string;
+  accountType?:    "USER" | "ORGANIZATION";
+  installationId?: number | null;
+  token?:          string;
+  isActive?:       boolean;
+}
+
+export interface GitHubTestConnectionResult {
+  ok:               boolean;
+  message:          string;
+  authenticatedAs?: string;
+}
+
+export const githubAccountsApi = {
+  list:   ()           => apiClient.get<GitHubAccountListItem[]>("/github-accounts").then((r) => r.data),
+  get:    (id: string) => apiClient.get<GitHubAccountListItem>(`/github-accounts/${id}`).then((r) => r.data),
+  create: (data: CreateGitHubAccountRequest) =>
+    apiClient.post<GitHubAccountListItem>("/github-accounts", data).then((r) => r.data),
+  update: (id: string, data: UpdateGitHubAccountRequest) =>
+    apiClient.patch<GitHubAccountListItem>(`/github-accounts/${id}`, data).then((r) => r.data),
+  delete: (id: string) => apiClient.delete(`/github-accounts/${id}`),
+  triggerScan: (id: string) =>
+    apiClient.post<TriggerScanResponse>(`/github-accounts/${id}/scan`).then((r) => r.data),
+  testConnection: (id: string) =>
+    apiClient.post<GitHubTestConnectionResult>(`/github-accounts/${id}/test-connection`)
+      .then((r) => r.data)
+      .catch((e) => {
+        if (e.response?.status === 422 && e.response.data?.ok === false) return e.response.data as GitHubTestConnectionResult;
+        throw e;
+      }),
+  testConnectionInline: (data: CreateGitHubAccountRequest) =>
+    apiClient.post<GitHubTestConnectionResult>("/github-accounts/test-connection-inline", data)
+      .then((r) => r.data)
+      .catch((e) => {
+        if (e.response?.status === 422 && e.response.data?.ok === false) return e.response.data as GitHubTestConnectionResult;
+        throw e;
+      }),
+};
+
 // ── Domains ───────────────────────────────────────────────────────────────
 
 export const domainsApi = {
