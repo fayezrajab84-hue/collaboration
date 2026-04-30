@@ -1662,7 +1662,10 @@ export default function DashboardPage() {
               <StatsCard
                 label="Easy SCA Wins"
                 value={m.easyScaWins}
-                valueClassName={m.easyScaWins > 0 ? "text-emerald-300" : undefined}
+                // Operator preferred the white default value over the
+                // emerald accent — keeps the card visually consistent
+                // with the others while the icon still carries the
+                // subtle "good news" signal via its emerald tint.
                 icon={<Package className={`h-5 w-5 ${m.easyScaWins > 0 ? "text-emerald-400/80" : "text-gray-500"}`} />}
                 onClick={() => navigate(`/findings?tab=code&scanType=SCA&fixAvailable=true`)}
                 hint={m.scaTotal > 0
