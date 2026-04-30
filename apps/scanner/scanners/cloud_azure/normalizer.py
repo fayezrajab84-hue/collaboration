@@ -375,7 +375,7 @@ def normalize_prowler_findings(
         fingerprint = BaseScanner.compute_fingerprint(
             org_id=request.org_id,
             target_id=request.target_id,
-            scan_type=ScanType.CLOUD,
+            scan_type=request.scan_type,
             rule_id=check_id,
             file_path=resource_uid,
             line=0,
@@ -449,7 +449,7 @@ def normalize_prowler_findings(
             title=title,
             description=description,
             severity=severity,
-            scan_type=ScanType.CLOUD,
+            scan_type=request.scan_type,
             scanner="prowler",
             file_path=resource_uid,    # the resource arn IS the locator
             remediation=full_remediation,
