@@ -5,6 +5,7 @@ import type {
   Confidence,
   Criticality,
   FindingStatus,
+  GitHubAccountType,
   IntegrationType,
   OrgType,
   PentestDepth,
@@ -329,6 +330,37 @@ export interface CloudAccount {
   addedAt:              Date | string;
   updatedAt:            Date | string;
   findingCounts?:       FindingCounts;
+}
+
+// ── Phase 29 Slice C1 — GitHub posture asset ─────────────────────────────
+//
+// Mirrors the CloudAccount pattern: non-secret identifiers are scalar
+// columns; the secret material (encrypted PAT) lives behind
+// `credentialsConfigured` and is never exposed to the client. When
+// `installationId` is set the auth path is the GitHub App installation
+// token (preferred — auto-rotates), and the encrypted PAT may be null.
+//
+// Org-level Prowler checks (5 of 24) attach findings to this row directly
+// via targetType=GITHUB_ACCOUNT. Repo-level + workflow checks (19) attach
+// to the linked Repository.
+export interface GitHubAccount {
+  id:                    string;
+  orgId:                 string;
+  displayName:           string;
+  accountLogin:          string;
+  accountType:           GitHubAccountType;
+  // GitHub App installation id when auth path is the App. Null when
+  // operator chose PAT auth (encryptedCredentials populated instead).
+  installationId:        number | null;
+  // True when encryptedCredentials has been set OR installationId is
+  // present. The encrypted blob itself is never returned to the client.
+  credentialsConfigured: boolean;
+  isActive:              boolean;
+  lastScannedAt:         Date | string | null;
+  lastScanError:         string | null;
+  addedAt:               Date | string;
+  updatedAt:             Date | string;
+  findingCounts?:        FindingCounts;
 }
 
 // ── Phase 27.5 — Application boundary ────────────────────────────────────

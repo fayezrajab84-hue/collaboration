@@ -3,7 +3,10 @@ export type ScanType =
   // Phase 28 Slice A — Wazuh runtime alerts ingested as Findings.
   | "RUNTIME"
   // Phase 29 Slice A — Cloud Security Posture Management.
-  | "CLOUD";
+  | "CLOUD"
+  // Phase 29 Slice C1 — GitHub posture audit via Prowler `--provider github`.
+  // 24 checks across organization (5) + repository (18) + githubactions (1).
+  | "GITHUB_POSTURE";
 
 // Phase 28 Slice A — Wazuh agent health.
 export type AgentStatus = "HEALTHY" | "STALE" | "OFFLINE" | "UNKNOWN";
@@ -20,11 +23,16 @@ export type FindingStatus = "OPEN" | "ACKNOWLEDGED" | "FALSE_POSITIVE" | "FIXED"
 
 export type ScanStatus = "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED";
 
-export type TargetType = "REPOSITORY" | "CONTAINER" | "DOMAIN" | "CLOUD_ACCOUNT";
+export type TargetType = "REPOSITORY" | "CONTAINER" | "DOMAIN" | "CLOUD_ACCOUNT" | "GITHUB_ACCOUNT";
 
 // Phase 29 — Cloud provider enumeration. AZURE is Slice A; AWS/GCP are
 // future-slice expansions reusing the CloudAccount model.
 export type CloudProvider = "AZURE" | "AWS" | "GCP";
+
+// Phase 29 Slice C1 — distinguishes a personal GitHub user account from
+// an organization. Some Prowler checks (e.g. MFA required) only fire on
+// ORGANIZATION accounts.
+export type GitHubAccountType = "USER" | "ORGANIZATION";
 
 export type TicketStatus = "OPEN" | "IN_PROGRESS" | "RESOLVED" | "CLOSED";
 

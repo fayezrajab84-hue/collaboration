@@ -46,6 +46,12 @@ enum ScanType {
   // are future provider targets). Each evaluator rule emits one Finding
   // with targetType=CLOUD_ACCOUNT.
   CLOUD
+  // Phase 29 Slice C1 — GitHub posture audit via Prowler `--provider
+  // github`. Scans an entire GitHub user / organization for the 24 checks
+  // across organization (5) + repository (18) + githubactions (1) services.
+  // Findings target either the GitHubAccount (org-level checks) or one of
+  // its Repositories (repo-level + workflow checks).
+  GITHUB_POSTURE
 }
 
 // Phase 29 — Cloud provider taxonomy for CloudAccount.
@@ -57,6 +63,15 @@ enum CloudProvider {
   AZURE
   AWS
   GCP
+}
+
+// Phase 29 Slice C1 — distinguishes a personal GitHub user account from
+// an organization. Some Prowler checks (e.g. MFA required) only fire on
+// ORGANIZATION accounts; the type lets us suppress N/A checks on USER
+// targets and avoid surfacing pseudo-failures.
+enum GitHubAccountType {
+  USER
+  ORGANIZATION
 }
 
 // Phase 28 Slice A — health of a Wazuh agent attached to this org.
@@ -136,6 +151,11 @@ enum TargetType {
   // grants BreachLens read-access to via a Service Principal. Findings are
   // misconfigurations on that account's resources (storage, VMs, NSGs etc).
   CLOUD_ACCOUNT
+  // Phase 29 Slice C1 — GitHub posture target. Represents an entire
+  // GitHub user / organization scope; org-level Prowler checks (MFA
+  // required, default repo permission, etc.) attach here. Repo-level
+  // checks still target REPOSITORY directly.
+  GITHUB_ACCOUNT
 }
 
 enum TicketStatus {
@@ -618,6 +638,12 @@ model Repository {
   // Phase 27.5 — Application boundary. Null until operator assigns; when
   // null this asset's findings don't participate in correlation chains.
   applicationId           String?
+  // Phase 29 Slice C1 — GitHub posture. When set, GITHUB_POSTURE scans
+  // on the parent GitHubAccount also evaluate this repository's settings
+  // (branch protection, secret scanning, dependabot, codeowners, etc.)
+  // Nullable so legacy repos added via the per-repo PAT path still work
+  // — they just don't get org-level posture context.
+  githubAccountId         String?
   lastScannedAt  DateTime?
   aiRiskScore    Int?      // 0-100
   aiRiskReason   String?
@@ -625,16 +651,18 @@ model Repository {
   addedAt        DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
-  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  policy      Policy?      @relation(fields: [policyId], references: [id], onDelete: SetNull)
-  application Application? @relation(fields: [applicationId], references: [id], onDelete: SetNull)
-  scans       ScanJob[]
-  findings    Finding[]
-  prCheckRuns PrCheckRun[]
-  sboms       Sbom[]
+  org           Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  policy        Policy?        @relation(fields: [policyId], references: [id], onDelete: SetNull)
+  application   Application?   @relation(fields: [applicationId], references: [id], onDelete: SetNull)
+  githubAccount GitHubAccount? @relation(fields: [githubAccountId], references: [id], onDelete: SetNull)
+  scans         ScanJob[]
+  findings      Finding[]
+  prCheckRuns   PrCheckRun[]
+  sboms         Sbom[]
 
   @@index([orgId, githubAppInstallationId])
   @@index([applicationId])
+  @@index([githubAccountId])
 }
 
 // Phase 29 Slice A — Cloud Security Posture Management asset.
@@ -697,6 +725,61 @@ model CloudAccount {
   // populates it.
   @@unique([orgId, provider, subscriptionId])
   @@index([orgId])
+}
+
+// Phase 29 Slice C1 — GitHub posture asset.
+//
+// Represents a GitHub user / organization scope the operator has
+// authorised BreachLens to evaluate via Prowler `--provider github`.
+// Mirrors the CloudAccount pattern (Slice A): non-secret identifiers
+// stay as scalars; the secret material (PAT) is encrypted via
+// encryptionService. When `installationId` is set the auth path is
+// the GitHub App installation token (auto-rotates, no human secret) —
+// `encryptedCredentials` may be null in that case.
+//
+// Org-level Prowler checks (5 of 24) attach findings here directly
+// with targetType=GITHUB_ACCOUNT. Repository-level checks (18) and
+// the GitHub Actions check (1) attach to the linked Repository row
+// with targetType=REPOSITORY.
+//
+// `lastScanError` surfaces the most recent test-connection / scan
+// failure so operators see "token expired" without digging in logs.
+model GitHubAccount {
+  id              String            @id @default(cuid())
+  orgId           String
+  // Operator-facing label ("Production GitHub", "Personal sandbox").
+  // Distinct from accountLogin so internal renames don't break humans.
+  displayName     String
+  accountLogin    String            // "fayezrajab84-hue" or org name
+  accountType     GitHubAccountType
+  // Set when auth path is GitHub App installation token (preferred).
+  // Phase 22.6 (Marketplace launch) supplies this on org install.
+  installationId  Int?
+  // Encrypted PAT material (when accountLogin chose PAT auth instead).
+  // base64(iv + tag + ciphertext) per encryptionService.encrypt().
+  // Null when installationId is set — the App installation token
+  // takes precedence at scan time.
+  encryptedCredentials String?
+
+  // Operational metadata.
+  isActive        Boolean           @default(true)
+  lastScannedAt   DateTime?
+  lastScanError   String?
+
+  addedAt         DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  org             Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  repositories    Repository[]
+  scans           ScanJob[]
+  findings        Finding[]
+
+  // One GitHub account row per (org, accountLogin) tuple — prevents
+  // accidental duplicates when an operator re-pastes a PAT for the
+  // same login.
+  @@unique([orgId, accountLogin])
+  @@index([orgId])
+  @@index([installationId])
 }
 
 model Container {
@@ -921,6 +1004,10 @@ model ScanJob {
   domainId       String?
   // Phase 29 — CSPM target. Optional; null for non-CLOUD scans.
   cloudAccountId String?
+  // Phase 29 Slice C1 — GitHub posture target. Optional; null for
+  // non-GITHUB_POSTURE scans. Set when scanning an entire GitHub
+  // account (org-level + all linked repos in one job).
+  githubAccountId String?
   scanTypes      ScanType[]
   bullJobIds     Json       @default("{}")
   totalScans     Int        @default(0)
@@ -971,6 +1058,7 @@ model ScanJob {
   container    Container?    @relation(fields: [containerId], references: [id])
   domain       Domain?       @relation(fields: [domainId], references: [id])
   cloudAccount CloudAccount? @relation(fields: [cloudAccountId], references: [id], onDelete: Cascade)
+  githubAccount GitHubAccount? @relation(fields: [githubAccountId], references: [id], onDelete: Cascade)
   findings     Finding[]
   reports      Report[]
   recordings         RecordingSession[] @relation("RecordingInteractiveScan")
@@ -1063,6 +1151,7 @@ model Finding {
   container    Container?    @relation(fields: [containerId], references: [id])
   domain       Domain?       @relation(fields: [domainId], references: [id])
   cloudAccount CloudAccount? @relation(fields: [cloudAccountId], references: [id], onDelete: Cascade)
+  githubAccount GitHubAccount? @relation(fields: [githubAccountId], references: [id], onDelete: Cascade)
   ticket       Ticket?
   // Phase 16 compliance mapping — many-to-many to ComplianceControl via the
   // FindingControl join table. Computed on-demand by the mapping service
