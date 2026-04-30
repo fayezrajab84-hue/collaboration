@@ -553,6 +553,175 @@ function CloudCspmWidget({
   );
 }
 
+// ── Phase 29 Slice C1 — GitHub posture widget ───────────────────────────
+//
+// Mirrors CloudCspmWidget's shape (Top Failing Checks + secondary
+// breakdown) but tailored to the 24-check GitHub posture surface:
+//
+//   - The "service" axis is uninteresting (only 3 services: organization /
+//     repository / githubactions). Replaced with a "Top affected repos"
+//     section because the operator's actual triage axis is "which repo
+//     needs attention first".
+//   - No compliance frameworks section. Prowler's GitHub provider doesn't
+//     ship framework mappings on these checks (yet); when it does, this
+//     widget gains a third column.
+//   - Stat header: total findings + distinct repos affected.
+function GitHubPostureWidget({
+  findings,
+  isLoading,
+}: {
+  findings:  Finding[];
+  isLoading: boolean;
+}) {
+  const navigate = useNavigate();
+
+  const total = findings.length;
+
+  // Distinct repos affected — operator-relevant unit. Org-level findings
+  // (targetType === GITHUB_ACCOUNT) don't have a repositoryId; bucket
+  // them under a synthetic "(organization)" key so they're not lost.
+  const repoCounts = new Map<string, { count: number; severity: string; label: string }>();
+  for (const f of findings) {
+    const repoId = (f as Record<string, unknown>)["repositoryId"] as string | undefined;
+    const repoFullName = ((f as Record<string, unknown>)["repository"] as Record<string, unknown> | undefined)?.["fullName"] as string | undefined;
+    const key = repoId ?? "__org__";
+    const label = repoFullName ?? (key === "__org__" ? "(organization-level)" : "(unknown repo)");
+    const cur = repoCounts.get(key) ?? { count: 0, severity: f.severity, label };
+    cur.count++;
+    const sevRank: Record<string, number> = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1, INFO: 0 };
+    if ((sevRank[f.severity] ?? 0) > (sevRank[cur.severity] ?? 0)) cur.severity = f.severity;
+    repoCounts.set(key, cur);
+  }
+  const topRepos = [...repoCounts.entries()]
+    .sort((a, b) => b[1].count - a[1].count)
+    .slice(0, 6);
+
+  // Top failing checks — same logic as CloudCspmWidget. Group by ruleId,
+  // surface human-readable title with ruleId subtitle for technical
+  // reference + click-through search compatibility.
+  const checkCounts = new Map<string, { count: number; severity: string; title: string }>();
+  for (const f of findings) {
+    const id = f.ruleId ?? "unknown";
+    const cur = checkCounts.get(id) ?? { count: 0, severity: f.severity, title: f.title || id };
+    cur.count++;
+    const sevRank: Record<string, number> = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1, INFO: 0 };
+    if ((sevRank[f.severity] ?? 0) > (sevRank[cur.severity] ?? 0)) cur.severity = f.severity;
+    if (!cur.title || cur.title === id) cur.title = f.title || cur.title;
+    checkCounts.set(id, cur);
+  }
+  const topChecks = [...checkCounts.entries()]
+    .sort((a, b) => b[1].count - a[1].count)
+    .slice(0, 10);  // 10 per the plan doc — operator-relevant subset of 24
+
+  // Empty state
+  if (!isLoading && total === 0) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center text-center">
+        <Code2 className="mx-auto mb-3 h-10 w-10 text-gray-700" />
+        <h3 className="text-sm font-semibold text-white">No GitHub posture findings yet</h3>
+        <p className="mt-1 max-w-md text-xs text-gray-500">
+          Add a GitHub account and trigger a posture scan. Prowler will evaluate
+          24 checks across your organization, repositories, and workflows
+          (MFA enforcement, branch protection, secret scanning, dependabot,
+          CODEOWNERS, signed commits, etc.).
+        </p>
+        <button
+          onClick={() => navigate("/github-accounts")}
+          className="mt-4 inline-flex items-center gap-1.5 rounded bg-indigo-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-600"
+        >
+          <Plus className="h-4 w-4" /> Configure GitHub account
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="mb-4 flex items-center justify-between">
+        <h2 className="flex items-center gap-1.5 text-sm font-semibold text-white">
+          <Code2 className="h-3.5 w-3.5 text-indigo-400" />
+          GitHub Posture Misconfigurations
+        </h2>
+        <span className="text-[10px] uppercase tracking-wider text-gray-500">
+          {total} open · {repoCounts.size - (repoCounts.has("__org__") ? 1 : 0)} repo{repoCounts.size === 2 ? "" : "s"} affected
+        </span>
+      </div>
+
+      {/* Top affected repos — primary triage axis for posture findings */}
+      <div>
+        <div className="mb-2 text-[10px] uppercase tracking-wider text-gray-500">
+          Top affected repositories
+        </div>
+        <div className="space-y-1.5">
+          {topRepos.map(([key, { count, label }]) => {
+            const max = topRepos[0]?.[1].count ?? 1;
+            const pct = Math.round((count / max) * 100);
+            return (
+              <button
+                key={key}
+                onClick={() => navigate(
+                  key === "__org__"
+                    ? `/findings?tab=code&sub=posture`
+                    : `/findings?tab=code&sub=posture&target=repo:${key}`,
+                )}
+                className="block w-full text-left"
+                title={`Filter findings to repository '${label}'`}
+              >
+                <div className="mb-0.5 flex items-center justify-between text-[11px]">
+                  <span className="truncate font-mono text-gray-300">{label}</span>
+                  <span className="tabular-nums font-semibold text-gray-200">{count}</span>
+                </div>
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-800">
+                  <div
+                    className="h-full rounded-full bg-indigo-500/70"
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+              </button>
+            );
+          })}
+          {topRepos.length === 0 && (
+            <div className="text-xs text-gray-500">—</div>
+          )}
+        </div>
+      </div>
+
+      {/* Top failing checks — full width below */}
+      <div className="mt-5 border-t border-gray-800 pt-4">
+        <div className="mb-2 text-[10px] uppercase tracking-wider text-gray-500">
+          Top failing checks · {checkCounts.size} of 24 distinct
+        </div>
+        <div className="space-y-1.5">
+          {topChecks.map(([ruleId, { count, severity, title }]) => (
+            <button
+              key={ruleId}
+              onClick={() => navigate(`/findings?tab=code&sub=posture&search=${encodeURIComponent(ruleId)}`)}
+              className="flex w-full items-center justify-between gap-3 rounded border border-gray-800 bg-gray-900/40 px-3 py-1.5 text-left transition-colors hover:border-gray-700 hover:bg-gray-900/60"
+              title={`${title}\n\n${ruleId}`}
+            >
+              <span className="flex items-center gap-2 min-w-0">
+                <SeverityBadge severity={severity} />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-xs text-gray-100">{title}</span>
+                  {title !== ruleId && (
+                    <span className="block truncate font-mono text-[10px] text-gray-500">{ruleId}</span>
+                  )}
+                </span>
+              </span>
+              <span className="tabular-nums rounded bg-gray-800 px-1.5 py-0.5 text-[10px] font-semibold text-gray-300">
+                {count}
+              </span>
+            </button>
+          ))}
+          {topChecks.length === 0 && (
+            <div className="text-xs text-gray-500">—</div>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
 function ExploitsWidget({
   tab, runtimeDash, exploits, isLoading,
 }: {
@@ -959,7 +1128,7 @@ export default function DashboardPage() {
   // covers reasonable scale for a single org's scanner output) so the
   // count and the list both come from the same authoritative dataset.
   const exploitsQuery = useQuery({
-    queryKey: ["dashboard-exploits", tab, targetRaw],
+    queryKey: ["dashboard-exploits", tab, sub, targetRaw],
     queryFn: () => findingsApi.list(
       tab === "runtime"
         ? { scanType: "RUNTIME" as never, limit: 100, ...targetParams }
@@ -970,6 +1139,12 @@ export default function DashboardPage() {
       // truncation in the dashboard's CSPM widget.
         : tab === "cloud"
           ? { scanType: "CLOUD" as never, limit: 250, ...targetParams }
+        // Phase 29 Slice C1 — Code tab Posture sub-pivot: same shape as
+        // Cloud (deterministic Prowler checks, no confidence filter).
+        // The widget aggregates by check + repository instead of treating
+        // each FAIL as a probabilistic exploit.
+        : tab === "code" && sub === "posture"
+          ? { scanType: "GITHUB_POSTURE" as never, limit: 250, ...targetParams }
           : {
               scanType: (tab === "web" ? "DAST,PENTEST_FULL" : "SAST,SCA,SECRET,IAC,CONTAINER") as never,
               confidence: "CONFIRMED" as never,
@@ -991,6 +1166,11 @@ export default function DashboardPage() {
     // returned is a real misconfig; the CloudCspmWidget aggregates
     // services / frameworks / checks across the full set.
     if (tab === "cloud") return true;
+    // Phase 29 Slice C1 — Code tab Posture sub-pivot follows the same
+    // rule. Every Prowler GitHub check FAIL is deterministic; the
+    // GitHubPostureWidget renders the full set without confidence
+    // filtering.
+    if (tab === "code" && sub === "posture") return true;
     if (tab !== "runtime") return wasExploitSuccessful(f);
     if (!hasActiveAttack(f)) return false;
     return f.severity === "CRITICAL" || f.severity === "HIGH" || f.severity === "MEDIUM";
@@ -1455,7 +1635,16 @@ export default function DashboardPage() {
             distribution at a glance, but the dominant content is the
             exploits themselves — the actionable signal. */}
         <div className="lg:col-span-2 rounded-lg border border-gray-800 bg-gray-900 p-5">
-          {tab === "code" ? (
+          {tab === "code" && sub === "posture" ? (
+            // Phase 29 Slice C1 — Code Posture sub-pivot widget. Replaces
+            // the Code-default CodeCategoriesWidget with a posture-focused
+            // surface (top affected repos + top failing checks). Uses the
+            // same exploitsQuery dataset (scoped to GITHUB_POSTURE above).
+            <GitHubPostureWidget
+              findings={filteredExploits}
+              isLoading={exploitsQuery.isLoading}
+            />
+          ) : tab === "code" ? (
             <CodeCategoriesWidget
               scanTypeCounts={stats?.scanTypeCounts}
               severityByScanType={stats?.severityByScanType}
