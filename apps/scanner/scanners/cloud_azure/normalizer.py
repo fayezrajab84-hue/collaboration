@@ -240,6 +240,53 @@ def _remediation_references(item: dict) -> list[str]:
     return out
 
 
+def _github_repo_metadata(item: dict) -> Optional[dict]:
+    """Phase 29 Slice C1.5a — Extract GitHub repo state from a finding's
+    `resources[0].data.metadata` block.
+
+    Prowler's GitHub provider ships an unusually rich metadata payload:
+    every finding contains a complete posture snapshot of its target
+    repository (12 branch-protection booleans + 6 hygiene flags + last-
+    push timestamp + visibility/archived state).
+
+    Returns None for org-level findings where the resource isn't a
+    repository (the 5 org-level Prowler checks scope to the org itself,
+    not a repo).
+    """
+    resource = _first_resource(item)
+    if (resource.get("group") or {}).get("name") != "repository":
+        return None
+    metadata = (resource.get("data") or {}).get("metadata") or {}
+    if not metadata:
+        return None
+    return {
+        "fullName":                metadata.get("full_name"),
+        "owner":                   metadata.get("owner"),
+        "private":                 metadata.get("private"),
+        "archived":                metadata.get("archived"),
+        "pushedAt":                metadata.get("pushed_at"),
+        "secretScanningEnabled":   metadata.get("secret_scanning_enabled"),
+        "dependabotAlertsEnabled": metadata.get("dependabot_alerts_enabled"),
+        "securitymd":              metadata.get("securitymd"),
+        "codeownersExists":        metadata.get("codeowners_exists"),
+        "immutableReleasesEnabled": metadata.get("immutable_releases_enabled"),
+        "deleteBranchOnMerge":     metadata.get("delete_branch_on_merge"),
+        "defaultBranch":           metadata.get("default_branch"),  # full sub-object — 12 booleans + name + approval_count
+    }
+
+
+def _additional_urls(item: dict) -> list[str]:
+    """Phase 29 Slice C1.5a — separate from `remediation.references`.
+    Prowler GitHub findings carry `unmapped.additional_urls` with links
+    to GitHub's own docs; surface them in the drawer's Documentation
+    section so operators can learn-more without leaving BreachLens."""
+    unmapped = _unmapped_block(item)
+    raw = unmapped.get("additional_urls") or []
+    if not isinstance(raw, list):
+        return []
+    return [str(u) for u in raw if u]
+
+
 def _compliance_frameworks(item: dict) -> dict[str, list[str]]:
     """Prowler's OCSF output stores compliance mappings under unmapped
     when no canonical OCSF field exists. Shape varies by version:
@@ -381,31 +428,18 @@ def normalize_prowler_findings(
             line=0,
         )
 
-        # Evidence — Azure-shaped + Prowler-specific data the UI /
-        # correlation engine / AI analyst all consume. Includes
-        # subscription NAME (was missing before — operators identify
-        # accounts by friendly label, not GUID), tenant id, service
-        # group, categories, and Prowler's remediation notes.
+        # Evidence — provider-shaped + Prowler-specific data the UI /
+        # correlation engine / AI analyst all consume. Provider-specific
+        # blocks (azure / github / aws / gcp) are populated based on
+        # cloud.provider so each scan type carries the right context.
+        is_github = (provider_name or "").lower() == "github"
         evidence: dict[str, Any] = {
             "source":    "prowler",
             "check_id":  check_id,
-            "azure": {
-                "subscriptionId":   account_uid,
-                "subscriptionName": account_name,             # "PROD_INFRASTRUCTURE01" — recognisable label
-                "tenantId":         tenant_uid,
-                "tenantName":       tenant_name,
-                "resourceId":       resource_uid,
-                "resourceType":     resource_type,
-                "resourceName":     resource_name,
-                "region":           resource_region or cloud_region,
-                "serviceGroup":     resource_group,            # "vm" / "storage" / etc — Prowler's authoritative grouping
-                "cloudPartition":   cloud_partition,           # "AzureCloud" / "AzureUSGovernment" / etc
-                "provider":         provider_name,
-            },
             # Categories from Prowler's unmapped.categories — semantic
             # tags like "internet-exposed" / "identity-access" / "secrets"
-            # that operators filter by AND that the AI analyst can use
-            # for context.
+            # / "software-supply-chain" that operators filter by AND
+            # that the AI analyst can use for context.
             "categories": prowler_categories,
             # Prowler's quick remediation hint (one-liner). The full
             # markdown remediation is on Finding.remediation; this is
@@ -419,9 +453,46 @@ def normalize_prowler_findings(
             "message":      message or None,
             "compliance":   _compliance_frameworks(item),
         }
-        # Sanitise: drop None values from nested azure dict + top-level
+
+        if is_github:
+            # Phase 29 Slice C1.5a — GitHub posture extraction.
+            # Repository sub-block carries the full per-repo state
+            # (branch protection + hygiene flags) so the drawer can
+            # render the 12-row checklist without re-querying GitHub.
+            evidence["github"] = {
+                "accountLogin":   account_uid,                  # "fayezrajab84-hue"
+                "repository":     _github_repo_metadata(item),  # None for org-level findings
+                "additionalUrls": _additional_urls(item),
+            }
+        else:
+            # Default Azure-shape (Slice A). Future C2 will add aws,
+            # C3 will add m365 etc — branch the same way.
+            evidence["azure"] = {
+                "subscriptionId":   account_uid,
+                "subscriptionName": account_name,             # "PROD_INFRASTRUCTURE01" — recognisable label
+                "tenantId":         tenant_uid,
+                "tenantName":       tenant_name,
+                "resourceId":       resource_uid,
+                "resourceType":     resource_type,
+                "resourceName":     resource_name,
+                "region":           resource_region or cloud_region,
+                "serviceGroup":     resource_group,            # "vm" / "storage" / etc — Prowler's authoritative grouping
+                "cloudPartition":   cloud_partition,           # "AzureCloud" / "AzureUSGovernment" / etc
+                "provider":         provider_name,
+            }
+
+        # Sanitise: drop None values from nested provider dicts + top-level
         # for compact JSON in the DB.
-        evidence["azure"] = {k: v for k, v in evidence["azure"].items() if v is not None}
+        if "azure" in evidence:
+            evidence["azure"] = {k: v for k, v in evidence["azure"].items() if v is not None}
+        if "github" in evidence:
+            # Drop None repository for org-level findings; drop empty
+            # additionalUrls so the drawer doesn't render a blank section.
+            gh = evidence["github"]
+            if gh.get("repository") is None:
+                gh.pop("repository", None)
+            if not gh.get("additionalUrls"):
+                gh.pop("additionalUrls", None)
         if not evidence["categories"]:
             evidence.pop("categories")
         if evidence["prowlerNotes"] is None or evidence["prowlerNotes"] == "":

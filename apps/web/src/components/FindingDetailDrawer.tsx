@@ -20,6 +20,7 @@ import { formatDate } from "../lib/utils";
 import { hasActiveAttack, wasExploitSuccessful } from "../lib/findings";
 import { SEVERITY_BADGE } from "../lib/colors";
 import { renderInlineMarkdown } from "../lib/inlineMarkdown";
+import GitHubPosturePanels from "./GitHubPosturePanels";
 
 // Severity badge class-name map used by SCA, Secret, SAST, and DAST subissues.
 // Declared at module top so every helper below can reference it without
@@ -3174,6 +3175,25 @@ export default function FindingDetailDrawer({ finding, onClose }: Props) {
             </div>
             <p className="text-xs text-gray-300 leading-relaxed">{renderInlineMarkdown(finding.description)}</p>
           </div>
+
+          {/* Phase 29 Slice C1.5a — GitHub posture panels.
+              Renders a Repository header + 6-row hygiene checklist + 12-row
+              branch-protection checklist when the finding's evidence carries
+              a github.repository block. The row matching this finding's
+              ruleId is highlighted in rose so the operator immediately sees
+              "this is the failing setting in context with all the others." */}
+          {finding.scanType === "GITHUB_POSTURE" && (() => {
+            const ev = (finding.evidence ?? {}) as Record<string, unknown>;
+            const gh = (ev["github"] ?? {}) as Record<string, unknown>;
+            const repo = (gh["repository"] as Record<string, unknown> | null | undefined) ?? null;
+            if (!repo) return null;
+            return (
+              <GitHubPosturePanels
+                ruleId={finding.ruleId}
+                repository={repo as never}
+              />
+            );
+          })()}
 
           {/* Code Evidence — SAST / IAC / SECRET: always show when filePath is known */}
           {["SAST", "IAC", "SECRET"].includes(finding.scanType) && finding.filePath && (

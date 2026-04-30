@@ -1284,10 +1284,19 @@ export default function FindingsPage() {
               {tab === "cloud" && <th className="px-4 py-3 font-medium">Resource</th>}
               {tab === "cloud" && <th className="px-4 py-3 font-medium">Resource Type</th>}
               {tab === "cloud" && <th className="px-4 py-3 font-medium">Account</th>}
-              {tab !== "runtime" && tab !== "cloud" && <th className="px-4 py-3 font-medium">Target</th>}
-              {tab !== "runtime" && tab !== "cloud" && <SortTh field="scanType"   label="Type"       sort={sort} sortOrder={sortOrder} toggle={toggleSort} />}
+              {/* Phase 29 Slice C1.5a — GitHub posture columns. Replaces
+                  the generic Target column with shape-specific columns
+                  (Repository / Visibility / Last push) since posture
+                  findings carry rich per-repo evidence the operator
+                  triages by. Type column dropped — every row is
+                  GITHUB_POSTURE, redundant. */}
+              {tab === "code" && sub === "posture" && <th className="px-4 py-3 font-medium">Repository</th>}
+              {tab === "code" && sub === "posture" && <th className="px-4 py-3 font-medium">Visibility</th>}
+              {tab === "code" && sub === "posture" && <th className="px-4 py-3 font-medium">Last push</th>}
+              {tab !== "runtime" && tab !== "cloud" && !(tab === "code" && sub === "posture") && <th className="px-4 py-3 font-medium">Target</th>}
+              {tab !== "runtime" && tab !== "cloud" && !(tab === "code" && sub === "posture") && <SortTh field="scanType"   label="Type"       sort={sort} sortOrder={sortOrder} toggle={toggleSort} />}
               <SortTh field="confidence" label="Confidence" sort={sort} sortOrder={sortOrder} toggle={toggleSort} />
-              {tab !== "runtime" && tab !== "cloud" && <th className="px-4 py-3 font-medium">AI</th>}
+              {tab !== "runtime" && tab !== "cloud" && !(tab === "code" && sub === "posture") && <th className="px-4 py-3 font-medium">AI</th>}
               <SortTh field="status"     label="Status"     sort={sort} sortOrder={sortOrder} toggle={toggleSort} />
               <SortTh field={tab === "runtime" ? "lastSeen" : "firstSeen"} label={tab === "runtime" ? "Last Seen" : "First Seen"} sort={sort} sortOrder={sortOrder} toggle={toggleSort} />
             </tr>
@@ -1635,12 +1644,60 @@ export default function FindingsPage() {
                       </>
                     );
                   })()}
-                  {tab !== "runtime" && tab !== "cloud" && (
+                  {tab !== "runtime" && tab !== "cloud" && !(tab === "code" && sub === "posture") && (
                     <>
                       <td className="px-4 py-3"><TargetTag finding={f} /></td>
                       <td className="px-4 py-3 text-xs text-gray-400">{f.scanType}</td>
                     </>
                   )}
+                  {tab === "code" && sub === "posture" && (() => {
+                    // Phase 29 Slice C1.5a — GitHub posture cells.
+                    // evidence.github.repository carries the full per-repo
+                    // posture snapshot extracted by the normalizer. Org-
+                    // level findings (5 of 24 checks) have no repository
+                    // — those rows render "(organization-level)".
+                    const ev = (f.evidence ?? {}) as Record<string, unknown>;
+                    const gh = (ev["github"] ?? {}) as Record<string, unknown>;
+                    const repo = (gh["repository"] ?? null) as Record<string, unknown> | null;
+                    const fullName = repo ? String(repo["fullName"] ?? "") : "";
+                    const isPrivate = repo ? Boolean(repo["private"]) : null;
+                    const isArchived = repo ? Boolean(repo["archived"]) : null;
+                    const pushedAt = repo ? (repo["pushedAt"] as string | null) : null;
+                    return (
+                      <>
+                        <td className="px-4 py-3">
+                          {fullName ? (
+                            <span className="inline-block max-w-[260px] truncate font-mono text-xs text-gray-200" title={fullName}>
+                              {fullName}
+                            </span>
+                          ) : (
+                            <span className="text-[11px] italic text-gray-500">(organization-level)</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
+                          {repo ? (
+                            <span className="inline-flex items-center gap-1">
+                              {isArchived && (
+                                <span className="rounded bg-gray-800 px-1.5 py-0.5 text-[10px] font-medium text-gray-400">Archived</span>
+                              )}
+                              <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                                isPrivate
+                                  ? "bg-gray-800 text-gray-300"
+                                  : "bg-amber-900/30 text-amber-300 border border-amber-800/40"
+                              }`}>
+                                {isPrivate ? "Private" : "Public"}
+                              </span>
+                            </span>
+                          ) : (
+                            <span className="text-xs text-gray-600">—</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-xs text-gray-400">
+                          {pushedAt ? formatRelative(pushedAt) : <span className="text-gray-600">—</span>}
+                        </td>
+                      </>
+                    );
+                  })()}
                   {tab === "cloud" && (() => {
                     // CSPM cells from Prowler-shaped evidence. Columns:
                     // Resource (name) · Resource Type · Account. The
