@@ -1662,11 +1662,12 @@ export default function DashboardPage() {
               <StatsCard
                 label="Easy SCA Wins"
                 value={m.easyScaWins}
-                // Operator preferred the white default value over the
-                // emerald accent — keeps the card visually consistent
-                // with the others while the icon still carries the
-                // subtle "good news" signal via its emerald tint.
-                icon={<Package className={`h-5 w-5 ${m.easyScaWins > 0 ? "text-emerald-400/80" : "text-gray-500"}`} />}
+                // Operator preferred neutral grays for both value AND
+                // icon — keeps the card visually consistent with the
+                // others (which use accent colors only for urgent
+                // states). The "good news" framing stays in the hint
+                // copy ("X% of SCA findings have a fix available").
+                icon={<Package className="h-5 w-5 text-gray-400" />}
                 onClick={() => navigate(`/findings?tab=code&scanType=SCA&fixAvailable=true`)}
                 hint={m.scaTotal > 0
                   ? `${easyPct}% of SCA findings have a fix available — bump deps`
