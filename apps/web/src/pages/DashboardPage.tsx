@@ -12,6 +12,8 @@ import StatsCard from "../components/StatsCard";
 import SeverityBadge from "../components/SeverityBadge";
 import ScanStatusBadge from "../components/ScanStatusBadge";
 import TargetTag from "../components/TargetTag";
+import RepoPostureDrawer from "../components/RepoPostureDrawer";
+import { useState } from "react";
 import { formatRelative } from "../lib/utils";
 import type { ScanJob, Finding } from "@devsecops/types";
 
@@ -574,6 +576,11 @@ function GitHubPostureWidget({
   isLoading: boolean;
 }) {
   const navigate = useNavigate();
+  // Phase 29 Slice C1.4 — drawer state for the per-repo posture checklist.
+  // Selected key matches the keying scheme used in the Top Affected Repos
+  // aggregation below: real repositoryId for repo rows, "__org__" for the
+  // bucket of org-level findings.
+  const [drawerKey, setDrawerKey] = useState<string | null>(null);
 
   const total = findings.length;
 
@@ -659,13 +666,9 @@ function GitHubPostureWidget({
             return (
               <button
                 key={key}
-                onClick={() => navigate(
-                  key === "__org__"
-                    ? `/findings?tab=code&sub=posture`
-                    : `/findings?tab=code&sub=posture&target=repo:${key}`,
-                )}
+                onClick={() => setDrawerKey(key)}
                 className="block w-full text-left"
-                title={`Filter findings to repository '${label}'`}
+                title={`View posture checklist for ${label}`}
               >
                 <div className="mb-0.5 flex items-center justify-between text-[11px]">
                   <span className="truncate font-mono text-gray-300">{label}</span>
@@ -718,6 +721,25 @@ function GitHubPostureWidget({
           )}
         </div>
       </div>
+
+      {/* Phase 29 Slice C1.4 — Per-repo (or per-org) posture checklist drawer.
+          Opens when a Top Affected Repos row is clicked. Renders all 24
+          checks with ✓/✗ status; clicking a FAIL row routes to the
+          existing FindingDetailDrawer for triage. */}
+      {drawerKey != null && (
+        <RepoPostureDrawer
+          open={true}
+          onClose={() => setDrawerKey(null)}
+          scope={drawerKey === "__org__" ? "organization" : "repository"}
+          targetLabel={
+            drawerKey === "__org__"
+              ? "(organization-level)"
+              : (repoCounts.get(drawerKey)?.label ?? drawerKey)
+          }
+          findings={findings}
+          repositoryId={drawerKey === "__org__" ? undefined : drawerKey}
+        />
+      )}
     </>
   );
 }
