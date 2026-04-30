@@ -24,7 +24,7 @@ import { extractApiSpecUrls } from "../services/openApiUrlExtractor.js";
 // Scan types that have a triggerable queue. RUNTIME is push-only via
 // the Wazuh ingest sweep (no scanWorker for it). CLOUD added in
 // Phase 29 — consumes scan-CLOUD jobs and routes to scanner-cspm.
-const SCAN_TYPES: ScanType[] = ["SAST", "SCA", "SECRET", "IAC", "CONTAINER", "DAST", "PENTEST", "PENTEST_FULL", "CLOUD"];
+const SCAN_TYPES: ScanType[] = ["SAST", "SCA", "SECRET", "IAC", "CONTAINER", "DAST", "PENTEST", "PENTEST_FULL", "CLOUD", "GITHUB_POSTURE"];
 
 async function processScanJob(payload: ScanJobPayload) {
   const { scanJobId, orgId, targetType, targetId, scanType, encryptedGitToken } = payload;
@@ -251,15 +251,19 @@ async function processScanJob(payload: ScanJobPayload) {
   let scannerUrl: string;
   if (scanType === "PENTEST_FULL" && config.SCANNER_PENTEST_URL) {
     scannerUrl = config.SCANNER_PENTEST_URL;
-  } else if (scanType === "CLOUD") {
+  } else if (scanType === "CLOUD" || scanType === "GITHUB_POSTURE") {
+    // Phase 29 Slice C1 — GITHUB_POSTURE shares the scanner-cspm image with
+    // CLOUD: both use Prowler (different `--provider`). One container, two
+    // scan types, single SCANNER_CSPM_URL.
     if (!config.SCANNER_CSPM_URL) {
-      logger.error("CLOUD scan requested but SCANNER_CSPM_URL is not configured", { scanJobId });
+      const which = scanType === "CLOUD" ? "Cloud" : "GitHub posture";
+      logger.error(`${scanType} scan requested but SCANNER_CSPM_URL is not configured`, { scanJobId });
       await prisma.scanJob.update({
         where: { id: scanJobId },
         data:  {
           status:      "FAILED",
           completedAt: new Date(),
-          error:       "Cloud scanner not configured. Start the scanner-cspm service via `docker compose --profile cspm up -d`.",
+          error:       `${which} scanner not configured. Start the scanner-cspm service via \`docker compose --profile cspm up -d\`.`,
         },
       });
       emitStatusChange(scanJobId, "FAILED");

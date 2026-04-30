@@ -84,9 +84,13 @@ class GitHubPostureScanner(BaseScanner):
         # repo-level. We pass `--organization` for ORGANIZATION accounts;
         # for USER accounts Prowler's defaults already enumerate the user's
         # repos. In both cases all 24 checks fire on the right scope.
+        # Prowler 5.25 flag is `--personal-access-token` with no value —
+        # passing it bare causes the CLI to read GITHUB_PERSONAL_ACCESS_TOKEN
+        # from the environment (set above). Earlier drafts used a fictional
+        # `--personal-access-token-from-env` flag which doesn't exist.
         cmd = [
             "prowler", "github",
-            "--personal-access-token-from-env",
+            "--personal-access-token",
             "--output-modes", "json-ocsf",
             "--output-directory", output_dir,
             "--output-filename", output_filename,
