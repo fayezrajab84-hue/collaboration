@@ -57,6 +57,85 @@ Three structural reasons:
 
 ---
 
+### 🚧 Slice B.0 — Private container registry auth (ACR token + scope map)
+
+**Status:** scoped, not started.
+**Estimated effort:** ~180 LOC + ~3 hours.
+**Why this ships BEFORE Slice B's bridges:** the demo end-state is "DVWA in ACR scans cleanly + chains via Slice B." Verify the **scan** works first (no bridges yet) so when Slice B's bridges fire, you know any issue is bridge logic, not registry auth. Bisects faster.
+
+**Auth method picked: token + scope map.** Best practice for our use case:
+
+| Method | Why we picked / didn't |
+|---|---|
+| **Anonymous pull** | Only works for public repos. Doesn't fit the demo. |
+| **Admin user** | Single shared credential per registry; audit-trail collapses to "the registry did it." |
+| **Service Principal** | Couples to AD; over-permissioning easy ("Reader on subscription" = read all registries). |
+| **Token + scope map** ✅ | Repository-scoped (`repositories/dvwa/content/read`), per-token password, rotate independently, named identity in Azure. **Compromise = attacker only gets the specific repos in the scope map.** Requires ACR Standard tier (~$20/mo vs Basic $5/mo); $15 delta is worth the audit story. |
+
+**Trivy native support:** Trivy reads `TRIVY_USERNAME` + `TRIVY_PASSWORD` env vars. No custom auth code needed — just decrypt the stored token and pass through to the scanner subprocess.
+
+**Schema additions:**
+
+```prisma
+model ContainerRegistry {
+  id                   String   @id @default(cuid())
+  orgId                String
+  type                 RegistryType
+  hostname             String           // myregistry.azurecr.io
+  authMethod           RegistryAuthMethod
+  encryptedCredentials Json             // AES-256-GCM via encryptionService
+  createdAt            DateTime @default(now())
+  containers           Container[]
+  @@unique([orgId, hostname])
+}
+
+enum RegistryType       { ACR ECR GCR DOCKERHUB GHCR GENERIC }
+enum RegistryAuthMethod { ANONYMOUS TOKEN SP ADMIN }
+```
+
+For ACR + token auth, `encryptedCredentials` stores:
+```json
+{ "tokenName": "breachlens-pull", "password": "<generated token>" }
+```
+
+**Container model gets a new optional FK:** `Container.registryId` → `ContainerRegistry`. Nullable — public images (Docker Hub, ghcr.io public) don't need a registry record.
+
+**Files to touch:**
+
+| File | LOC | What |
+|---|---|---|
+| `apps/api/prisma/schema.prisma` | ~20 | New model + FK + enums |
+| `apps/api/src/routes/containerRegistries/router.ts` (new) | ~60 | CRUD routes + Zod validators (POST/GET/PATCH/DELETE) |
+| `apps/api/src/services/containerRegistryService.ts` (new) | ~30 | Decrypt creds for the scan worker |
+| `apps/api/src/workers/scanWorker.ts` (extend) | ~20 | Pass `TRIVY_USERNAME` / `TRIVY_PASSWORD` to scanner request when registryId set |
+| `apps/scanner/scanners/container.py` (extend) | ~10 | Read env vars from request; pass through to trivy invocation |
+| `apps/web/src/pages/SettingsPage.tsx` (extend) | ~50 | New "Container Registries" tab |
+| `apps/web/src/pages/ContainersPage.tsx` (extend) | ~30 | Registry dropdown in Add/Edit modal |
+| `packages/types/src/api.ts` + `models.ts` (extend) | ~20 | `ContainerRegistry` interface + `RegistryType` / `RegistryAuthMethod` enums |
+| **Total** | **~180** | |
+
+**Operator flow (UI):**
+
+1. Azure portal: ACR → Repository permissions → **Scope maps** → create `breachlens-pull` with scopes like `repositories/dvwa/content/read`
+2. Azure portal: ACR → Repository permissions → **Tokens** → create `breachlens-token` bound to that scope map → generate password 1 → copy
+3. BreachLens: Settings → Container Registries → Add → type=ACR, hostname=`<reg>.azurecr.io`, auth=TOKEN, name=`breachlens-token`, password=`<paste>` → encrypts via `encryptionService` + persists
+4. BreachLens: Container resource → select Registry from dropdown → enter `imageRef = dvwa:latest`
+5. Scan triggers → scan worker decrypts creds → scanner-cspm container receives `TRIVY_USERNAME` + `TRIVY_PASSWORD` → Trivy pulls + scans normally
+
+**Verification:**
+
+1. Schema migration applied; `npx prisma db push` clean
+2. Add a `ContainerRegistry` for an ACR with a working scope-map token
+3. Add a Container pointing at `<reg>.azurecr.io/dvwa:latest` referencing that registry
+4. Trigger CONTAINER scan → expect Trivy CVE findings within ~60 seconds
+5. Rotate the token in Azure → verify scan FAILS with auth error (proves we're actually using the token, not falling back to anonymous)
+6. Update the password in BreachLens → verify scan PASSES again
+7. Audit log shows `breachlens-token` as the puller in ACR → identity is preserved
+
+**Why we ship multi-registry-type even though we only need ACR for the demo:** the schema + UI cost is ~30 LOC additional per type vs. shipping ACR-only and migrating later. Cheaper to do all five (`ECR`, `GCR`, `DOCKERHUB`, `GHCR`, `GENERIC`) at once. The auth-method enum stays open for future per-type quirks (e.g., ECR uses STS short-lived creds, not static tokens — would need separate handling, but the schema accommodates it).
+
+---
+
 ### 🚧 Slice B — Cross-tier bridges (Container/Domain ↔ CloudAccount)
 
 **Status:** scoped, not started.
