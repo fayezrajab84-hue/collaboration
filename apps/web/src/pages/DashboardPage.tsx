@@ -1005,12 +1005,20 @@ const SEVERITY_COLORS = SEVERITY_CHART;
 // dance needed.
 function TargetFilter({
   value, repos, containers, domains, onChange,
+  tab, sub,
 }: {
   value:      string;
   repos:      Array<{ id: string; fullName?: string; name?: string }>;
   containers: Array<{ id: string; imageRef: string }>;
   domains:    Array<{ id: string; domain: string }>;
   onChange:   (kind: "repo" | "container" | "domain" | null, id: string | null) => void;
+  // Phase 29 Slice C1.5b — tab-aware target groups. Each tab scans a
+  // different asset class; showing all 3 groups everywhere clutters
+  // the dropdown and lets the operator pick a target that produces an
+  // empty result set for the active tab (e.g. picking a Domain on
+  // the Code tab — Domain has no SAST findings).
+  tab: "code" | "web" | "runtime" | "cloud";
+  sub: "vulnerabilities" | "posture";
 }) {
   // Show the active selection's name in the trigger so the operator can
   // see what they've scoped to without opening the menu.
@@ -1024,11 +1032,32 @@ function TargetFilter({
   :                              null;
   const label = value && activeName ? activeName : "All targets";
 
+  // Per-tab visibility:
+  //   Code-Vulnerabilities: Repositories + Containers (file/package-based)
+  //   Code-Posture:         Repositories only (posture findings live on repos)
+  //   Web:                  Domains only
+  //   Runtime:              Repositories + Containers (Wazuh agents
+  //                          tied to workload assets)
+  //   Cloud:                None — cloud accounts have their own selector
+  //                          on the findings page; no dashboard-side filter.
+  const showRepos      = tab === "code" || tab === "runtime";
+  const showContainers = (tab === "code" && sub === "vulnerabilities") || tab === "runtime";
+  const showDomains    = tab === "web";
+
+  // Group the cleared-selection label so it reads as "All <type>" on
+  // single-asset tabs ("All domains" on Web, "All repositories" on
+  // Code-Posture). Reads as the operator's mental scope.
+  const clearedLabel =
+    tab === "web"     ? "All domains"
+  : tab === "runtime" ? "All workloads"
+  : tab === "code" && sub === "posture" ? "All repositories"
+  :                                       "All targets";
+
   return (
     <details className="relative group">
       <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded-lg border border-gray-700 bg-gray-900 px-3 py-1.5 text-xs font-medium text-gray-300 hover:border-indigo-600 hover:text-white">
         <Filter className="h-3.5 w-3.5" />
-        <span className="max-w-[180px] truncate">{label}</span>
+        <span className="max-w-[180px] truncate">{label === "All targets" ? clearedLabel : label}</span>
         <ChevronDown className="h-3 w-3 opacity-60" />
       </summary>
       <div className="absolute left-0 z-30 mt-1 max-h-96 w-72 overflow-y-auto rounded-lg border border-gray-700 bg-gray-900 shadow-xl">
@@ -1038,28 +1067,34 @@ function TargetFilter({
             !value ? "bg-indigo-950/40 text-indigo-200" : "text-gray-300 hover:bg-gray-800"
           }`}
         >
-          <span>All targets</span>
+          <span>{clearedLabel}</span>
           {!value && <Check className="h-3.5 w-3.5" />}
         </button>
 
-        <TargetGroup
-          title="Repositories" icon={<GitBranch className="h-3 w-3" />}
-          rows={repos.map((r) => ({ id: r.id, label: r.fullName ?? r.name ?? r.id }))}
-          activeId={activeKind === "repo" ? activeId : null}
-          onPick={(id) => onChange("repo", id)}
-        />
-        <TargetGroup
-          title="Containers" icon={<Box className="h-3 w-3" />}
-          rows={containers.map((c) => ({ id: c.id, label: c.imageRef }))}
-          activeId={activeKind === "container" ? activeId : null}
-          onPick={(id) => onChange("container", id)}
-        />
-        <TargetGroup
-          title="Domains" icon={<Globe className="h-3 w-3" />}
-          rows={domains.map((d) => ({ id: d.id, label: d.domain }))}
-          activeId={activeKind === "domain" ? activeId : null}
-          onPick={(id) => onChange("domain", id)}
-        />
+        {showRepos && (
+          <TargetGroup
+            title="Repositories" icon={<GitBranch className="h-3 w-3" />}
+            rows={repos.map((r) => ({ id: r.id, label: r.fullName ?? r.name ?? r.id }))}
+            activeId={activeKind === "repo" ? activeId : null}
+            onPick={(id) => onChange("repo", id)}
+          />
+        )}
+        {showContainers && (
+          <TargetGroup
+            title="Containers" icon={<Box className="h-3 w-3" />}
+            rows={containers.map((c) => ({ id: c.id, label: c.imageRef }))}
+            activeId={activeKind === "container" ? activeId : null}
+            onPick={(id) => onChange("container", id)}
+          />
+        )}
+        {showDomains && (
+          <TargetGroup
+            title="Domains" icon={<Globe className="h-3 w-3" />}
+            rows={domains.map((d) => ({ id: d.id, label: d.domain }))}
+            activeId={activeKind === "domain" ? activeId : null}
+            onPick={(id) => onChange("domain", id)}
+          />
+        )}
       </div>
     </details>
   );
@@ -1497,13 +1532,21 @@ export default function DashboardPage() {
               chart, exploits widget, and recent-findings list to that
               asset. URL-driven (`?target=repo:<id>`) so refreshes and
               shared links preserve scope. */}
-          <TargetFilter
-            value={targetRaw}
-            repos={repos ?? []}
-            containers={containers ?? []}
-            domains={domains ?? []}
-            onChange={setTarget}
-          />
+          {/* Phase 29 Slice C1.5b — TargetFilter narrows visible
+              groups based on the active tab/sub. On Cloud the
+              filter is hidden entirely; cloud accounts have their
+              own selector on /findings. */}
+          {tab !== "cloud" && (
+            <TargetFilter
+              value={targetRaw}
+              repos={repos ?? []}
+              containers={containers ?? []}
+              domains={domains ?? []}
+              onChange={setTarget}
+              tab={tab}
+              sub={sub}
+            />
+          )}
         </div>
         {/* Tab strip — Code (file-based) vs Web (URL-based). Counts come
             from the unscoped globalStats so they remain stable across the
