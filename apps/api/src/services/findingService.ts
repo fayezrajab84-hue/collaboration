@@ -778,7 +778,12 @@ export async function upsertFindings(opts: UpsertOptions): Promise<{ newCount: n
         // through with cloudAccountId=null and `/api/cloud-accounts/:id`
         // can't tally finding counts; the dashboard / cloud-accounts page
         // both show 0 even though the parent ScanJob has the FK set.
-        cloudAccountId: targetType === "CLOUD_ACCOUNT"  ? targetId : null,
+        cloudAccountId:  targetType === "CLOUD_ACCOUNT"  ? targetId : null,
+        // Phase 29 Slice C1 — same pattern for GitHub posture findings.
+        // Without this, GITHUB_POSTURE findings have githubAccountId=null
+        // and the GitHubPostureWidget / settings page show 0 findings
+        // even though the scanner produced 165 of them.
+        githubAccountId: targetType === "GITHUB_ACCOUNT" ? targetId : null,
         scanType:     f.scanType,
         title:        f.title,
         description:  f.description,
