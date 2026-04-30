@@ -301,6 +301,7 @@ model Organization {
   apiTokens       ApiToken[]
   // Phase 29 — CSPM asset.
   cloudAccounts   CloudAccount[]
+  githubAccounts  GitHubAccount[]
 }
 
 // ── Phase A4 — API tokens for CI integration + automation ─────────────────
@@ -1080,6 +1081,11 @@ model Finding {
   domainId       String?
   // Phase 29 — CSPM finding target. Optional; null for non-CLOUD findings.
   cloudAccountId String?
+  // Phase 29 Slice C1 — GitHub posture finding target. Optional; null for
+  // non-GITHUB_POSTURE findings. Set on org-level findings (org MFA missing,
+  // default repo permission, etc.); repo-level findings keep using
+  // repositoryId so existing per-repo filters work unchanged.
+  githubAccountId String?
   scanType       ScanType
   title          String
   description    String        @db.Text
