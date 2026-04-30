@@ -132,10 +132,20 @@ const CLOUD_SERVICE_OPTIONS: Array<{ value: string; label: string }> = [
 const CLOUD_SCAN_TYPE_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "CLOUD", label: "Cloud (Prowler)" },
 ];
+// Phase 29 Slice C1 — GitHub posture findings come from Prowler's `--provider
+// github` audit (24 checks across organization / repository / githubactions
+// services). They live as a sub-pivot of the Code tab — same domain as
+// SAST/SCA/Secret/IaC ("things about your code & repos") but a structurally
+// different question: hygiene of the repos themselves vs. vulns IN them.
+// See Architecture B in `docs/plans/phase-29-slice-c1-github-posture.md`.
+const POSTURE_SCAN_TYPE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "GITHUB_POSTURE", label: "GitHub posture (Prowler)" },
+];
 const CODE_SCAN_TYPES    = CODE_SCAN_TYPE_OPTIONS.map((o) => o.value);
 const WEB_SCAN_TYPES     = WEB_SCAN_TYPE_OPTIONS.map((o) => o.value);
 const RUNTIME_SCAN_TYPES = RUNTIME_SCAN_TYPE_OPTIONS.map((o) => o.value);
 const CLOUD_SCAN_TYPES   = CLOUD_SCAN_TYPE_OPTIONS.map((o) => o.value);
+const POSTURE_SCAN_TYPES = POSTURE_SCAN_TYPE_OPTIONS.map((o) => o.value);
 const STATUSES = ["OPEN", "ACKNOWLEDGED", "FALSE_POSITIVE", "FIXED", "IGNORED"];
 const CONFIDENCES = ["CONFIRMED", "LIKELY", "POSSIBLE"];
 // AI triage filter values — matched server-side against aiAnalysedAt/aiFixSuggestedAt
@@ -457,6 +467,12 @@ export default function FindingsPage() {
   // mixed across two very different finding shapes. Default to "code" since
   // most users add a repo first and code findings dominate volume.
   const tab        = (searchParams.get("tab") as "code" | "web" | "runtime" | "cloud" | "groups") ?? "code";
+  // Phase 29 Slice C1 — sub-pivot inside the Code tab. "vulnerabilities"
+  // (default, back-compat) shows SAST/SCA/Secret/IaC/Container findings;
+  // "posture" shows GITHUB_POSTURE findings only. Ignored on non-Code tabs.
+  // Default-to-vulnerabilities ensures existing /findings?tab=code links
+  // and bookmarks still work without modification.
+  const sub        = (searchParams.get("sub") as "vulnerabilities" | "posture") ?? "vulnerabilities";
   // Multi-select filters stored as comma-separated values in the URL so links
   // remain shareable; the server splits and parses them via `multi()`.
   const parseMulti = (v: string) => v.split(",").map((s) => s.trim()).filter(Boolean);
@@ -497,10 +513,14 @@ export default function FindingsPage() {
   // allowed set with whatever the user picked in the dropdown. If the user
   // picked nothing, fall back to the full tab set so Code/Web tabs don't
   // accidentally show each other's findings.
+  // Phase 29 Slice C1 — Code tab splits into vulnerabilities (default) and
+  // posture (GitHub Prowler). Sub-pivot only applies on the Code tab; other
+  // tabs ignore `sub` entirely.
   const tabScanTypes =
     tab === "web"     ? WEB_SCAN_TYPES
     : tab === "runtime" ? RUNTIME_SCAN_TYPES
     : tab === "cloud"   ? CLOUD_SCAN_TYPES
+    : tab === "code" && sub === "posture" ? POSTURE_SCAN_TYPES
     : CODE_SCAN_TYPES;
   const effectiveScanTypes = scanType.length
     ? scanType.filter((t) => tabScanTypes.includes(t))
@@ -551,6 +571,19 @@ export default function FindingsPage() {
   const setTab = (t: "code" | "web" | "runtime" | "cloud" | "groups") => {
     setSearchParams((prev) => {
       if (t === "code") prev.delete("tab"); else prev.set("tab", t);
+      prev.delete("scanType");
+      prev.delete("page");
+      // Phase 29 Slice C1 — sub-pivot is Code-tab-only; clear when leaving Code.
+      if (t !== "code") prev.delete("sub");
+      return prev;
+    });
+  };
+  // Phase 29 Slice C1 — sub-pivot inside Code tab. Same scanType-clearing
+  // rationale as setTab: scanType chips selected under one sub-pivot wouldn't
+  // intersect with the other's allowed set, so we wipe them on switch.
+  const setSub = (s: "vulnerabilities" | "posture") => {
+    setSearchParams((prev) => {
+      if (s === "vulnerabilities") prev.delete("sub"); else prev.set("sub", s);
       prev.delete("scanType");
       prev.delete("page");
       return prev;
@@ -777,6 +810,41 @@ export default function FindingsPage() {
         </div>
       </div>
 
+      {/* Phase 29 Slice C1 — Sub-pivot inside the Code tab. Vulnerabilities
+          (default) keeps the existing SAST/SCA/Secret/IaC/Container surface;
+          Posture pivots to GITHUB_POSTURE findings. The dashboard architecture
+          decision lives here in code: same domain (Code) split by question
+          (vulns IN code vs hygiene OF the code repos). The pattern is
+          reusable for Cloud (Azure/AWS/GCP/M365) and Identity tabs as
+          subsequent slices land. See `docs/plans/phase-29-slice-c1-github-posture.md`. */}
+      {tab === "code" && (
+        <div className="mb-4 flex items-center gap-2 border-b border-gray-800 pb-2 text-xs">
+          <span className="text-gray-500">View:</span>
+          <button
+            onClick={() => setSub("vulnerabilities")}
+            className={`rounded-md px-2.5 py-1 font-medium transition-colors ${
+              sub === "vulnerabilities"
+                ? "bg-indigo-900/40 text-indigo-200 border border-indigo-700/50"
+                : "text-gray-400 hover:text-white"
+            }`}
+            title="SAST / SCA / Secrets / IaC / Container — vulns in your code"
+          >
+            Vulnerabilities
+          </button>
+          <button
+            onClick={() => setSub("posture")}
+            className={`rounded-md px-2.5 py-1 font-medium transition-colors ${
+              sub === "posture"
+                ? "bg-indigo-900/40 text-indigo-200 border border-indigo-700/50"
+                : "text-gray-400 hover:text-white"
+            }`}
+            title="GitHub posture — hygiene of your code repos (branch protection, MFA, secret scanning, etc.)"
+          >
+            Posture
+          </button>
+        </div>
+      )}
+
       {/* Groups view */}
       {tab === "groups" && <FindingGroupsView />}
 
@@ -859,10 +927,14 @@ export default function FindingsPage() {
             // Tab-scoped — Code tab shows file-based scanners, Web tab shows
             // URL-based scanners. Mixing them was confusing and made the
             // dropdown longer than necessary.
+            // Phase 29 Slice C1 — Code tab Posture sub-pivot narrows to
+            // POSTURE options (just GITHUB_POSTURE for now; Slice C1.5+
+            // will add additional posture providers under the same set).
             options={
               tab === "web"     ? WEB_SCAN_TYPE_OPTIONS
               : tab === "cloud" ? CLOUD_SCAN_TYPE_OPTIONS
               : tab === "runtime" ? RUNTIME_SCAN_TYPE_OPTIONS
+              : tab === "code" && sub === "posture" ? POSTURE_SCAN_TYPE_OPTIONS
               : CODE_SCAN_TYPE_OPTIONS
             }
             value={scanType}
