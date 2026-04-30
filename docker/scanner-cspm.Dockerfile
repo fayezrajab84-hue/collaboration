@@ -41,7 +41,7 @@
 # Pin to a specific Prowler release for reproducibility. Bump on a
 # cadence — Prowler ships ~weekly. Latest stable as of 2026-04-29 was
 # 5.25.1; tag `stable` also available.
-FROM prowlercloud/prowler:5.25.1
+FROM prowlercloud/prowler:5.25.1@sha256:2dcb7779fe44d32745b1005c0eef87017b5ce6fff4516dac2d4656ea6007f4ff
 
 USER root
 

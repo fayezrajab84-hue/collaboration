@@ -205,7 +205,7 @@ services:
   # No DB sidecar needed — Juice Shop ships with an embedded SQLite.
   # ⚠️  Never expose this service to the internet — it is intentionally insecure.
   juice-shop:
-    image: bkimminich/juice-shop:latest
+    image: bkimminich/juice-shop:latest@sha256:a8139c141311c7f31fcf2e611125246928f703ee42827de33983fd9425d1b2f6
     restart: unless-stopped
     # Juice Shop's challenge engine sometimes pegs CPU during scanner
     # enumeration; cap so it doesn't starve the api/scanner containers.
@@ -382,7 +382,7 @@ services:
   # The crawler integration tests hit http://vulnspa:80 over the internal
   # network (offline, reproducible, <50 ms per page).
   vulnspa:
-    image: nginx:1.27-alpine
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
     profiles: ["test"]
     restart: "no"
     volumes:
@@ -509,7 +509,7 @@ services:
   # or run: docker compose --profile ai up -d
   # When disabled, AI features (autofix, triage, chat, FP detection, etc.) fail open.
   ollama:
-    image: ollama/ollama:latest
+    image: ollama/ollama:latest@sha256:05ab093b257a54318fba39293f1640d53b507d1edec8fa6ca2d3e1817c02e53b
     profiles: ["ai"]
     restart: unless-stopped
     volumes:
@@ -531,7 +531,7 @@ services:
   # ── Ollama model pull (one-shot: downloads model on first start) ───────────
   # Safe to re-run — ollama pull is a no-op when model is already present.
   ollama-init:
-    image: ollama/ollama:latest
+    image: ollama/ollama:latest@sha256:05ab093b257a54318fba39293f1640d53b507d1edec8fa6ca2d3e1817c02e53b
     profiles: ["ai"]
     depends_on:
       ollama:
@@ -649,7 +649,7 @@ services:
   # record manually. The connector announces itself to Cloudflare's edge
   # over a persistent outbound HTTPS connection (no inbound ports).
   cloudflared:
-    image: cloudflare/cloudflared:latest
+    image: cloudflare/cloudflared:latest@sha256:6b599ca3e974349ead3286d178da61d291961182ec3fe9c505e1dd02c8ac31b0
     profiles:
       - tunnel
     restart: unless-stopped

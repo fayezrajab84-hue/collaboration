@@ -1,4 +1,4 @@
-FROM node:20-alpine AS base
+FROM node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS base
 # OpenSSL is required by Prisma's query engine on Alpine (musl libc)
 # curl is required by Docker healthcheck
 RUN apk add --no-cache openssl curl
@@ -41,7 +41,7 @@ CMD ["node_modules/.bin/prisma", "migrate", "deploy", "--schema=apps/api/prisma/
 #   command: node_modules/.bin/prisma db push --schema=apps/api/prisma/schema.prisma --skip-generate
 
 # ── Runtime stage ────────────────────────────────────────────────────────
-FROM node:20-alpine AS runtime
+FROM node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS runtime
 RUN apk add --no-cache curl
 RUN npm install -g pnpm@9
 
