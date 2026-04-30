@@ -13,6 +13,7 @@ import SeverityBadge from "../components/SeverityBadge";
 import ScanStatusBadge from "../components/ScanStatusBadge";
 import TargetTag from "../components/TargetTag";
 import RepoPostureDrawer from "../components/RepoPostureDrawer";
+import CodeRiskStoriesWidget from "../components/CodeRiskStoriesWidget";
 import { useState } from "react";
 import { formatRelative } from "../lib/utils";
 import type { ScanJob, Finding } from "@devsecops/types";
@@ -2148,9 +2149,19 @@ export default function DashboardPage() {
               isLoading={exploitsQuery.isLoading}
             />
           ) : tab === "code" ? (
-            <CodeCategoriesWidget
-              scanTypeCounts={stats?.scanTypeCounts}
-              severityByScanType={stats?.severityByScanType}
+            // Phase 29 Slice C1.5b — replaces the scan-type-bar
+            // CodeCategoriesWidget with a story-driven surface.
+            // OWASP Top 10 distribution + Hot files + Hot packages —
+            // each section answers a question the operator was already
+            // asking ("which categories am I weak on", "which files
+            // are hot", "which deps are noisy"). Data shapes (owaspCounts,
+            // hotFiles, hotPackages) come from the extended
+            // /findings/summary/stats payload.
+            <CodeRiskStoriesWidget
+              owaspCounts={(stats as { owaspCounts?: Record<string, number> })?.owaspCounts}
+              owaspUnmapped={(stats as { owaspUnmapped?: number })?.owaspUnmapped}
+              hotFiles={(stats as { hotFiles?: { filePath: string; scanType: string; count: number }[] })?.hotFiles}
+              hotPackages={(stats as { hotPackages?: { packageName: string; count: number }[] })?.hotPackages}
             />
           ) : tab === "cloud" ? (
             // Phase 29 — CSPM-specific widget with Top Services +

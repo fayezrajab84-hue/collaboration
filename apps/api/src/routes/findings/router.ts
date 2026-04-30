@@ -482,7 +482,11 @@ router.get("/summary/stats", async (req, res, next) => {
       OR:       OWASP_A03_CWE_PATTERNS.map((cwe) => ({ cweId: { startsWith: cwe } })),
     };
 
-    const [severityCounts, scanTypeCounts, statusCounts, confidenceCounts, severityByScanType, fixAvailableScaCount, owaspA03Count] = await Promise.all([
+    const [
+      severityCounts, scanTypeCounts, statusCounts, confidenceCounts, severityByScanType,
+      fixAvailableScaCount, owaspA03Count,
+      hotFilesRaw, hotPackagesRaw, cweClassifyRows,
+    ] = await Promise.all([
       prisma.finding.groupBy({
         by: ["severity"],
         where: { ...scopedWhere, status: { notIn: ["FALSE_POSITIVE", "IGNORED"] } },
@@ -530,7 +534,74 @@ router.get("/summary/stats", async (req, res, next) => {
       // Phase 29 Slice C1.5b — OWASP A03 Injection card. See header above
       // for CWE family rationale.
       prisma.finding.count({ where: owaspA03Where }),
+      // Phase 29 Slice C1.5b — Hot files for the Code Risk Stories
+      // widget. Top file paths by finding count, scoped to the file-
+      // based scan types (SAST / SECRET / IAC) where filePath has
+      // operator meaning. Container CVEs and SCA findings are
+      // intentionally excluded — they live on packages, not files.
+      prisma.finding.groupBy({
+        by:    ["filePath", "scanType"],
+        where: {
+          ...scopedWhere,
+          status:   { notIn: ["FALSE_POSITIVE", "IGNORED"] },
+          scanType: { in: ["SAST", "SECRET", "IAC"] },
+          filePath: { not: null },
+        },
+        _count:  true,
+        orderBy: { _count: { filePath: "desc" } },
+        take:    8,
+      }),
+      // Phase 29 Slice C1.5b — Hot packages for the Code Risk Stories
+      // widget. Packages with the most distinct CVEs across SCA +
+      // CONTAINER scan types — the supply-chain lens.
+      prisma.finding.groupBy({
+        by:    ["packageName"],
+        where: {
+          ...scopedWhere,
+          status:      { notIn: ["FALSE_POSITIVE", "IGNORED"] },
+          scanType:    { in: ["SCA", "CONTAINER"] },
+          packageName: { not: null },
+        },
+        _count:  true,
+        orderBy: { _count: { packageName: "desc" } },
+        take:    8,
+      }),
+      // Phase 29 Slice C1.5b — OWASP-family bucket counts for the chart.
+      // Pulls cweId + scanType for every non-suppressed finding under
+      // scope, then JS-classifies via `services/owasp/cweToOwasp.ts`.
+      // Two-stage so the SQL stays cheap (just a thin select); the
+      // classification runs over the in-memory result set.
+      prisma.finding.findMany({
+        where: { ...scopedWhere, status: { notIn: ["FALSE_POSITIVE", "IGNORED"] } },
+        select: { cweId: true, scanType: true },
+      }),
     ]);
+
+    // Phase 29 Slice C1.5b — bucket findings by OWASP family. Done in JS
+    // to avoid pushing the ~120-CWE map into a SQL CASE expression that
+    // would need updates synced across two languages.
+    const { classifyCwe, OWASP_FAMILIES } = await import("../../services/owasp/cweToOwasp.js");
+    const owaspCounts: Record<string, number> = {};
+    for (const family of Object.keys(OWASP_FAMILIES)) owaspCounts[family] = 0;
+    let owaspUnmapped = 0;
+    for (const row of cweClassifyRows) {
+      const family = classifyCwe(row.cweId, row.scanType);
+      if (family) owaspCounts[family]++;
+      else        owaspUnmapped++;
+    }
+
+    // Phase 29 Slice C1.5b — shape hot files / hot packages for the
+    // widget. Strip Prisma's `_count` wrapper and rename to the
+    // operator-facing keys the widget expects.
+    const hotFiles = hotFilesRaw.map((r) => ({
+      filePath: r.filePath ?? "",
+      scanType: r.scanType,
+      count:    typeof r._count === "number" ? r._count : (r._count as { _all?: number })._all ?? 0,
+    }));
+    const hotPackages = hotPackagesRaw.map((r) => ({
+      packageName: r.packageName ?? "",
+      count:       typeof r._count === "number" ? r._count : (r._count as { _all?: number })._all ?? 0,
+    }));
 
     // Per-tag counts — drives dashboard cards. Uses the same predicate
     // evaluator as /findings?tag=, so card-count ≡ destination-count
@@ -553,6 +624,11 @@ router.get("/summary/stats", async (req, res, next) => {
       // Phase 29 Slice C1.5b — code-tier story-card aggregations.
       fixAvailableScaCount,
       owaspA03Count,
+      // Phase 29 Slice C1.5b — Code Risk Stories widget data.
+      owaspCounts,        // Record<"A01"…"A10", number>
+      owaspUnmapped,      // findings whose CWE didn't classify (transparency)
+      hotFiles,           // [{ filePath, scanType, count }]
+      hotPackages,        // [{ packageName, count }]
     });
   } catch (err) { next(err); }
 });
