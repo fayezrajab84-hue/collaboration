@@ -608,9 +608,17 @@ function GitHubPostureWidget({
     const gh = (ev["github"] ?? {}) as Record<string, unknown>;
     const repoMeta = (gh["repository"] ?? null) as Record<string, unknown> | null;
 
-    const key = repoId ?? "__org__";
+    // Phase 29 Slice C1.5a — bucket-key resolution mirrors postureMetrics:
+    // FK > evidence.github.repository.fullName > "__org__" sentinel.
+    // Posture scans don't auto-create Repository rows so the FK is
+    // usually null for these findings — without falling back to fullName,
+    // every finding fell into __org__ and the Top Affected Repos chart
+    // showed "(organization-level)" for everything.
+    const evidenceFullName = (repoMeta?.["fullName"] as string | undefined) ?? null;
+    const key = repoId
+      ?? (evidenceFullName ? `gh:${evidenceFullName}` : "__org__");
     const label = repoFullName
-      ?? (repoMeta?.["fullName"] as string | undefined)
+      ?? evidenceFullName
       ?? (key === "__org__" ? "(organization-level)" : "(unknown repo)");
 
     const cur = repoCounts.get(key) ?? {
@@ -1346,38 +1354,52 @@ export default function DashboardPage() {
     const sevRank: Record<string, number> = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1, INFO: 0 };
 
     for (const f of filteredExploits) {
-      const repoId = (f as Record<string, unknown>)["repositoryId"] as string | undefined;
+      const repoIdFk = (f as Record<string, unknown>)["repositoryId"] as string | undefined;
       const ev = (f.evidence ?? {}) as Record<string, unknown>;
       const gh = (ev["github"] ?? {}) as Record<string, unknown>;
-      const repo = (gh["repository"] ?? null) as { private?: boolean } | null;
+      const repo = (gh["repository"] ?? null) as { private?: boolean; fullName?: string } | null;
       const rule = f.ruleId ?? "";
 
-      if (!repoId) {
+      // Phase 29 Slice C1.5a — bucket key resolution:
+      //   1. Repository.id FK if the operator registered the repo as a
+      //      first-class asset (rare for posture-only orgs)
+      //   2. evidence.github.repository.fullName as a stable synthetic
+      //      key — Prowler gives us this per finding, so repo-level
+      //      checks always have it
+      //   3. "__org__" only when neither is present — that's a real
+      //      org-level finding (the 5 organization_* Prowler checks)
+      //
+      // Without #2, every finding fell into __org__ since we don't
+      // currently auto-create Repository rows from posture scans.
+      const repoBucketKey = repoIdFk
+        ?? (typeof repo?.fullName === "string" ? `gh:${repo.fullName}` : undefined);
+
+      if (!repoBucketKey) {
         orgLevelIssues++;
         if (rule === "organization_members_mfa_required") orgLevelMfaFailing = true;
         continue;
       }
-      reposWithIssues.add(repoId);
+      reposWithIssues.add(repoBucketKey);
 
       // Per-rule repo-set for the story cards.
       if (rule) {
         if (!reposByRule.has(rule)) reposByRule.set(rule, new Set());
-        reposByRule.get(rule)!.add(repoId);
+        reposByRule.get(rule)!.add(repoBucketKey);
       }
 
       // Per-repo aggregate so we can compute "exposed public repos"
       // (public + MULTIPLE failing rules) — that's the strongest
       // correlation story.
       const isPublic = repo?.private === false ? true : repo?.private === true ? false : null;
-      const cur = reposWithIssuesById.get(repoId)
+      const cur = reposWithIssuesById.get(repoBucketKey)
         ?? { isPublic, failingRules: new Set<string>(), topSev: f.severity };
       if (rule) cur.failingRules.add(rule);
       if ((sevRank[f.severity] ?? 0) > (sevRank[cur.topSev] ?? 0)) cur.topSev = f.severity;
       if (cur.isPublic === null && isPublic !== null) cur.isPublic = isPublic;
-      reposWithIssuesById.set(repoId, cur);
+      reposWithIssuesById.set(repoBucketKey, cur);
 
       if (isPublic === true && (f.severity === "CRITICAL" || f.severity === "HIGH")) {
-        publicReposAtRisk.add(repoId);
+        publicReposAtRisk.add(repoBucketKey);
       }
     }
 
