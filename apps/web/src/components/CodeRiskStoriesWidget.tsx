@@ -25,7 +25,7 @@
  * side so this component stays presentational.
  */
 import { useNavigate } from "react-router-dom";
-import { Target, FileCode, Package, ArrowRight } from "lucide-react";
+import { Target, FileCode, Package, ArrowRight, Zap, Clock, Sparkles, Network } from "lucide-react";
 
 // Match the shapes produced by the backend
 interface OwaspFamilyMeta {
@@ -45,11 +45,26 @@ interface HotPackageRow {
   count:       number;
 }
 
+// Phase 29 Slice C1.5b — Section D: Risk Stories correlations.
+interface MultiRepoPackage {
+  packageName: string;
+  repoCount:   number;
+  cveCount:    number;
+}
+
+interface RiskStories {
+  reachableCritical: number;
+  agedCritical:      number;
+  newThisWeek:       number;
+  multiRepoPackages: MultiRepoPackage[];
+}
+
 interface Props {
   owaspCounts:   Record<string, number> | undefined;
   owaspUnmapped: number | undefined;
   hotFiles:      HotFileRow[] | undefined;
   hotPackages:   HotPackageRow[] | undefined;
+  riskStories:   RiskStories | undefined;
 }
 
 // Display order for OWASP families. Sorted by typical operator
@@ -82,6 +97,7 @@ export default function CodeRiskStoriesWidget({
   owaspUnmapped,
   hotFiles,
   hotPackages,
+  riskStories,
 }: Props) {
   const navigate = useNavigate();
 
@@ -222,6 +238,128 @@ export default function CodeRiskStoriesWidget({
           </div>
         </div>
       </div>
+
+      {/* Section D — Risk Stories correlations.
+          Phase 29 Slice C1.5b. Each row is a CORRELATION across multiple
+          finding attributes — not just a filter on one. The four stories
+          map to four operator triage axes:
+
+            Reachable & Exploitable — noise reduction (Endor moat)
+            Cross-Repo Package Risk — supply-chain blast radius
+            Aged Critical          — neglect signal
+            New This Week          — incoming-risk velocity
+
+          Each row navigates to /findings with the matching filter set
+          so the operator drops into the underlying rows. The numbers
+          are derived server-side (riskStories) so card-counts and
+          destination-counts agree by construction. */}
+      {(riskStories) && (
+        <div className="mt-5 border-t border-gray-800 pt-4">
+          <div className="mb-2 flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-gray-500">
+            <Sparkles className="h-3 w-3 text-indigo-400" />
+            Risk Stories
+          </div>
+          <div className="space-y-1.5">
+            {/* Story 1 — Reachable & Exploitable */}
+            <button
+              onClick={() => navigate(`/findings?tab=code&scanType=SCA&reachability=REACHABLE&severity=CRITICAL,HIGH`)}
+              className="flex w-full items-center justify-between gap-3 rounded border border-gray-800 bg-gray-900/40 px-3 py-2 text-left transition-colors hover:border-gray-700 hover:bg-gray-900/60"
+              title="SCA findings where the reachability classifier confirmed the vulnerable function is imported AND severity is HIGH+"
+            >
+              <span className="flex min-w-0 items-center gap-2.5">
+                <Zap className={`h-4 w-4 shrink-0 ${riskStories.reachableCritical > 0 ? "text-rose-400" : "text-gray-600"}`} />
+                <span className="min-w-0">
+                  <span className="block truncate text-xs font-medium text-gray-200">Reachable &amp; Exploitable</span>
+                  <span className="block truncate text-[10px] text-gray-500">
+                    SCA findings the classifier confirmed the app actually imports
+                  </span>
+                </span>
+              </span>
+              <span className="tabular-nums rounded bg-gray-800 px-1.5 py-1 text-[11px] font-semibold text-gray-100">
+                {riskStories.reachableCritical}
+              </span>
+            </button>
+
+            {/* Story 2 — Cross-Repo Package Risk */}
+            <button
+              onClick={() => {
+                // No native filter for "package affecting ≥2 repos" yet —
+                // navigate to the top-affected package's finding list as
+                // a useful proxy. Search will surface its CVEs.
+                const topPkg = riskStories.multiRepoPackages[0]?.packageName;
+                if (topPkg) {
+                  navigate(`/findings?tab=code&scanType=SCA,CONTAINER&search=${encodeURIComponent(topPkg)}`);
+                } else {
+                  navigate(`/findings?tab=code&scanType=SCA,CONTAINER`);
+                }
+              }}
+              className="flex w-full items-center justify-between gap-3 rounded border border-gray-800 bg-gray-900/40 px-3 py-2 text-left transition-colors hover:border-gray-700 hover:bg-gray-900/60"
+              title="Packages whose CVEs affect 2+ repositories — fix one, fix many"
+            >
+              <span className="flex min-w-0 items-center gap-2.5">
+                <Network className={`h-4 w-4 shrink-0 ${riskStories.multiRepoPackages.length > 0 ? "text-amber-400" : "text-gray-600"}`} />
+                <span className="min-w-0">
+                  <span className="block truncate text-xs font-medium text-gray-200">Cross-Repo Package Risk</span>
+                  <span className="block truncate text-[10px] text-gray-500">
+                    {riskStories.multiRepoPackages.length > 0 ? (
+                      <>
+                        <span className="font-mono text-gray-400">{riskStories.multiRepoPackages[0]!.packageName}</span>
+                        <> spans {riskStories.multiRepoPackages[0]!.repoCount} repos · </>
+                        <>{riskStories.multiRepoPackages.reduce((a, b) => a + b.cveCount, 0)} CVEs across all</>
+                      </>
+                    ) : (
+                      <>No packages affect multiple repos</>
+                    )}
+                  </span>
+                </span>
+              </span>
+              <span className="tabular-nums rounded bg-gray-800 px-1.5 py-1 text-[11px] font-semibold text-gray-100">
+                {riskStories.multiRepoPackages.length}
+              </span>
+            </button>
+
+            {/* Story 3 — Aged Critical */}
+            <button
+              onClick={() => navigate(`/findings?tab=code&severity=CRITICAL&status=OPEN`)}
+              className="flex w-full items-center justify-between gap-3 rounded border border-gray-800 bg-gray-900/40 px-3 py-2 text-left transition-colors hover:border-gray-700 hover:bg-gray-900/60"
+              title="CRITICAL findings still OPEN, first seen >90 days ago — chronic exposure"
+            >
+              <span className="flex min-w-0 items-center gap-2.5">
+                <Clock className={`h-4 w-4 shrink-0 ${riskStories.agedCritical > 0 ? "text-orange-400" : "text-gray-600"}`} />
+                <span className="min-w-0">
+                  <span className="block truncate text-xs font-medium text-gray-200">Aged Critical Findings</span>
+                  <span className="block truncate text-[10px] text-gray-500">
+                    CRITICAL severity, open longer than 90 days
+                  </span>
+                </span>
+              </span>
+              <span className="tabular-nums rounded bg-gray-800 px-1.5 py-1 text-[11px] font-semibold text-gray-100">
+                {riskStories.agedCritical}
+              </span>
+            </button>
+
+            {/* Story 4 — New This Week */}
+            <button
+              onClick={() => navigate(`/findings?tab=code&severity=CRITICAL,HIGH`)}
+              className="flex w-full items-center justify-between gap-3 rounded border border-gray-800 bg-gray-900/40 px-3 py-2 text-left transition-colors hover:border-gray-700 hover:bg-gray-900/60"
+              title="CRITICAL or HIGH findings first seen in the last 7 days — incoming risk"
+            >
+              <span className="flex min-w-0 items-center gap-2.5">
+                <Sparkles className={`h-4 w-4 shrink-0 ${riskStories.newThisWeek > 0 ? "text-indigo-300" : "text-gray-600"}`} />
+                <span className="min-w-0">
+                  <span className="block truncate text-xs font-medium text-gray-200">New This Week</span>
+                  <span className="block truncate text-[10px] text-gray-500">
+                    CRITICAL/HIGH first seen in the last 7 days — trend signal
+                  </span>
+                </span>
+              </span>
+              <span className="tabular-nums rounded bg-gray-800 px-1.5 py-1 text-[11px] font-semibold text-gray-100">
+                {riskStories.newThisWeek}
+              </span>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Footer link to full findings */}
       <div className="mt-4 flex justify-end">

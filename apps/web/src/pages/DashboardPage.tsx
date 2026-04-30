@@ -2162,6 +2162,14 @@ export default function DashboardPage() {
               owaspUnmapped={(stats as { owaspUnmapped?: number })?.owaspUnmapped}
               hotFiles={(stats as { hotFiles?: { filePath: string; scanType: string; count: number }[] })?.hotFiles}
               hotPackages={(stats as { hotPackages?: { packageName: string; count: number }[] })?.hotPackages}
+              riskStories={(stats as {
+                riskStories?: {
+                  reachableCritical: number;
+                  agedCritical:      number;
+                  newThisWeek:       number;
+                  multiRepoPackages: { packageName: string; repoCount: number; cveCount: number }[];
+                };
+              })?.riskStories}
             />
           ) : tab === "cloud" ? (
             // Phase 29 — CSPM-specific widget with Top Services +

@@ -482,10 +482,17 @@ router.get("/summary/stats", async (req, res, next) => {
       OR:       OWASP_A03_CWE_PATTERNS.map((cwe) => ({ cweId: { startsWith: cwe } })),
     };
 
+    // Phase 29 Slice C1.5b — risk-story timestamp boundaries.
+    // Aged-critical: "open longer than 90 days" — neglect signal.
+    // New-this-week: "first seen in the last 7 days" — incoming-risk signal.
+    const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+    const sevenDaysAgo  = new Date(Date.now() -  7 * 24 * 60 * 60 * 1000);
+
     const [
       severityCounts, scanTypeCounts, statusCounts, confidenceCounts, severityByScanType,
       fixAvailableScaCount, owaspA03Count,
       hotFilesRaw, hotPackagesRaw, cweClassifyRows,
+      reachableCriticalCount, agedCriticalCount, newThisWeekCount,
     ] = await Promise.all([
       prisma.finding.groupBy({
         by: ["severity"],
@@ -575,7 +582,79 @@ router.get("/summary/stats", async (req, res, next) => {
         where: { ...scopedWhere, status: { notIn: ["FALSE_POSITIVE", "IGNORED"] } },
         select: { cweId: true, scanType: true },
       }),
+      // Phase 29 Slice C1.5b — Risk Story 1: "Reachable & Exploitable".
+      // SCA findings where the reachability classifier confirmed the
+      // vulnerable function is actually imported AND the severity is
+      // HIGH+. This is the Endor-style noise-reduction story —
+      // distinguishing "patch first" from "patch eventually".
+      prisma.finding.count({
+        where: {
+          ...scopedWhere,
+          status:       { notIn: ["FALSE_POSITIVE", "IGNORED"] },
+          scanType:     "SCA",
+          reachability: "REACHABLE",
+          severity:     { in: ["CRITICAL", "HIGH"] },
+        },
+      }),
+      // Phase 29 Slice C1.5b — Risk Story 2: "Aged Critical Findings".
+      // CRITICAL severity, still OPEN, first seen > 90 days ago. The
+      // neglect signal — these are findings that someone has already
+      // been told about and hasn't fixed. Distinguishes acute (just-
+      // detected) urgency from chronic (lingering) risk.
+      prisma.finding.count({
+        where: {
+          ...scopedWhere,
+          status:    "OPEN",
+          severity:  "CRITICAL",
+          firstSeen: { lt: ninetyDaysAgo },
+        },
+      }),
+      // Phase 29 Slice C1.5b — Risk Story 3: "New This Week".
+      // Findings whose firstSeen is within the last 7 days — incoming
+      // risk arriving from new commits / new dependency releases.
+      // Trends the curve, not just the level.
+      prisma.finding.count({
+        where: {
+          ...scopedWhere,
+          status:    { notIn: ["FALSE_POSITIVE", "IGNORED"] },
+          severity:  { in: ["CRITICAL", "HIGH"] },
+          firstSeen: { gte: sevenDaysAgo },
+        },
+      }),
     ]);
+
+    // Phase 29 Slice C1.5b — Risk Story 4: "Cross-Repo Supply-Chain Risk".
+    // Packages with CVEs affecting ≥ 2 distinct repositories. Operator
+    // story: "fix this ONE package and N repos all benefit at once."
+    // Uses a parameterised raw query because Prisma's groupBy doesn't
+    // support `count(distinct)` directly. The cveCount metric per row
+    // also drives the widget's "X CVEs across Y repos" subtitle.
+    const multiRepoPackages = await prisma.$queryRaw<Array<{
+      packageName: string;
+      repoCount:   bigint;
+      cveCount:    bigint;
+    }>>`
+      SELECT "packageName",
+             count(distinct "repositoryId") AS "repoCount",
+             count(*)                       AS "cveCount"
+        FROM "Finding"
+       WHERE "orgId" = ${member.orgId}
+         AND "scanType" IN ('SCA', 'CONTAINER')
+         AND "packageName" IS NOT NULL
+         AND "repositoryId" IS NOT NULL
+         AND status NOT IN ('FALSE_POSITIVE', 'IGNORED')
+      GROUP BY "packageName"
+      HAVING count(distinct "repositoryId") >= 2
+      ORDER BY "repoCount" DESC, "cveCount" DESC
+      LIMIT 5
+    `;
+    // Convert bigints to numbers for JSON serialisation (BigInt is not
+    // JSON-safe by default — Prisma returns count() as BigInt).
+    const multiRepoPackagesShaped = multiRepoPackages.map((p) => ({
+      packageName: p.packageName,
+      repoCount:   Number(p.repoCount),
+      cveCount:    Number(p.cveCount),
+    }));
 
     // Phase 29 Slice C1.5b — bucket findings by OWASP family. Done in JS
     // to avoid pushing the ~120-CWE map into a SQL CASE expression that
@@ -629,6 +708,13 @@ router.get("/summary/stats", async (req, res, next) => {
       owaspUnmapped,      // findings whose CWE didn't classify (transparency)
       hotFiles,           // [{ filePath, scanType, count }]
       hotPackages,        // [{ packageName, count }]
+      // Phase 29 Slice C1.5b — Risk Stories correlations.
+      riskStories: {
+        reachableCritical:   reachableCriticalCount,
+        agedCritical:        agedCriticalCount,
+        newThisWeek:         newThisWeekCount,
+        multiRepoPackages:   multiRepoPackagesShaped,
+      },
     });
   } catch (err) { next(err); }
 });
