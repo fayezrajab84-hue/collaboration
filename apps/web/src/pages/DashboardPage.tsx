@@ -1191,7 +1191,10 @@ export default function DashboardPage() {
   // Tab-scoped recent findings — filtered server-side via scanType. Cache key
   // includes the tab + target so switching doesn't show stale rows.
   const { data: recentFindings } = useQuery({
-    queryKey: ["findings", "recent", tab, targetRaw],
+    // Phase 29 Slice C1.5a — keyed on `sub` so the Code-tab Vulnerabilities
+    // ↔ Posture sub-pivot triggers a refetch (without it, switching pivots
+    // showed stale rows from the previous sub).
+    queryKey: ["findings", "recent", tab, sub, targetRaw],
     queryFn: () => findingsApi.list({
       limit: 5, page: 1,
       scanType: tabScanCsv as never,
@@ -1278,22 +1281,35 @@ export default function DashboardPage() {
   const filteredExploitsCount = filteredExploits.length;
 
   // Per-tab slice for the noisy-rules widget.
+  //
+  // Phase 29 Slice C1.5a — sub-pivot scoping. Posture findings (GITHUB_POSTURE)
+  // are DETERMINISTIC Prowler checks, not probabilistic detections. They
+  // shouldn't appear in "Suppression Candidates" at all — there's nothing
+  // to suppress, the failing setting either is or isn't. So:
+  //   sub=posture       → empty (hide the widget below via the empty array)
+  //   sub=vulnerabilities → exclude POSTURE in addition to web/runtime/cloud
+  //                         so GitHub posture rules don't leak into the
+  //                         Code-tier suppression list.
   const noisyRules   = (noisyRulesAll ?? []).filter((r) =>
     tab === "web"     ? WEB_TYPES_SET.has(r.scanType)
     : tab === "runtime" ? RUNTIME_TYPES_SET.has(r.scanType)
     : tab === "cloud"   ? CLOUD_TYPES_SET.has(r.scanType)
-    // Code tab — exclude web, runtime, AND cloud so CSPM rules don't
-    // bleed into the code-tier rule list.
-    :                    !WEB_TYPES_SET.has(r.scanType) && !RUNTIME_TYPES_SET.has(r.scanType) && !CLOUD_TYPES_SET.has(r.scanType),
+    : tab === "code" && sub === "posture" ? false  // suppression doesn't apply to deterministic checks
+    // Code-Vulnerabilities — exclude web/runtime/cloud/posture so only
+    // SAST/SCA/Secret/IAC/Container rules surface as noise candidates.
+    :                    !WEB_TYPES_SET.has(r.scanType) && !RUNTIME_TYPES_SET.has(r.scanType) && !CLOUD_TYPES_SET.has(r.scanType) && !POSTURE_TYPES_SET.has(r.scanType),
   ).slice(0, 5);
   const tabScans = (scans?.data ?? []).filter((s) =>
     tab === "web"     ? s.targetType === "DOMAIN"
     : tab === "runtime" ? (s.scanTypes ?? []).includes("RUNTIME")
     : tab === "cloud"   ? s.targetType === "CLOUD_ACCOUNT"
-    // Code tab — exclude DOMAIN + CLOUD_ACCOUNT scans (those belong
-    // to Web + Cloud tabs respectively). Without the CLOUD_ACCOUNT
-    // exclusion, CSPM scans showed up under "Recent Code Findings".
-    :                    s.targetType !== "DOMAIN" && s.targetType !== "CLOUD_ACCOUNT",
+    // Phase 29 Slice C1.5a — Code+Posture only shows GITHUB_ACCOUNT scans.
+    : tab === "code" && sub === "posture" ? s.targetType === "GITHUB_ACCOUNT"
+    // Code-Vulnerabilities — exclude DOMAIN + CLOUD_ACCOUNT + GITHUB_ACCOUNT
+    // scans (those belong to Web / Cloud / Code-Posture respectively).
+    // Without the GITHUB_ACCOUNT exclusion, GitHub posture scans showed
+    // up under Recent Code Findings (operator-reported bug).
+    :                    s.targetType !== "DOMAIN" && s.targetType !== "CLOUD_ACCOUNT" && s.targetType !== "GITHUB_ACCOUNT",
   ).slice(0, 6);
 
   const severityData = (stats?.severityCounts ?? []).map((s) => ({
@@ -2026,6 +2042,7 @@ export default function DashboardPage() {
                 tab === "web"     ? "Web "
                 : tab === "runtime" ? "Runtime "
                 : tab === "cloud"   ? "Cloud "
+                : tab === "code" && sub === "posture" ? "Posture "
                 :                    ""
               }Scans
             </h2>
@@ -2080,7 +2097,14 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Top Noisy Rules — candidates for suppression/tuning */}
+      {/* Top Noisy Rules — candidates for suppression/tuning.
+          Phase 29 Slice C1.5a — hidden entirely on Code-Posture sub-pivot.
+          Suppression is for probabilistic detections that produce false
+          positives (a noisy SAST rule, a ZAP false alarm). GitHub posture
+          checks are deterministic — every FAIL is a real misconfig the
+          operator should fix, not suppress. Showing this widget on the
+          Posture sub-pivot would invite the wrong action. */}
+      {!(tab === "code" && sub === "posture") && (
       <div className="rounded-lg border border-gray-800 bg-gray-900 p-5">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="flex items-center gap-1.5 text-sm font-semibold text-white">
@@ -2130,6 +2154,7 @@ export default function DashboardPage() {
           </div>
         )}
       </div>
+      )}
 
       {/* Recent findings — tab-scoped via the API call's scanType filter */}
       <div className="rounded-lg border border-gray-800 bg-gray-900 p-5">
@@ -2139,6 +2164,7 @@ export default function DashboardPage() {
               tab === "web"     ? "Web "
               : tab === "runtime" ? "Runtime "
               : tab === "cloud"   ? "Cloud "
+              : tab === "code" && sub === "posture" ? "Posture "
               :                    "Code "
             }Findings
           </h2>
