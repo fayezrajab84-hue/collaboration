@@ -1309,32 +1309,83 @@ export default function DashboardPage() {
   // Phase 29 Slice C1.5a — posture-specific metrics for the stats cards
   // when sub=posture. Computed from filteredExploits (already scoped to
   // GITHUB_POSTURE) so card-counts and widget-counts agree by construction.
+  //
+  // The headline cards are STORY-DRIVEN — concrete patterns operators
+  // recognise + can act on, not abstract criticality counts. Each card
+  // maps to ONE specific Prowler ruleId so a click filters findings to
+  // the matching subset.
   const postureMetrics = (() => {
     if (!(tab === "code" && sub === "posture")) return null;
+    // Reverse-index: ruleId → set of repositoryIds failing that rule.
+    // Uses Set so re-counted rows (rare but possible across re-scans)
+    // don't double-count.
+    const reposByRule = new Map<string, Set<string>>();
     const reposWithIssues = new Set<string>();
     const publicReposAtRisk = new Set<string>();
+    const publicReposExposed = new Set<string>(); // public + multiple HIGH+ failing
+    const reposWithIssuesById = new Map<string, { isPublic: boolean | null; failingRules: Set<string>; topSev: string }>();
+    let orgLevelMfaFailing = false;
     let orgLevelIssues = 0;
+
+    const sevRank: Record<string, number> = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1, INFO: 0 };
+
     for (const f of filteredExploits) {
       const repoId = (f as Record<string, unknown>)["repositoryId"] as string | undefined;
       const ev = (f.evidence ?? {}) as Record<string, unknown>;
       const gh = (ev["github"] ?? {}) as Record<string, unknown>;
       const repo = (gh["repository"] ?? null) as { private?: boolean } | null;
+      const rule = f.ruleId ?? "";
+
       if (!repoId) {
         orgLevelIssues++;
+        if (rule === "organization_members_mfa_required") orgLevelMfaFailing = true;
         continue;
       }
       reposWithIssues.add(repoId);
-      // "Public" only counts when we know it's public — null/undefined
-      // (older findings without enriched evidence) are excluded so the
-      // count is a strict lower bound, never inflated.
-      if (repo && repo.private === false && (f.severity === "CRITICAL" || f.severity === "HIGH")) {
+
+      // Per-rule repo-set for the story cards.
+      if (rule) {
+        if (!reposByRule.has(rule)) reposByRule.set(rule, new Set());
+        reposByRule.get(rule)!.add(repoId);
+      }
+
+      // Per-repo aggregate so we can compute "exposed public repos"
+      // (public + MULTIPLE failing rules) — that's the strongest
+      // correlation story.
+      const isPublic = repo?.private === false ? true : repo?.private === true ? false : null;
+      const cur = reposWithIssuesById.get(repoId)
+        ?? { isPublic, failingRules: new Set<string>(), topSev: f.severity };
+      if (rule) cur.failingRules.add(rule);
+      if ((sevRank[f.severity] ?? 0) > (sevRank[cur.topSev] ?? 0)) cur.topSev = f.severity;
+      if (cur.isPublic === null && isPublic !== null) cur.isPublic = isPublic;
+      reposWithIssuesById.set(repoId, cur);
+
+      if (isPublic === true && (f.severity === "CRITICAL" || f.severity === "HIGH")) {
         publicReposAtRisk.add(repoId);
       }
     }
+
+    // Correlation: public repos with ≥2 distinct HIGH+ failing rules.
+    // "Naked and public" — single biggest blast-radius pattern.
+    for (const [id, agg] of reposWithIssuesById.entries()) {
+      if (agg.isPublic === true && agg.failingRules.size >= 2 && (agg.topSev === "CRITICAL" || agg.topSev === "HIGH")) {
+        publicReposExposed.add(id);
+      }
+    }
+
     return {
       reposAtRisk:        reposWithIssues.size,
       publicReposAtRisk:  publicReposAtRisk.size,
+      publicReposExposed: publicReposExposed.size,
       orgLevelIssues,
+      orgLevelMfaFailing,
+      // ruleId → repo-count helpers used by the story cards.
+      reposWithoutBranchProtection: reposByRule.get("repository_default_branch_protection_enabled")?.size ?? 0,
+      reposAllowingForcePush:       reposByRule.get("repository_default_branch_disallows_force_push")?.size ?? 0,
+      reposWithoutSecretScanning:   reposByRule.get("repository_secret_scanning_enabled")?.size ?? 0,
+      reposWithoutDependabot:       reposByRule.get("repository_dependency_scanning_enabled")?.size ?? 0,
+      reposWithoutCodeowners:       reposByRule.get("repository_default_branch_requires_codeowners_review")?.size ?? 0,
+      reposWithoutSignedCommits:    reposByRule.get("repository_default_branch_requires_signed_commits")?.size ?? 0,
     };
   })();
 
@@ -1476,7 +1527,127 @@ export default function DashboardPage() {
           triage by total alert volume — they triage by what's actually
           exploited. */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        {(() => {
+        {tab === "code" && sub === "posture" && postureMetrics ? (() => {
+          // Phase 29 Slice C1.5a — Story-driven posture cards.
+          //
+          // Operators don't triage by abstract counts ("you have 165
+          // posture issues, 97 of them HIGH"). They triage by recognisable
+          // patterns ("3 of your repos don't have branch protection on
+          // main"). Each card maps to ONE concrete failing-check story
+          // that the operator can act on directly:
+          //
+          //   1. Branch Protection — most-known control; "X repos have
+          //                          no protection on main" reads like
+          //                          a TODO list
+          //   2. Force Push        — severe (history rewrite); separate
+          //                          from #1 because it's a distinct
+          //                          attack vector
+          //   3. Public + Exposed  — correlation story (public AND ≥2
+          //                          HIGH+ failing rules). Maximum blast
+          //                          radius — what to triage FIRST.
+          //   4. MFA Enforcement   — org-level binary. The single most
+          //                          important toggle for credential-
+          //                          theft prevention (Solorigate path).
+          //                          Falls back to "Dependabot" or
+          //                          "Secret scanning" when MFA isn't
+          //                          on the failing list.
+          //
+          // Click target on each card filters /findings to the matching
+          // ruleId — so "click → see exactly which 3 repos" is one hop.
+          const m = postureMetrics;
+
+          // Pick the 4th card based on what's actually broken. Priority:
+          // MFA (org-level, CRITICAL severity) > Dependabot (supply-chain,
+          // HIGH) > Secret Scanning (preventable cred leaks, HIGH).
+          const fourthCard = m.orgLevelMfaFailing ? (
+            <StatsCard
+              label="MFA Enforcement"
+              value="✗ Off"
+              valueClassName="text-red-400"
+              icon={<AlertTriangle className="h-5 w-5 text-red-500/70" />}
+              onClick={() => navigate(`/findings?tab=code&sub=posture&search=organization_members_mfa_required`)}
+              hint="Members can sign in without 2FA — direct credential-theft path"
+            />
+          ) : m.reposWithoutDependabot > 0 ? (
+            <StatsCard
+              label="No Dependabot"
+              value={m.reposWithoutDependabot}
+              valueClassName="text-amber-300"
+              icon={<Package className="h-5 w-5 text-amber-400/80" />}
+              onClick={() => navigate(`/findings?tab=code&sub=posture&search=repository_dependency_scanning_enabled`)}
+              hint={`${m.reposWithoutDependabot} repo${m.reposWithoutDependabot === 1 ? "" : "s"} blind to known-CVE dependencies`}
+            />
+          ) : (
+            <StatsCard
+              label="No Secret Scanning"
+              value={m.reposWithoutSecretScanning}
+              valueClassName="text-amber-300"
+              icon={<ShieldAlert className="h-5 w-5 text-amber-400/80" />}
+              onClick={() => navigate(`/findings?tab=code&sub=posture&search=repository_secret_scanning_enabled`)}
+              hint={`${m.reposWithoutSecretScanning} repo${m.reposWithoutSecretScanning === 1 ? "" : "s"} can leak credentials at push`}
+            />
+          );
+
+          // Third card: prioritise the correlation story when present
+          // ("X public repos with ≥2 HIGH+ failures"); fall back to
+          // simple "Public Repos at Risk" when no correlation found.
+          const thirdCard = m.publicReposExposed > 0 ? (
+            <StatsCard
+              label="Public + Exposed"
+              value={m.publicReposExposed}
+              valueClassName="text-rose-300"
+              icon={<Github className="h-5 w-5 text-rose-400/80" />}
+              onClick={() => navigate(`/findings?tab=code&sub=posture&severity=CRITICAL,HIGH`)}
+              hint={`Public repos with ≥2 HIGH+ failures — max blast radius`}
+            />
+          ) : m.publicReposAtRisk > 0 ? (
+            <StatsCard
+              label="Public Repos at Risk"
+              value={m.publicReposAtRisk}
+              valueClassName="text-amber-300"
+              icon={<Github className="h-5 w-5 text-amber-400/80" />}
+              onClick={() => navigate(`/findings?tab=code&sub=posture&severity=CRITICAL,HIGH`)}
+              hint="HIGH+ findings on publicly visible repos"
+            />
+          ) : (
+            <StatsCard
+              label="Repos at Risk"
+              value={m.reposAtRisk}
+              icon={<Github className="h-5 w-5 text-indigo-300" />}
+              onClick={() => navigate(`/findings?tab=code&sub=posture`)}
+              hint={m.orgLevelIssues > 0 ? `+${m.orgLevelIssues} org-level findings` : "Repos with failing checks"}
+            />
+          );
+
+          return (
+            <>
+              <StatsCard
+                label="Without Branch Protection"
+                value={m.reposWithoutBranchProtection}
+                valueClassName={m.reposWithoutBranchProtection > 0 ? "text-red-400" : undefined}
+                icon={<GitBranch className={`h-5 w-5 ${m.reposWithoutBranchProtection > 0 ? "text-red-500/70" : "text-gray-500"}`} />}
+                onClick={() => navigate(`/findings?tab=code&sub=posture&search=repository_default_branch_protection_enabled`)}
+                hint={m.reposWithoutBranchProtection > 0
+                  ? `${m.reposWithoutBranchProtection} repo${m.reposWithoutBranchProtection === 1 ? "" : "s"} unprotected on main`
+                  : "All repos have branch protection ✓"}
+              />
+              <StatsCard
+                label="Force Push Allowed"
+                value={m.reposAllowingForcePush}
+                valueClassName={m.reposAllowingForcePush > 0 ? "text-rose-300" : undefined}
+                icon={<AlertTriangle className={`h-5 w-5 ${m.reposAllowingForcePush > 0 ? "text-rose-400/80" : "text-gray-500"}`} />}
+                onClick={() => navigate(`/findings?tab=code&sub=posture&search=repository_default_branch_disallows_force_push`)}
+                hint={m.reposAllowingForcePush > 0
+                  ? `${m.reposAllowingForcePush} repo${m.reposAllowingForcePush === 1 ? "" : "s"} expose history-rewrite path`
+                  : "Force pushes denied everywhere ✓"}
+              />
+              {thirdCard}
+              {fourthCard}
+            </>
+          );
+        })() : (
+          <>
+            {(() => {
           // The Confirmed Exploits count comes from the SAME filtered
           // dataset the Exploits widget renders — `filteredExploits`
           // applied the badge predicate (wasExploitSuccessful for
@@ -1793,6 +1964,8 @@ export default function DashboardPage() {
             onClick={() => navigate("/domains")}
             hint="Web scan targets"
           />
+        )}
+          </>
         )}
       </div>
 
