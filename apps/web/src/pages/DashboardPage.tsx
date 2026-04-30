@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
-import { ShieldAlert, GitBranch, Box, Globe, ArrowRight, Flame, Plus, Target, Code2, Activity, AlertTriangle, Filter, ChevronDown, Check, Cloud as CloudIcon, Github, Lock, Unlock, Archive } from "lucide-react";
+import { ShieldAlert, GitBranch, Box, Globe, ArrowRight, Flame, Plus, Target, Code2, Activity, AlertTriangle, Filter, ChevronDown, Check, Cloud as CloudIcon, Github, Lock, Unlock, Archive, Package } from "lucide-react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { findingsApi, reposApi, containersApi, domainsApi, scansApi, runtimeApi, cloudAccountsApi, type RuntimeDashboardResponse } from "../lib/api";
 import { wasExploitSuccessful, hasActiveAttack } from "../lib/findings";
