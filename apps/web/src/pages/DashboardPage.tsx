@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
-import { ShieldAlert, GitBranch, Box, Globe, ArrowRight, Flame, Plus, Target, Code2, Activity, AlertTriangle, Filter, ChevronDown, Check, Cloud as CloudIcon } from "lucide-react";
+import { ShieldAlert, GitBranch, Box, Globe, ArrowRight, Flame, Plus, Target, Code2, Activity, AlertTriangle, Filter, ChevronDown, Check, Cloud as CloudIcon, Github, Lock, Unlock, Archive } from "lucide-react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { findingsApi, reposApi, containersApi, domainsApi, scansApi, runtimeApi, cloudAccountsApi, type RuntimeDashboardResponse } from "../lib/api";
 import { wasExploitSuccessful, hasActiveAttack } from "../lib/findings";
@@ -587,21 +587,67 @@ function GitHubPostureWidget({
   // Distinct repos affected — operator-relevant unit. Org-level findings
   // (targetType === GITHUB_ACCOUNT) don't have a repositoryId; bucket
   // them under a synthetic "(organization)" key so they're not lost.
-  const repoCounts = new Map<string, { count: number; severity: string; label: string }>();
+  //
+  // Phase 29 Slice C1.5a — also pull visibility (private?) + archived?
+  // + pushedAt off the FIRST finding's evidence.github.repository for
+  // each repo. All findings on the same repo carry the same snapshot,
+  // so the first one wins.
+  type RepoBucket = {
+    count:     number;
+    severity:  string;
+    label:     string;
+    private:   boolean | null;
+    archived:  boolean | null;
+    pushedAt:  string | null;
+  };
+  const repoCounts = new Map<string, RepoBucket>();
   for (const f of findings) {
     const repoId = (f as Record<string, unknown>)["repositoryId"] as string | undefined;
     const repoFullName = ((f as Record<string, unknown>)["repository"] as Record<string, unknown> | undefined)?.["fullName"] as string | undefined;
+    const ev = (f.evidence ?? {}) as Record<string, unknown>;
+    const gh = (ev["github"] ?? {}) as Record<string, unknown>;
+    const repoMeta = (gh["repository"] ?? null) as Record<string, unknown> | null;
+
     const key = repoId ?? "__org__";
-    const label = repoFullName ?? (key === "__org__" ? "(organization-level)" : "(unknown repo)");
-    const cur = repoCounts.get(key) ?? { count: 0, severity: f.severity, label };
+    const label = repoFullName
+      ?? (repoMeta?.["fullName"] as string | undefined)
+      ?? (key === "__org__" ? "(organization-level)" : "(unknown repo)");
+
+    const cur = repoCounts.get(key) ?? {
+      count: 0,
+      severity: f.severity,
+      label,
+      private:  (repoMeta?.["private"]  as boolean | undefined) ?? null,
+      archived: (repoMeta?.["archived"] as boolean | undefined) ?? null,
+      pushedAt: (repoMeta?.["pushedAt"] as string | undefined) ?? null,
+    };
     cur.count++;
     const sevRank: Record<string, number> = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1, INFO: 0 };
     if ((sevRank[f.severity] ?? 0) > (sevRank[cur.severity] ?? 0)) cur.severity = f.severity;
+    // Backfill metadata if the first finding didn't have it (older
+    // findings without rich evidence get refreshed on the next scan).
+    if (cur.private === null && repoMeta?.["private"] !== undefined) cur.private = repoMeta["private"] as boolean;
+    if (cur.archived === null && repoMeta?.["archived"] !== undefined) cur.archived = repoMeta["archived"] as boolean;
+    if (cur.pushedAt === null && repoMeta?.["pushedAt"] !== undefined) cur.pushedAt = repoMeta["pushedAt"] as string;
     repoCounts.set(key, cur);
   }
   const topRepos = [...repoCounts.entries()]
     .sort((a, b) => b[1].count - a[1].count)
     .slice(0, 6);
+
+  // Format pushedAt as a compact relative for the widget bar rows.
+  const formatPush = (iso: string | null): string => {
+    if (!iso) return "";
+    try {
+      const d = new Date(iso);
+      const days = Math.floor((Date.now() - d.getTime()) / (1000 * 60 * 60 * 24));
+      if (days < 1)   return "today";
+      if (days < 2)   return "yesterday";
+      if (days < 30)  return `${days}d ago`;
+      if (days < 365) return `${Math.floor(days / 30)}mo ago`;
+      return `${Math.floor(days / 365)}y ago`;
+    } catch { return ""; }
+  };
 
   // Top failing checks — same logic as CloudCspmWidget. Group by ruleId,
   // surface human-readable title with ruleId subtitle for technical
@@ -660,9 +706,12 @@ function GitHubPostureWidget({
           Top affected repositories
         </div>
         <div className="space-y-1.5">
-          {topRepos.map(([key, { count, label }]) => {
+          {topRepos.map(([key, bucket]) => {
+            const { count, label, private: isPrivate, archived, pushedAt } = bucket;
             const max = topRepos[0]?.[1].count ?? 1;
             const pct = Math.round((count / max) * 100);
+            const isOrg = key === "__org__";
+            const pushedLabel = formatPush(pushedAt);
             return (
               <button
                 key={key}
@@ -670,9 +719,38 @@ function GitHubPostureWidget({
                 className="block w-full text-left"
                 title={`View posture checklist for ${label}`}
               >
-                <div className="mb-0.5 flex items-center justify-between text-[11px]">
-                  <span className="truncate font-mono text-gray-300">{label}</span>
-                  <span className="tabular-nums font-semibold text-gray-200">{count}</span>
+                <div className="mb-0.5 flex items-center justify-between gap-2 text-[11px]">
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <span className="truncate font-mono text-gray-300">{label}</span>
+                    {/* Phase 29 Slice C1.5a — visibility chips. Public is
+                        amber-tinted (urgency signal); Private is neutral
+                        gray. Archived chip stacks if the repo is read-only
+                        — those are still scannable but typically lower
+                        triage priority. */}
+                    {!isOrg && isPrivate === false && (
+                      <span className="inline-flex items-center gap-0.5 rounded border border-amber-800/40 bg-amber-900/30 px-1 py-0.5 text-[9px] font-medium text-amber-300" title="Public repo — broken posture has the widest blast radius">
+                        <Unlock className="h-2 w-2" /> Public
+                      </span>
+                    )}
+                    {!isOrg && isPrivate === true && (
+                      <span className="inline-flex items-center gap-0.5 rounded bg-gray-800 px-1 py-0.5 text-[9px] font-medium text-gray-400">
+                        <Lock className="h-2 w-2" /> Private
+                      </span>
+                    )}
+                    {archived && (
+                      <span className="inline-flex items-center gap-0.5 rounded bg-gray-800 px-1 py-0.5 text-[9px] font-medium text-gray-500">
+                        <Archive className="h-2 w-2" /> Archived
+                      </span>
+                    )}
+                  </span>
+                  <span className="flex shrink-0 items-center gap-2">
+                    {pushedLabel && !isOrg && (
+                      <span className="text-[10px] text-gray-500" title={pushedAt ?? undefined}>
+                        push {pushedLabel}
+                      </span>
+                    )}
+                    <span className="tabular-nums font-semibold text-gray-200">{count}</span>
+                  </span>
                 </div>
                 <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-800">
                   <div
@@ -1228,6 +1306,38 @@ export default function DashboardPage() {
   const criticalCount = severityData.find((s) => s.name === "CRITICAL")?.value ?? 0;
   const highCount = severityData.find((s) => s.name === "HIGH")?.value ?? 0;
 
+  // Phase 29 Slice C1.5a — posture-specific metrics for the stats cards
+  // when sub=posture. Computed from filteredExploits (already scoped to
+  // GITHUB_POSTURE) so card-counts and widget-counts agree by construction.
+  const postureMetrics = (() => {
+    if (!(tab === "code" && sub === "posture")) return null;
+    const reposWithIssues = new Set<string>();
+    const publicReposAtRisk = new Set<string>();
+    let orgLevelIssues = 0;
+    for (const f of filteredExploits) {
+      const repoId = (f as Record<string, unknown>)["repositoryId"] as string | undefined;
+      const ev = (f.evidence ?? {}) as Record<string, unknown>;
+      const gh = (ev["github"] ?? {}) as Record<string, unknown>;
+      const repo = (gh["repository"] ?? null) as { private?: boolean } | null;
+      if (!repoId) {
+        orgLevelIssues++;
+        continue;
+      }
+      reposWithIssues.add(repoId);
+      // "Public" only counts when we know it's public — null/undefined
+      // (older findings without enriched evidence) are excluded so the
+      // count is a strict lower bound, never inflated.
+      if (repo && repo.private === false && (f.severity === "CRITICAL" || f.severity === "HIGH")) {
+        publicReposAtRisk.add(repoId);
+      }
+    }
+    return {
+      reposAtRisk:        reposWithIssues.size,
+      publicReposAtRisk:  publicReposAtRisk.size,
+      orgLevelIssues,
+    };
+  })();
+
   // Header counts for the tab strip — derived from globalStats.scanTypeCounts.
   const webFindings = (globalStats?.scanTypeCounts ?? [])
     .filter((s) => WEB_TYPES_SET.has(s.scanType))
@@ -1373,6 +1483,21 @@ export default function DashboardPage() {
           // Code/Web, hasActiveAttack for Runtime). This guarantees
           // card-number ≡ widget-row-count, which is what the operator
           // expects when both surfaces describe "the exploits".
+          if (tab === "code" && sub === "posture") {
+            // Phase 29 Slice C1.5a — Posture-led stat. Posture is governance
+            // hygiene, not "vulns in code" — different mental model from the
+            // default Code-tab card. Lead with the open-issue count just
+            // like Cloud/CSPM does (Prowler checks are deterministic).
+            return (
+              <StatsCard
+                label="Posture Issues"
+                value={totalFindings}
+                icon={<ShieldAlert className="h-5 w-5 text-indigo-300" />}
+                onClick={() => navigate(`/findings?tab=code&sub=posture`)}
+                hint={totalFindings > 0 ? "Open misconfigurations" : "All checks passing"}
+              />
+            );
+          }
           if (tab === "code") {
             return (
               <StatsCard
@@ -1611,7 +1736,32 @@ export default function DashboardPage() {
             />
           </>
         )}
-        {tab === "code" ? (
+        {tab === "code" && sub === "posture" ? (
+          // Phase 29 Slice C1.5a — Posture-specific trailing card.
+          // "Public repos at risk" is the most-urgent triage axis: a
+          // public repo with broken posture has maximum exposure — the
+          // attack surface is anyone with internet access. Falls back to
+          // "Repos at Risk" when no public repos are flagged so the card
+          // still surfaces the next-most-meaningful number.
+          (postureMetrics?.publicReposAtRisk ?? 0) > 0 ? (
+            <StatsCard
+              label="Public Repos at Risk"
+              value={postureMetrics!.publicReposAtRisk}
+              valueClassName="text-amber-300"
+              icon={<Github className="h-5 w-5 text-amber-400/80" />}
+              onClick={() => navigate(`/findings?tab=code&sub=posture&severity=CRITICAL,HIGH`)}
+              hint="HIGH+ on public repos"
+            />
+          ) : (
+            <StatsCard
+              label="Repos at Risk"
+              value={postureMetrics?.reposAtRisk ?? 0}
+              icon={<Github className="h-5 w-5 text-indigo-300" />}
+              onClick={() => navigate(`/findings?tab=code&sub=posture`)}
+              hint={(postureMetrics?.orgLevelIssues ?? 0) > 0 ? `+${postureMetrics!.orgLevelIssues} org-level` : "Repos with failing checks"}
+            />
+          )
+        ) : tab === "code" ? (
           <StatsCard
             label="Repos + Containers"
             value={(repos?.length ?? 0) + (containers?.length ?? 0)}
